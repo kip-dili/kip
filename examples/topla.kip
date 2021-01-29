@@ -3,23 +3,23 @@ ya doğru
 ya yanlış
 olabilir.
 
-bir doğal sayı
+bir (doğal sayı)
 ya sıfır
-ya (öncül doğal sayının) ardılı
+ya (öncül (doğal sayının)) ardılı
 olabilir.
 
-(bu doğal sayı ile) (şu doğal sayının) toplamı,
+(bu (doğal sayıyla)) (şu (doğal sayının)) toplamı,
   bu sıfırsa,
     şu,
-  değilse
-    (bunun öncülüyle) (şunun bir fazlasının) toplamıdır.
+  değilse,
+    (bunun öncülüyle) (şunun ardılının) toplamıdır.
 
-bir sayı listesi
+bir (sayı listesi)
 ya boş
-ya (ilk sayının) (devam sayı listesine) eklenmesi
+ya (ilk sayının) (devam (sayı listesine)) eklenmesi
 olabilir.
 
-(bu sayı listesinin) toplamı,
+(bu (sayı listesinin)) toplamı,
   bu boşsa,
     sıfır,
   değilse,
