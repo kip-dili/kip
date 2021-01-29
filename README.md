@@ -7,7 +7,7 @@ The fact that Turkish has a subject-object-verb (SOV) order and vowel harmony, m
 
 ## Installation
 
-Kip uses TRmorph for morphological analysis of Turkish words. In order to use TRmorph, you need to install [Foma](https://fomafst.github.io/).
+Kip uses [TRmorph](https://github.com/coltekin/TRmorph) for morphological analysis of Turkish words. In order to use TRmorph, you need to install [Foma](https://fomafst.github.io/).
 
 Once you install Foma, you can clone and compile TRmorph:
 
