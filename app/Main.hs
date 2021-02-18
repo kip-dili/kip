@@ -21,21 +21,21 @@ import Data.Version (showVersion)
 
 data ReplState =
   ReplState
-    { replCtx :: [String]
+    { replCtx :: [Identifier]
     }
   deriving (Show)
 
 main :: IO ()
 main = 
   lookupEnv "TRMORPH" >>= \case
-    Nothing -> die "The TRMORPH environment variable does not exist.\nTRMORPH ortam değişkeni mevcut değil."
+    Nothing -> die "TRMORPH ortam değişkeni mevcut değil."
     Just path -> do
       fsm <- fsmReadBinaryFile path
       
       -- TODO check if a file is passed in, then run the file instead of opening REPL
 
       -- Start REPL
-      putStrLn $ "Kip " ++ showVersion version ++ "\n=============" 
+      putStrLn $ "Kip " ++ showVersion version ++ "\n==================" 
       runInputT defaultSettings (loop fsm (ReplState []))
    where
     loop :: FSM -> ReplState -> InputT IO ()

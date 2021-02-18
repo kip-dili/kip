@@ -18,7 +18,7 @@ import Kip.AST
 data ParserState =
   MkParserState
     { fsm :: FSM
-    , parserCtx :: [String]
+    , parserCtx :: [Identifier]
     }
 
 -- We need [IO] access in here because we need morphological parsing.
@@ -65,13 +65,16 @@ parseQuotedString = do
     return $ concat strings
 -- End copied from https://stackoverflow.com/a/24106749/2016295, CC BY-SA 3.0
 
-identifier :: KipParser String
-identifier = word <|> parens multiword
+identifier :: KipParser Identifier
+identifier = do
+  ws <- sepBy1 word (char '-') <?>
+        "Tek kelimeli veya tire ile ayrılmış çok kelimeli bir isim kullanmanız gerek."
+  return (init ws, last ws)
 
-inCtx :: String -> KipParser Bool
-inCtx x = do
-  MkParserState{..} <- getState
-  return $ x `elem` parserCtx
+-- inCtx :: String -> KipParser Bool
+-- inCtx x = do
+--   MkParserState{..} <- getState
+--   return $ x `elem` parserCtx
 
 getPossibleCase :: String -> Maybe (String, Case)
 getPossibleCase s 
@@ -87,27 +90,27 @@ getPossibleCase s
 -- | Takes the fully declined word, returns the possible case
 -- and the string consisting the original word stripped of this case,
 -- based on the values in the context.
-estimateCase :: String -> KipParser (String, Case)
-estimateCase s = do
+estimateCase :: Identifier -> KipParser (Identifier, Case)
+estimateCase (ss, s) = do
   MkParserState{..} <- getState
   morphAnalyses <- liftIO (ups fsm s)
-  let xs = nub $ [ (root, cas) | x <- parserCtx
+  let xs = nub $ [ ((ws, root), cas) | (ws, w) <- parserCtx
                                , y <- morphAnalyses
                                , let Just (root, cas) = getPossibleCase y
-                               , x `isPrefixOf` y ]
+                               , w `isPrefixOf` y
+                               , ss == ws ]
   case xs of
-    [] -> fail "no nominative matching variable found"
-    _:_:_ -> fail $ "Ambiguity between " ++ intercalate ", " (map show xs)
+    [] -> fail "Buraya uyan yalın halde bir isim bulunamadı."
+    _:_:_ -> fail $ "Belirsizlik: " ++ intercalate ", " (map show xs)
     [p] -> return p
 
-casedIdentifier :: KipParser (String, Case)
-casedIdentifier = do
-  x <- identifier
-  estimateCase x
+casedIdentifier :: KipParser (Identifier, Case)
+casedIdentifier = identifier >>= estimateCase
 
 parseExp :: KipParser (Exp Case)
-parseExp = var
-    -- try var <|> parens parseExp <|> str 
+parseExp = 
+    try var <|> parens parseExp
+    -- <|> str 
   where
     -- var = Var Nom <$> identifier 
     var = casedIdentifier >>= \(s,c) -> return (Var c s)

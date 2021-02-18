@@ -2,29 +2,41 @@ Bir boşluk var olamaz.
 
 Bir doğruluk ya doğru ya yanlış olabilir.
 
-Bir (doğal sayı)
+Bir doğal-sayı
 ya sıfır
-ya (öncül (doğal sayının)) ardılı
+ya (öncül doğal-sayının) ardılı
 olabilir.
 
-(bu (doğal sayıyla)) (şu (doğal sayının)) toplamı,
+(bu doğal-sayıyla) (şu doğal-sayının) toplamı,
   bu sıfırsa,
     şu,
   değilse,
     (bunun öncülüyle) (şunun ardılının) toplamıdır.
 
-Bir (sayı listesi)
+(bu doğal-sayıyla) (şu doğal-sayının) çarpımı,
+  bu sıfırsa,
+    sıfır,
+  değilse,
+    şunla ((bunun öncülünün) şunla çarpımının) toplamıdır.
+
+(bu doğal-sayının) faktöriyeli,
+  bu sıfırsa,
+    bir,
+  değilse,
+    bunla ((bunun öncülünün) faktöriyelinin) çarpımıdır.
+
+Bir sayı-listesi
 ya boş
-ya (ilk sayının) (devam (sayı listesine)) eklenmesi
+ya (ilk sayının) (devam sayı-listesine) eklenmesi
 olabilir.
 
-(bu (sayı listesinin)) toplamı,
+(bu sayı-listesinin) toplamı,
   bu boşsa,
     sıfır,
   değilse,
-    (bunun elemanıyla) ((bunun devamının) toplamının) toplamıdır.
+    (bunun ilkiyle) ((bunun devamının) toplamının) toplamıdır.
 
-(* sayılar: tek, iki, üç, dört *)
+(* sayılar: bir, iki, üç, dört *)
 sıfırın ardılına bir diyelim.
 birin ardılına iki diyelim.
 ikinin ardılına üç diyelim.
