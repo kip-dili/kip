@@ -1,45 +1,144 @@
 #include "morphology.h"
-#include <stdlib.h>
-#include <stdbool.h>
+
+#include<stdlib.h>
+#include<stdbool.h>
+#include<string.h>
 
 #define LIMIT 50
 
+// Morphological analysis (surface form -> analyses).
+// Allocates a NULL-terminated array of strdup'd strings. Caller frees via
+// `free` on the outer array and on each element.
 char **ups(struct fsm* fsm, char *s)
 {
-  char **arr = (char **) calloc(LIMIT, LIMIT * sizeof(char *));
-  struct apply_handle *h = apply_init(fsm);
-  bool once = false;
+  // Allocate array of LIMIT+1 pointers (extra for null terminator)
+  // Previous code had bug: calloc(LIMIT, LIMIT * sizeof(char *)) allocated LIMIT*LIMIT*sizeof(char*)
+  char **arr = (char **) calloc(LIMIT + 1, sizeof(char *));
+  if (!arr) return NULL;
 
-  for(int i = 0; i < LIMIT; i++)
+  struct apply_handle *h = apply_init(fsm);
+  if (!h) { free(arr); return NULL; }
+
+  char *result = apply_up(h, s);
+  int i = 0;
+
+  while (result != NULL && i < LIMIT)
   {
-    char *result = apply_up(h, once ? NULL : s);
-    if (result == NULL) break;
-    else 
-    {
-      once = once || true;
-      arr[i] = strdup(result);
-    }
+    arr[i++] = strdup(result);
+    result = apply_up(h, NULL);  // Pass NULL for subsequent calls
   }
+  // arr[i] is already NULL from calloc
+
   apply_clear(h);
   return arr;
 }
 
+// Morphological generation (analysis -> surface forms).
+// Allocates a NULL-terminated array of strdup'd strings. Caller frees via
+// `free` on the outer array and on each element.
 char **downs(struct fsm* fsm, char *s)
 {
-  char **arr = (char **) calloc(LIMIT, LIMIT * sizeof(char *));
-  struct apply_handle *h = apply_init(fsm);
-  bool once = false;
+  char **arr = (char **) calloc(LIMIT + 1, sizeof(char *));
+  if (!arr) return NULL;
 
-  for(int i = 0; i < LIMIT; i++)
+  struct apply_handle *h = apply_init(fsm);
+  if (!h) { free(arr); return NULL; }
+
+  char *result = apply_down(h, s);
+  int i = 0;
+
+  while (result != NULL && i < LIMIT)
   {
-    char *result = apply_down(h, once ? NULL : s);
-    if (result == NULL) break;
-    else 
-    {
-      once = once || true;
-      arr[i] = strdup(result);
-    }
+    arr[i++] = strdup(result);
+    result = apply_down(h, NULL);  // Pass NULL for subsequent calls
   }
+  // arr[i] is already NULL from calloc
+
   apply_clear(h);
   return arr;
+}
+
+// Batch morphological analysis (surface forms -> analyses).
+// Reuses a single apply handle across inputs to amortize setup cost.
+char ***ups_batch(struct fsm* fsm, char **inputs, int count)
+{
+  if (!inputs || count <= 0) return NULL;
+
+  char ***out = (char ***) calloc(count, sizeof(char **));
+  if (!out) return NULL;
+
+  struct apply_handle *h = apply_init(fsm);
+  if (!h) { free(out); return NULL; }
+
+  for (int i = 0; i < count; i++)
+  {
+    char *s = inputs[i];
+    if (!s) { out[i] = NULL; continue; }
+
+    char **arr = (char **) calloc(LIMIT + 1, sizeof(char *));
+    if (!arr) { out[i] = NULL; continue; }
+
+    char *result = apply_up(h, s);
+    int j = 0;
+    while (result != NULL && j < LIMIT)
+    {
+      arr[j++] = strdup(result);
+      result = apply_up(h, NULL);
+    }
+    out[i] = arr;
+  }
+
+  apply_clear(h);
+  return out;
+}
+
+// Batch morphological generation (analysis -> surface forms).
+// Reuses a single apply handle across inputs to amortize setup cost.
+char ***downs_batch(struct fsm* fsm, char **inputs, int count)
+{
+  if (!inputs || count <= 0) return NULL;
+
+  char ***out = (char ***) calloc(count, sizeof(char **));
+  if (!out) return NULL;
+
+  struct apply_handle *h = apply_init(fsm);
+  if (!h) { free(out); return NULL; }
+
+  for (int i = 0; i < count; i++)
+  {
+    char *s = inputs[i];
+    if (!s) { out[i] = NULL; continue; }
+
+    char **arr = (char **) calloc(LIMIT + 1, sizeof(char *));
+    if (!arr) { out[i] = NULL; continue; }
+
+    char *result = apply_down(h, s);
+    int j = 0;
+    while (result != NULL && j < LIMIT)
+    {
+      arr[j++] = strdup(result);
+      result = apply_down(h, NULL);
+    }
+    out[i] = arr;
+  }
+
+  apply_clear(h);
+  return out;
+}
+
+// Free the nested allocations produced by `ups_batch`/`downs_batch`.
+void free_batch(char ***arr, int count)
+{
+  if (!arr) return;
+  for (int i = 0; i < count; i++)
+  {
+    char **row = arr[i];
+    if (!row) continue;
+    for (int j = 0; row[j] != NULL; j++)
+    {
+      free(row[j]);
+    }
+    free(row);
+  }
+  free(arr);
 }

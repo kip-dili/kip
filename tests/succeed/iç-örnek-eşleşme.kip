@@ -1,0 +1,19 @@
+
+Bir işaret
+ya boş
+ya da bir işaretin ardılı
+olabilir.
+
+boşun ardılına bir diyelim.
+birin ardılına iki diyelim.
+
+(bu işaretin) çift-öncülü,
+  bu boşsa,
+    boş,
+  bu-öncülün ardılıysa,
+    (bu-öncül boşsa,
+      boş,
+     bu-öncül-öncülün ardılıysa,
+      bu-öncül-öncülün ardılıdır).
+
+(ikinin) çift-öncülünü yaz.

@@ -1,0 +1,31 @@
+
+Bir (öğe ağacı)
+ya boş-ağaç
+ya da bir öğenin bir (öğe ağacına) bir (öğe ağacının) dalı
+olabilir.
+
+(bu tam-sayının) yaprağı,
+  bunun boş-ağaca boş-ağacının dalıdır.
+
+(bu tam-sayı ağacında) (şu tam-sayıyı) araması,
+  bu boş-ağaçsa,
+    yanlış,
+  bu-kökün sola sağın dalıysa,
+    (şunla bu-kökün eşitliği) doğruysa,
+      doğru,
+    değilse,
+      (şunun bu-kökten küçüklüğü) doğruysa,
+        (solda şunu araması),
+      değilse,
+        (sağda şunu aramasıdır).
+
+(1'in yaprağına) sol-sol diyelim.
+(3'ün yaprağına) sol-sağ diyelim.
+(2'nin sol-sola sol-sağın dalına) sol-ağaç diyelim.
+(5'in yaprağına) sağ-sol diyelim.
+(7'nin yaprağına) sağ-sağ diyelim.
+(6'nın sağ-sola sağ-sağın dalına) sağ-ağaç diyelim.
+(4'ün sol-ağaca sağ-ağacının dalına) ağaç diyelim.
+
+(ağaçta 5'i aramasını) yaz.
+(ağaçta 8'i aramasını) yaz.

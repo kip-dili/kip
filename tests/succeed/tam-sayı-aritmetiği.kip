@@ -1,0 +1,17 @@
+
+Bir doğal-sayı
+ya sıfır
+ya da bir doğal-sayının ardılı
+olabilir.
+
+sıfırın ardılına bir diyelim.
+birin ardılına iki diyelim.
+ikinin ardılına üç diyelim.
+
+(bu doğal-sayıyla) (şu doğal-sayının) toplamı,
+  bu sıfırsa,
+    şu,
+  öncülün ardılıysa,
+    (öncülle) (şunun ardılının) toplamıdır.
+
+(ikiyle üçün toplamını) yaz.

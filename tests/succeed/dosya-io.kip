@@ -1,0 +1,6 @@
+çalıştırmak,
+  "./yazı.tmp"ye "selam kip" yazıp,
+  metin olarak "./yazı.tmp"'den okuyup,
+  metni yazmaktır.
+
+çalıştır.

@@ -1,24 +1,28 @@
 cabal-version: 1.12
-
--- This file has been generated from package.yaml by hpack version 0.33.0.
---
--- see: https://github.com/sol/hpack
---
--- hash: 2c9dc6f902f66bab27b29c9dea9ad0df41f111eb1fa9db8ff50c1167b46fc9d1
-
 name:           kip
 version:        0.1.0.0
 description:    A programming language based on grammatical cases of Turkish.
 homepage:       https://github.com/joom/kip#readme
 bug-reports:    https://github.com/joom/kip/issues
 author:         Joomy Korkut
-maintainer:     joomy@cattheory.com
+maintainer:     joomy@type.systems
 copyright:      2021 Joomy Korkut
 license:        MIT
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
     README.md
+    vendor/trmorph.fst
+
+data-files:
+    vendor/trmorph.fst
+    lib/temel.kip
+    lib/giriş.kip
+    lib/temel-doğruluk.kip
+    lib/temel-dizge.kip
+    lib/temel-etki.kip
+    lib/temel-liste.kip
+    lib/temel-tam-sayı.kip
 
 source-repository head
   type: git
@@ -27,8 +31,11 @@ source-repository head
 library
   exposed-modules:
       Kip.AST
+      Kip.Cache
       Kip.Eval
       Kip.Parser
+      Kip.Render
+      Kip.TypeCheck
       Language.Foma
   other-modules:
       Paths_kip
@@ -36,13 +43,30 @@ library
       src
   c-sources:
       c/morphology.c
+  include-dirs:
+      c
+  install-includes:
+      morphology.h
   extra-libraries:
       foma
+  if os(darwin)
+    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w
   build-depends:
       base >=4.7 && <5
-    , parsec
+    , bytestring
+    , containers
+    , hashable
+    , hashtables
+    , megaparsec
     , split
+    , text
     , transformers
+    , binary
+    , cryptohash-sha256
+    , mtl
+    , time
+    , filepath
+    , directory
   default-language: Haskell2010
 
 executable kip
@@ -52,8 +76,40 @@ executable kip
   hs-source-dirs:
       app
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  if os(darwin)
+    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w
   build-depends:
       base >=4.7 && <5
+    , bytestring
+    , containers
+    , directory
     , haskeline
+    , hashtables
+    , optparse-applicative
+    , transformers
+    , megaparsec
     , kip
+    , chalk
+    , text
+    , filepath
+    , binary
+    , cryptohash-sha256
+    , mtl
+    , time
+  default-language: Haskell2010
+
+test-suite kip-tests
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs:
+      tests
+  if os(darwin)
+    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w
+  build-depends:
+      base >=4.7 && <5
+    , directory
+    , filepath
+    , process
+    , tasty
+    , tasty-hunit
   default-language: Haskell2010

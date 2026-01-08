@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run install script
+        run: |
+          chmod +x ./install.sh
+          ./install.sh
+
+      - name: Stack install
+        run: stack install
+
+      - name: HLint
+        run: stack exec --package hlint -- hlint app src tests
+
+      - name: Stack test
+        run: stack test

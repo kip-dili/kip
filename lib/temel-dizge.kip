@@ -1,0 +1,11 @@
+temeli yükle.
+
+(* Dizge fonksiyonları. *)
+(bu dizgenin) (uzunluk tam-sayısı),
+  yerleşiktir.
+
+(bu dizgeyle) (şu dizgenin) (birleşim dizgesi),
+  yerleşiktir.
+
+(bu dizgenin) (tam-sayı-hal tam-sayının olasılığı),
+  yerleşiktir.

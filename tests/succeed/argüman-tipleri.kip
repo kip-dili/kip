@@ -1,0 +1,15 @@
+
+Bir doğal-sayı
+ya sıfır
+ya da bir doğal-sayının ardılı
+olabilir.
+
+sıfırın ardılına bir diyelim.
+
+(bu doğal sayının) kopyası,
+  bu sıfırsa,
+    sıfır,
+  öncülün ardılıysa,
+    öncülün ardılıdır.
+
+birin kopyasını yaz.

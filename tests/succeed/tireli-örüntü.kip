@@ -1,0 +1,16 @@
+
+Bir işaret
+ya boş
+ya da bir işaretin ardılı
+olabilir.
+
+boşun ardılına bir diyelim.
+birin ardılına iki diyelim.
+
+(bu işaretin) kopyası,
+  bu boşsa,
+    boş,
+  bu-öncülün ardılıysa,
+    bu-öncülün ardılıdır.
+
+(ikinin) kopyasını yaz.

@@ -1,0 +1,22 @@
+
+(* Bu fonksiyon gövdesinde parantez olmadan çok satırlı eşleşme kullanır. *)
+(bu tam-sayıyı) denemek,
+  (bunla 0'ın eşitliği) doğruysa,
+    -1'i yazmaktır,
+  yanlışsa,
+    -2'yi yazmaktır.
+
+5'i dene.
+0'ı dene.
+
+(* Bu fonksiyon gövdesinde parantez olmadan çok satırlı eşleşme kullanır. *)
+(bu tam-sayıyı) test-etmek,
+  (bunla 0'ın eşitliği) doğruysa,
+    (0'ı yazıp,
+     1'i yazmaktır),
+  yanlışsa,
+    1'i yazıp,
+    0'ı yazmaktır.
+
+5'i test-et.
+0'ı test-et.

@@ -1,0 +1,19 @@
+
+Bir işaret
+ya boş
+ya da bir işaretin ardılı
+olabilir.
+
+boşun ardılına bir diyelim.
+birin ardılına iki diyelim.
+
+(bu işaretle) (şu işaretin) seçimi,
+  bu boşsa,
+    boş,
+  bu-öncülün ardılıysa,
+    (şu boşsa,
+      boş,
+     şu-öncülün ardılıysa,
+      şu-öncülün ardılıdır).
+
+(ikinin birin seçimini) yaz.

@@ -1,0 +1,27 @@
+(* Karmaşık ifadeli eşleşme ayrıştırma testi.
+   Bu test, eşleşme ifadelerinin karmaşık denetlenen
+   ifadelerle (fonksiyon uygulaması gibi) ayrıştırılabildiğini doğrular. *)
+
+Bir doğruluk
+ya doğru
+ya da yanlış olabilir.
+
+Bir (öğenin olasılığı)
+ya yokluğu
+ya da bir öğenin varlığı olabilir.
+
+(bu doğruluğun) olasılığı,
+  bu doğruysa,
+    doğrunun varlığı,
+  yanlışsa,
+    yokluğudur.
+
+(* Karmaşık denetlenen ifade: (bu doğruluğun olasılığı)
+   bir fonksiyon uygulamasıdır, basit değişken değildir.
+   Bu sözdiziminin ayrıştırılabilmesi yeterlidir. *)
+(bu doğruluğun) olası-durumu,
+  ((bunun olasılığı)
+    yokluksa,
+      yanlış,
+    n'nin varlığıysa,
+      doğrudur).

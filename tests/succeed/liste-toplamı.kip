@@ -1,0 +1,21 @@
+
+Bir doğal-sayı
+ya sıfır
+ya da bir doğal-sayının ardılı
+olabilir.
+
+sıfırın ardılına bir diyelim.
+
+(bu doğal-sayıyla) (şu doğal-sayının) toplamı,
+  bu sıfırsa,
+    şu,
+  öncülün ardılıysa,
+    (öncülle) (şunun ardılının) toplamıdır.
+
+(bu doğal-sayı listesinin) toplamı,
+  bu boşsa,
+    sıfır,
+  ilk öğenin devam öğe listesine ekiyse,
+    (ilk öğeyle) ((devam öğe listesinin) toplamının) toplamıdır.
+
+(sıfırın boşa ekini) yaz.

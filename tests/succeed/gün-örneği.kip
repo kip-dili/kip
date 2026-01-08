@@ -1,0 +1,27 @@
+Bir gün
+ya pazartesi
+ya salı
+ya çarşamba
+ya perşembe
+ya cuma
+ya cumartesi
+ya pazar
+olabilir.
+
+(bu günün) sonraki-günü,
+  bu pazartesiyse, salı,
+  salıysa, çarşamba,
+  çarşambaysa, perşembe,
+  perşembeyse, cuma,
+  cumaysa, cumartesi,
+  cumartesiyse, pazar,
+  pazarsa, pazartesidir.
+
+(bu günün) önceki-günü,
+  bu pazartesiyse, pazar,
+  salıysa, pazartesi,
+  çarşambaysa, salı,
+  perşembeyse, çarşamba,
+  cumaysa, perşembe,
+  cumartesiyse, cuma,
+  pazarsa, cumartesidir.

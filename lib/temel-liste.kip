@@ -1,0 +1,26 @@
+temeli yükle.
+
+(* Liste fonksiyonları. *)
+(bu öğe listesinin) (uzunluk tam-sayısı),
+  bu boşsa,
+    0,
+  ilkin devama ekiyse,
+    (devamın uzunluğuyla) 1'in toplamıdır.
+
+(bu öğe listesiyle) (şu öğe listesinin) (birleşim öğe listesi),
+  bu boşsa,
+    şu,
+  ilkin devama ekiyse,
+    ilkin (devamla şunun birleşimine) ekidir.
+
+(bu öğe listesinin) (ters öğe listesi),
+  bu boşsa,
+    boş,
+  ilkin devama ekiyse,
+    (devamın tersiyle) (ilkin boşa ekinin) birleşimidir.
+
+(bu tam-sayı listesinin) (toplam tam-sayısı),
+  bu boşsa,
+    0,
+  ilkin devama ekiyse,
+    ilkin (devamın toplamıyla) toplamıdır.

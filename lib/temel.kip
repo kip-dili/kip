@@ -1,0 +1,22 @@
+(* Yapkısı olmayan tip tanımı. Haskell'deki Void gibi. *)
+Bir boşluk var olamaz.
+
+Bir bitim ya bitimlik olabilir.
+
+(* Doğruluk, yani Boolean tipi. *)
+Bir doğruluk ya doğru ya da yanlış olabilir.
+
+(* Çokbiçimli olasılık tipi. Haskell'deki Maybe gibi. *)
+Bir (öğenin olasılığı)
+ya yokluğu
+ya da bir öğenin varlığı olabilir.
+
+(* Çokbiçimli bağlı liste (polymorphic linked list). *)
+Bir (öğe listesi)
+ya boş
+ya da bir öğenin bir öğe listesine eki
+olabilir.
+
+(* Yerleşik (primitive) tipler. *)
+Bir yerleşik tam-sayı olsun.
+Bir yerleşik dizge olsun.

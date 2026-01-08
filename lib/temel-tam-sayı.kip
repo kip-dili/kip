@@ -1,0 +1,44 @@
+temeli yükle.
+
+(* Tam sayı fonksiyonları. *)
+(bu tam-sayıyla) (şu tam-sayının) (toplam tam-sayısı),
+  yerleşiktir.
+
+(bu tam-sayıyla) (şu tam-sayının) (çarpım tam-sayısı),
+  yerleşiktir.
+
+(bu tam-sayıyla) (şu tam-sayının) (fark tam-sayısı),
+  yerleşiktir.
+
+(bu tam-sayının) (öncül tam-sayısı),
+  yerleşiktir.
+
+(bu tam-sayının) (sıfırlık doğruluğu),
+  yerleşiktir.
+
+(bu tam-sayıyla) (şu tam-sayının) (eşitlik doğruluğu),
+  yerleşiktir.
+
+(bu tam-sayının) (şu tam-sayıdan) (küçüklük doğruluğu),
+  yerleşiktir.
+
+(bu tam-sayının) (şu tam-sayıdan) (küçük-eşitlik doğruluğu),
+  yerleşiktir.
+
+(bu tam-sayının) (şu tam-sayıdan) (büyüklük doğruluğu),
+  yerleşiktir.
+
+(bu tam-sayıyla) (şu tam-sayının) (büyük-eşitlik doğruluğu),
+  yerleşiktir.
+
+(bu tam-sayıyla) (şu tam-sayının) (kalan tam-sayısı),
+  (bunun şundan küçük-eşitliği) doğruysa,
+    bu,
+  değilse,
+    (bunla şunun farkıyla) şunun kalanıdır.
+
+(bu tam-sayıyla) (şu tam-sayıya) (bölünürlük doğruluğu), 
+  (bunla şunun kalanıyla) 0'ın eşitliğidir.
+
+(bu tam-sayının) (faktöriyel tam-sayısı),
+  yerleşiktir.

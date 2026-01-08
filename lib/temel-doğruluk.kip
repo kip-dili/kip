@@ -1,0 +1,18 @@
+temeli yükle.
+
+(* Doğruluk fonksiyonları. *)
+(bu doğruluğun) (ters doğruluğu),
+  bu doğruysa, yanlış,
+  yanlışsa, doğrudur.
+
+(bu doğrulukla) (şu doğruluğun) (kesişim doğruluğu),
+  bu doğruysa,
+    şu,
+  yanlışsa,
+    yanlıştır.
+
+(bu doğrulukla) (şu doğruluğun) (birleşim doğruluğu),
+  bu doğruysa,
+    doğru,
+  yanlışsa,
+    şudur.

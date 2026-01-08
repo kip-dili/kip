@@ -1,0 +1,14 @@
+
+Bir doğal-sayı
+ya sıfır
+ya da bir doğal-sayının ardılı
+olabilir.
+
+(* Bu hata vermelidir çünkü tam-sayılar yapıcılarla eşleştirilemez. *)
+(bu tam-sayıyı) denemek,
+  bu sıfırsa,
+    1'i yazmaktır,
+  değilse,
+    0'ı yazmaktır.
+
+5'i dene.

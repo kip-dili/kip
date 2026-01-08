@@ -1,3 +1,7 @@
+trmorph/
+TRmorph/
+.tmp
+*.tmp
 dist
 dist-*
 cabal-dev
@@ -23,3 +27,4 @@ cabal.project.local~
 .ghc.environment.*
 stack.yaml.lock
 .DS_Store
+*.iz

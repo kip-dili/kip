@@ -1,0 +1,19 @@
+
+(* İlk n Fibonacci sayısını yazdırır. *)
+(bu tam-sayıyı) (şu tam-sayıyı) (o tam-sayıyı) işlemek,
+  (onla 0'ın eşitliği) doğruysa,
+    durmaktır,
+  yanlışsa,
+    bunu yazıp,
+    şunu (bunla şunun toplamını) (onla 1'in farkını) işlemektir.
+
+çalıştırmak,
+  "Bir sayı girin:" yazıp,
+  isim olarak okuyup,
+  ((ismin tam-sayı-hali)
+    yokluksa,
+      "Geçersiz sayı." yazmaktır,
+    n'nin varlığıysa,
+      0'ı 1'i n'yi işlemektir).
+
+çalıştır.

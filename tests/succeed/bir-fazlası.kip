@@ -1,0 +1,12 @@
+
+(* İç örüntü etrafında parantez yok! *)
+çalıştırmak,
+  isim olarak okuyup,
+  (ismin tam-sayı-hali)
+    yokluksa,
+      "Hata!" yazıp,
+      "Okunamadı." yazmaktır,
+    n'nin varlığıysa,
+      (n'yle 1'in toplamını) yazmaktır.
+
+çalıştır.
