@@ -627,9 +627,7 @@ primImpl mPath ident args = do
     ([], "toplam") -> Just (primIntBin "toplam" (+))
     ([], "çarpım") -> Just (primIntBin "çarpım" (*))
     ([], "fark") -> Just (primIntBin "fark" (-))
-    ([], "öncül") -> Just (primIntUnary "öncül" (\n -> n - 1))
-    ([], "faktöriyel") -> Just (primIntFact "faktöriyel")
-    ([], "sıfırlık") -> Just (primIntPred "sıfırlık" (== 0))
+    (["dizge"], "hal") -> Just primIntToString
     ([], "eşitlik") -> Just (primIntCmp "eşitlik" (==))
     ([], "küçüklük") -> Just (primIntCmp "küçüklük" (<))
     (["küçük"], "eşitlik") -> Just (primIntCmp "küçük-eşitlik" (<=))
@@ -660,9 +658,7 @@ primFile ident =
     ([], "toplam") -> Just "temel-tam-sayı.kip"
     ([], "çarpım") -> Just "temel-tam-sayı.kip"
     ([], "fark") -> Just "temel-tam-sayı.kip"
-    ([], "öncül") -> Just "temel-tam-sayı.kip"
-    ([], "faktöriyel") -> Just "temel-tam-sayı.kip"
-    ([], "sıfırlık") -> Just "temel-tam-sayı.kip"
+    (["dizge"], "hal") -> Just "temel-tam-sayı.kip"
     ([], "eşitlik") -> Just "temel-tam-sayı.kip"
     ([], "küçüklük") -> Just "temel-tam-sayı.kip"
     (["küçük"], "eşitlik") -> Just "temel-tam-sayı.kip"
@@ -821,17 +817,6 @@ primIntBin fname op args =
       return (IntLit ann (op a b))
     _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], fname) []) args)
 
--- | Primitive integer unary operator.
-primIntUnary :: Text -- ^ Operator name.
-             -> (Integer -> Integer) -- ^ Integer operator.
-             -> [Exp Ann] -- ^ Arguments.
-             -> EvalM (Exp Ann) -- ^ Result expression.
-primIntUnary fname op args =
-  case args of
-    [IntLit ann a] ->
-      return (IntLit ann (op a))
-    _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], fname) []) args)
-
 -- | Primitive integer comparison operator.
 primIntCmp :: Text -- ^ Operator name.
            -> (Integer -> Integer -> Bool) -- ^ Predicate.
@@ -843,33 +828,14 @@ primIntCmp fname op args =
       return (boolToExp (op a b))
     _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], fname) []) args)
 
--- | Primitive integer predicate operator.
-primIntPred :: Text -- ^ Operator name.
-            -> (Integer -> Bool) -- ^ Predicate.
-            -> [Exp Ann] -- ^ Arguments.
-            -> EvalM (Exp Ann) -- ^ Result expression.
-primIntPred fname op args =
+-- | Primitive integer to string conversion.
+primIntToString :: [Exp Ann] -- ^ Arguments.
+                -> EvalM (Exp Ann) -- ^ Result expression.
+primIntToString args =
   case args of
-    [IntLit _ a] ->
-      return (boolToExp (op a))
-    _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], fname) []) args)
-
--- | Primitive factorial function.
-primIntFact :: Text -- ^ Operator name.
-            -> [Exp Ann] -- ^ Arguments.
-            -> EvalM (Exp Ann) -- ^ Result expression.
-primIntFact fname args =
-  case args of
-    [IntLit ann a] ->
-      let n = max a 0
-          -- | Tail-recursive factorial helper.
-          go :: Integer -- ^ Accumulator.
-             -> Integer -- ^ Current counter.
-             -> Integer -- ^ Factorial result.
-          go acc i =
-            if i <= 1 then acc else go (acc * i) (i - 1)
-      in return (IntLit ann (go 1 n))
-    _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], fname) []) args)
+    [IntLit ann n] ->
+      return (StrLit ann (T.pack (show n)))
+    _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) (["dizge"], "hal") []) args)
 
 -- | Convert a boolean into a Kip boolean value expression.
 boolToExp :: Bool -- ^ Boolean value.

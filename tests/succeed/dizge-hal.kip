@@ -1,0 +1,8 @@
+(* Tam sayıdan dizgeye dönüşüm testi. *)
+42'nin dizge-halini yaz.
+0'ın dizge-halini yaz.
+123'ün dizge-halini yaz.
+
+(* Faktöriyel testi - artık yerleşik değil, Kip'te tanımlandı. *)
+5'in faktöriyelini yaz.
+0'ın faktöriyelini yaz.

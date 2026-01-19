@@ -10,12 +10,6 @@ temeli yükle.
 (bu tam-sayıyla) (şu tam-sayının) (fark tam-sayısı),
   yerleşiktir.
 
-(bu tam-sayının) (öncül tam-sayısı),
-  yerleşiktir.
-
-(bu tam-sayının) (sıfırlık doğruluğu),
-  yerleşiktir.
-
 (bu tam-sayıyla) (şu tam-sayının) (eşitlik doğruluğu),
   yerleşiktir.
 
@@ -37,8 +31,14 @@ temeli yükle.
   değilse,
     (bunla şunun farkıyla) şunun kalanıdır.
 
-(bu tam-sayıyla) (şu tam-sayıya) (bölünürlük doğruluğu), 
+(bu tam-sayıyla) (şu tam-sayıya) (bölünürlük doğruluğu),
   (bunla şunun kalanıyla) 0'ın eşitliğidir.
 
-(bu tam-sayının) (faktöriyel tam-sayısı),
+(bu tam-sayının) (dizge-hal dizgesi),
   yerleşiktir.
+
+(bu tam-sayının) (faktöriyel tam-sayısı),
+  (bunun 0'dan küçük-eşitliği) doğruysa,
+    1,
+  değilse,
+    ((bunla 1'in farkının) faktöriyeliyle) bunun çarpımıdır.
