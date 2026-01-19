@@ -29,7 +29,14 @@ const examples = [
   { id: "dosya-io", file: "dosya-io.kip" }
 ];
 
-sourceEl.value = `(1'in (2'nin boşa ekine) ekinin) tersini yaz.`;
+sourceEl.value = `(bu tam-sayı listesini) bastırmak,
+  bu boşsa,
+    durmaktır,
+  ilkin devama ekiyse,
+    ilki yazıp,
+    devamı bastırmaktır.
+
+(1'in (2'nin boşa ekine) ekinin) tersini yaz.`;
 
 async function loadText(path) {
   const res = await fetch(path);
