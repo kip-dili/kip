@@ -32,7 +32,7 @@ temeli yükle.
   yerleşiktir.
 
 (bu tam-sayıyla) (şu tam-sayının) (kalan tam-sayısı),
-  (bunun şundan küçük-eşitliği) doğruysa,
+  (bunun şundan küçüklüğü) doğruysa,
     bu,
   değilse,
     (bunla şunun farkıyla) şunun kalanıdır.
