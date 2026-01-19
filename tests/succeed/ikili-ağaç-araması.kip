@@ -26,5 +26,5 @@ olabilir.
 (6'nın sağ-sola sağ-sağın dalına) sağ-ağaç diyelim.
 (4'ün sol-ağaca sağ-ağacının dalına) ağaç diyelim.
 
-(ağaçta 5'i aramasını) yaz.
-(ağaçta 8'i aramasını) yaz.
+(ağaçta 5'i araması) doğruysa, "evet"'i yaz, yanlışsa, "hayır"'ı yaz.
+(ağaçta 8'i araması) doğruysa, "evet"'i yaz, yanlışsa, "hayır"'ı yaz.
