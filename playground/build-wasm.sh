@@ -37,6 +37,7 @@ popd >/dev/null
 cp "${ROOT_DIR}/playground/index.html" "${DIST_DIR}/index.html"
 cp "${ROOT_DIR}/playground/playground.js" "${DIST_DIR}/playground.js"
 cp "${ROOT_DIR}/playground/style.css" "${DIST_DIR}/style.css"
+cp "${ROOT_DIR}/playground/logo.png" "${DIST_DIR}/logo.png"
 
 "${ROOT_DIR}/playground/build-assets.sh"
 
