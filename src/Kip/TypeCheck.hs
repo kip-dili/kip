@@ -17,7 +17,7 @@ import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
 import Control.Monad.IO.Class
 import Data.List (nub, elemIndex, sort, find, foldl')
-import Data.Maybe (fromMaybe, catMaybes)
+import Data.Maybe (fromMaybe, catMaybes, mapMaybe)
 import qualified Data.Text as T
 
 -- | Type checker state for names, signatures, and constructors.
@@ -26,7 +26,7 @@ data TCState =
     { tcCtx :: [Identifier] -- ^ Names in scope.
     , tcFuncs :: [(Identifier, Int)] -- ^ Known function arities.
     , tcFuncSigs :: [(Identifier, [Arg Ann])] -- ^ Function argument signatures.
-    , tcFuncSigRets :: [((Identifier, Int), Ty Ann)] -- ^ Function return types by arity.
+    , tcFuncSigRets :: [((Identifier, [Ty Ann]), Ty Ann)] -- ^ Function return types by arg types.
     , tcVarTys :: [(Identifier, Ty Ann)] -- ^ Variable type bindings.
     , tcVals :: [(Identifier, Exp Ann)] -- ^ Value bindings for inlining.
     , tcCtors :: [(Identifier, ([Ty Ann], Ty Ann))] -- ^ Constructor signatures.
@@ -383,14 +383,14 @@ tcStmt stmt =
     Function name args ty body isGerund -> do
       let argNames = map fst args
       mRet <- withCtx (name : argNames) (withVarTypes args (inferReturnType body))
-      body' <- withCtx (name : argNames) (withFuncRet name (length args) mRet (withFuncSig name args (mapM (tcClause args) body)))
+      body' <- withCtx (name : argNames) (withFuncRet name (map snd args) mRet (withFuncSig name args (mapM (tcClause args) body)))
       modify (\s -> s { tcCtx = name : tcCtx s
                       , tcFuncs = (name, length args) : tcFuncs s
                       , tcFuncSigs = (name, args) : tcFuncSigs s
                       , tcFuncSigRets =
                           let explicit = annSpan (annTy ty) /= NoSpan
                               retTy = if explicit then ty else fromMaybe ty mRet
-                          in ((name, length args), normalizePrimTy retTy) : tcFuncSigRets s
+                          in ((name, map snd args), normalizePrimTy retTy) : tcFuncSigRets s
                       })
       return (Function name args ty body' isGerund)
     PrimFunc name args ty isGerund -> do
@@ -398,7 +398,7 @@ tcStmt stmt =
         s { tcCtx = name : tcCtx s
           , tcFuncs = (name, length args) : tcFuncs s
           , tcFuncSigs = (name, args) : tcFuncSigs s
-          , tcFuncSigRets = ((name, length args), normalizePrimTy ty) : tcFuncSigRets s
+          , tcFuncSigRets = ((name, map snd args), normalizePrimTy ty) : tcFuncSigRets s
           })
       return (PrimFunc name args ty isGerund)
     Load name ->
@@ -487,12 +487,13 @@ lookupByCandidates env candidates =
         Just v -> Just v
         Nothing -> go ns
 
--- | Lookup a function return type by candidates and arity.
-lookupFuncRet :: [((Identifier, Int), Ty Ann)] -- ^ Return types by identifier and arity.
+-- | Lookup a function return type by candidates and argument types.
+lookupFuncRet :: [(Identifier, Int)] -- ^ Type constructor arities for type comparison.
+              -> [((Identifier, [Ty Ann]), Ty Ann)] -- ^ Return types by identifier and arg types.
               -> [(Identifier, Case)] -- ^ Candidate identifiers.
-              -> Int -- ^ Desired arity.
+              -> [Ty Ann] -- ^ Argument types to match.
               -> Maybe (Ty Ann) -- ^ Matching return type.
-lookupFuncRet env candidates arity =
+lookupFuncRet tyCons env candidates argTys =
   let names = map fst candidates
   in go names
   where
@@ -500,9 +501,12 @@ lookupFuncRet env candidates arity =
        -> Maybe (Ty Ann) -- ^ Matching return type.
     go [] = Nothing
     go (n:ns) =
-      case lookup (n, arity) env of
-        Just v -> Just v
+      case find (\((name, sigArgTys), _) -> name == n && matchArgTypes sigArgTys) env of
+        Just (_, retTy) -> Just retTy
         Nothing -> go ns
+    matchArgTypes sigArgTys =
+      length sigArgTys == length argTys &&
+      and (zipWith (tyEq tyCons) argTys sigArgTys)
 
 -- | Infer a type for an expression when possible.
 inferType :: Exp Ann -- ^ Expression to infer.
@@ -542,20 +546,35 @@ inferType e =
                       case unifyTypes tcTyCons tys actuals of
                         Just subst -> return (Just (applySubst subst resTy))
                         Nothing -> return Nothing
-            _ ->
-              case lookupFuncRet tcFuncSigRets varCandidates (length args) of
-                Just retTy -> return (Just retTy)
-                Nothing ->
-                  let inCtx = any (\(ident, _) -> ident `elem` tcCtx) varCandidates
-                      inSigs = any (\(ident, _) -> ident `elem` map fst tcFuncSigs) varCandidates
-                  in case find (\(ident, _) -> ident `elem` tcCtx) varCandidates of
-                       Just (ident, _) -> return (Just (TyVar (mkAnn (annCase annExp) NoSpan) ident))
-                       Nothing ->
-                         if inCtx || inSigs
-                           then case varCandidates of
-                             (ident, _):_ -> return (Just (TyVar (mkAnn (annCase annExp) NoSpan) ident))
-                             [] -> return Nothing
-                           else return Nothing
+            _ -> do
+              -- Find matching overload by argument types and return its return type
+              argTys <- mapM inferType args
+              let fnNames = map fst varCandidates
+                  sigs = filter (\(n, argsSig) -> n `elem` fnNames && length argsSig == length args) tcFuncSigs
+                  matchSig (name, argsSig) =
+                    let tys = map snd argsSig
+                    in if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys tys)
+                         then lookup (name, tys) tcFuncSigRets
+                         else Nothing
+                  matches = mapMaybe matchSig sigs
+              case matches of
+                retTy:_ -> return (Just retTy)
+                [] ->
+                  -- Fallback: try to find any matching return type
+                  let actuals = catMaybes argTys
+                  in case lookupFuncRet tcTyCons tcFuncSigRets varCandidates actuals of
+                    Just retTy -> return (Just retTy)
+                    Nothing ->
+                      let inCtx = any (\(ident, _) -> ident `elem` tcCtx) varCandidates
+                          inSigs = any (\(ident, _) -> ident `elem` map fst tcFuncSigs) varCandidates
+                      in case find (\(ident, _) -> ident `elem` tcCtx) varCandidates of
+                           Just (ident, _) -> return (Just (TyVar (mkAnn (annCase annExp) NoSpan) ident))
+                           Nothing ->
+                             if inCtx || inSigs
+                               then case varCandidates of
+                                 (ident, _):_ -> return (Just (TyVar (mkAnn (annCase annExp) NoSpan) ident))
+                                 [] -> return Nothing
+                               else return Nothing
         _ -> return Nothing
     Match {clauses} ->
       case clauses of
@@ -579,14 +598,14 @@ inferReturnType clauses = do
 
 -- | Run a computation with a function return type in scope.
 withFuncRet :: Identifier -- ^ Function name.
-            -> Int -- ^ Function arity.
+            -> [Ty Ann] -- ^ Function argument types.
             -> Maybe (Ty Ann) -- ^ Return type when known.
             -> TCM a -- ^ Computation to run.
             -> TCM a -- ^ Result of the computation.
 withFuncRet _ _ Nothing m = m
-withFuncRet name arity (Just ty) m = do
+withFuncRet name argTys (Just ty) m = do
   st <- get
-  put st { tcFuncSigRets = ((name, arity), ty) : tcFuncSigRets st }
+  put st { tcFuncSigRets = ((name, argTys), ty) : tcFuncSigRets st }
   res <- m
   modify (\s -> s { tcFuncSigRets = tcFuncSigRets st })
   return res
@@ -680,12 +699,16 @@ tyEq tyCons t1 t2 =
       tyEq tyCons c1 c2 && length as1 == length as2 && and (zipWith (tyEq tyCons) as1 as2)
     _ -> False
 
--- | Normalize type applications by constructor arity.
+-- | Normalize type applications by constructor arity and primitive types.
 normalizeTy :: [(Identifier, Int)] -- ^ Type constructor arities.
             -> Ty Ann -- ^ Type to normalize.
             -> Ty Ann -- ^ Normalized type.
 normalizeTy tyCons ty =
   case ty of
+    TyInd ann name
+      | isIntIdent name -> TyInt ann
+      | isStringIdent name -> TyString ann
+      | otherwise -> TyInd ann name
     TyApp ann (TyInd _ name) args ->
       case lookup name tyCons of
         Just arity | arity > 0 ->
@@ -696,6 +719,9 @@ normalizeTy tyCons ty =
     Arr ann d i ->
       Arr ann (normalizeTy tyCons d) (normalizeTy tyCons i)
     _ -> ty
+  where
+    isIntIdent (mods, name) = null mods && name == T.pack "tam-sayı"
+    isStringIdent (mods, name) = null mods && name == T.pack "dizge"
 
 -- | Compare identifiers, allowing missing namespaces.
 identMatches :: Identifier -- ^ Left identifier.

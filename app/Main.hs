@@ -920,7 +920,7 @@ main = do
                           sigs'' = nubBy (\(n1, a1) (n2, a2) -> n1 == n2 && a1 == a2) sigs'
                           isGerund = isJust (gerundRoot varName)
                       forM_ sigs'' $ \(name, args) -> do
-                        let mRet = lookup (name, length args) (tcFuncSigRets (replTCState rs))
+                        let mRet = lookup (name, map snd args) (tcFuncSigRets (replTCState rs))
                         line <- liftIO (renderReplSig ctx cache fsm paramTyCons (replTyMods rs) isGerund varName name args mRet)
                         lift (outputStrLn (T.unpack line))
                       loop rs
