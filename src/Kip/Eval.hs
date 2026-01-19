@@ -620,6 +620,10 @@ primImpl mPath ident args = do
     ([], "uzunluk") -> Just primStringLength
     ([], "birleşim") -> Just primStringConcat
     (["tam", "sayı"], "hal") -> Just primStringToInt
+    ([], "ters") ->
+      case args of
+        [(_, TyString _)] -> Just primStringReverse
+        _ -> Nothing
     ([], "toplam") -> Just (primIntBin "toplam" (+))
     ([], "çarpım") -> Just (primIntBin "çarpım" (*))
     ([], "fark") -> Just (primIntBin "fark" (-))
@@ -652,6 +656,7 @@ primFile ident =
     ([], "uzunluk") -> Just "temel-dizge.kip"
     ([], "birleşim") -> Just "temel-dizge.kip"
     (["tam", "sayı"], "hal") -> Just "temel-dizge.kip"
+    ([], "ters") -> Just "temel-dizge.kip"
     ([], "toplam") -> Just "temel-tam-sayı.kip"
     ([], "çarpım") -> Just "temel-tam-sayı.kip"
     ([], "fark") -> Just "temel-tam-sayı.kip"
@@ -780,6 +785,15 @@ primStringConcat args =
     [StrLit ann a, StrLit _ b] ->
       return (StrLit ann (a <> b))
     _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], "birleşim") []) args)
+
+-- | Primitive string reverse.
+primStringReverse :: [Exp Ann] -- ^ Arguments.
+                  -> EvalM (Exp Ann) -- ^ Result expression.
+primStringReverse args =
+  case args of
+    [StrLit ann s] ->
+      return (StrLit ann (T.reverse s))
+    _ -> return (App (mkAnn Nom NoSpan) (Var (mkAnn Nom NoSpan) ([], "ters") []) args)
 
 -- | Primitive to parse a string into an integer option.
 primStringToInt :: [Exp Ann] -- ^ Arguments.

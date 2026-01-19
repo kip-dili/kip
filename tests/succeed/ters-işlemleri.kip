@@ -1,0 +1,12 @@
+(* Dizge tersi testi. *)
+"merhaba"'nın tersini yaz.
+
+(* Liste tersi testi. *)
+(bu tam-sayı listesini) bastırmak,
+  bu boşsa,
+    durmaktır,
+  ilkin devama ekiyse,
+    ilki yazıp,
+    devamı bastırmaktır.
+
+((1'in (2'nin (3'ün boşa ekine) ekine) ekinin) tersini) bastır.
