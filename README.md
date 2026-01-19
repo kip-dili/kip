@@ -207,9 +207,12 @@ stack install
 
 ## WASM Playground
 
-A browser playground build is available under `playground/`. It compiles the
+A browser playground can be built from source under `playground/`. It compiles the
 non-interactive runner (`kip-playground`) to `wasm32-wasi` and ships a small
 HTML/JS harness that runs Kip in the browser.
+
+> [!NOTE]
+> The `playground/dist/` directory is not included in the repository. You must build it locally following the instructions below.
 
 See `playground/README.md` for prerequisites, toolchain setup, and build steps.
 
@@ -275,7 +278,8 @@ lib/
 
 tests/
 ├── succeed/            - Passing golden tests (.kip + .out + optional .in)
-└── fail/               - Failing golden tests (.kip + .err)
+├── fail/               - Failing golden tests (.kip + .err)
+└── repl/               - REPL interaction tests
 
 vendor/
 └── trmorph.fst        - TRmorph transducer
