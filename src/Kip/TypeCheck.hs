@@ -31,6 +31,7 @@ data TCState =
     , tcVals :: [(Identifier, Exp Ann)] -- ^ Value bindings for inlining.
     , tcCtors :: [(Identifier, ([Ty Ann], Ty Ann))] -- ^ Constructor signatures.
     , tcTyCons :: [(Identifier, Int)] -- ^ Type constructor arities.
+    , tcGerunds :: [Identifier] -- ^ Gerund (effectful) functions.
     }
   deriving (Generic)
 
@@ -45,11 +46,12 @@ instance Binary TCState where
     B.put tcVals
     B.put tcCtors
     B.put tcTyCons
-  get = MkTCState <$> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get
+    B.put tcGerunds
+  get = MkTCState <$> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState [] [] [] [] [] [] [] []
+emptyTCState = MkTCState [] [] [] [] [] [] [] [] []
 
 -- | Type checker errors.
 data TCError =
@@ -123,9 +125,6 @@ tcExp1With allowEffect e =
       args' <- mapM (tcExp1With False) args
       case fn' of
         Var {annExp = annFn, varName, varCandidates} -> do
-          case varCandidates of
-            (ident, _):_ -> unless allowEffect (rejectReadEffect annApp ident)
-            [] -> return ()
           MkTCState{tcFuncSigs, tcTyCons, tcCtors} <- get
           let tyNames = map fst tcTyCons
               funcNames = map fst tcFuncSigs
@@ -189,11 +188,11 @@ tcExp1With allowEffect e =
           bindExp' <- tcExp1With True bindExp
           mTy <- inferType bindExp'
           let tys = maybe [] (\t -> [(bindName, t)]) mTy
-          second' <- withCtx [bindName] (withVarTypes tys (tcExp1With False second))
+          second' <- withCtx [bindName] (withVarTypes tys (tcExp1With allowEffect second))
           return (Seq annSeq (Bind (annExp first) bindName bindExp') second')
         _ -> do
           first' <- tcExp1With True first
-          second' <- tcExp1With False second
+          second' <- tcExp1With allowEffect second
           return (Seq annSeq first' second')
     Match {annExp, scrutinee, clauses} -> do
       scrutinee' <- expectOne (tcExp scrutinee)
@@ -210,17 +209,18 @@ tcExp1With allowEffect e =
             IntLit {} -> [(([], T.pack "_scrutinee"), TyInt (mkAnn Nom NoSpan))]
             StrLit {} -> [(([], T.pack "_scrutinee"), TyString (mkAnn Nom NoSpan))]
             _ -> []  -- Skip check for complex expressions
-      clauses' <- mapM (tcClause scrutArg) clauses
+      clauses' <- mapM (tcClause scrutArg allowEffect) clauses
       return (Match annExp scrutinee' clauses')
     Let {annExp, varName, body} ->
       withCtx [varName] (tcExp1With allowEffect body)
 
--- | Reject pure uses of effectful read primitives.
+-- | Reject pure uses of effectful read primitives and gerund functions.
 rejectReadEffect :: Ann -- ^ Expression annotation.
                  -> Identifier -- ^ Identifier being checked.
                  -> TCM () -- ^ No result.
-rejectReadEffect ann ident =
-  when (ident == ([], T.pack "oku")) $
+rejectReadEffect ann ident = do
+  MkTCState{tcGerunds} <- get
+  when (ident == ([], T.pack "oku") || ident `elem` tcGerunds) $
     lift (throwE (NoType (annSpan ann)))
 
 -- | Apply a grammatical case to a value expression.
@@ -383,7 +383,7 @@ tcStmt stmt =
     Function name args ty body isGerund -> do
       let argNames = map fst args
       mRet <- withCtx (name : argNames) (withVarTypes args (inferReturnType body))
-      body' <- withCtx (name : argNames) (withFuncRet name (map snd args) mRet (withFuncSig name args (mapM (tcClause args) body)))
+      body' <- withCtx (name : argNames) (withFuncRet name (map snd args) mRet (withFuncSig name args (mapM (tcClause args isGerund) body)))
       modify (\s -> s { tcCtx = name : tcCtx s
                       , tcFuncs = (name, length args) : tcFuncs s
                       , tcFuncSigs = (name, args) : tcFuncSigs s
@@ -391,6 +391,7 @@ tcStmt stmt =
                           let explicit = annSpan (annTy ty) /= NoSpan
                               retTy = if explicit then ty else fromMaybe ty mRet
                           in ((name, map snd args), normalizePrimTy retTy) : tcFuncSigRets s
+                      , tcGerunds = if isGerund then name : tcGerunds s else tcGerunds s
                       })
       return (Function name args ty body' isGerund)
     PrimFunc name args ty isGerund -> do
@@ -399,6 +400,7 @@ tcStmt stmt =
           , tcFuncs = (name, length args) : tcFuncs s
           , tcFuncSigs = (name, args) : tcFuncSigs s
           , tcFuncSigRets = ((name, map snd args), normalizePrimTy ty) : tcFuncSigRets s
+          , tcGerunds = if isGerund then name : tcGerunds s else tcGerunds s
           })
       return (PrimFunc name args ty isGerund)
     Load name ->
@@ -426,7 +428,7 @@ tcStmt stmt =
                       })
       return (PrimType name)
     ExpStmt e -> do
-      e' <- expectOne (tcExp e)
+      e' <- tcExp1With True e
       return (ExpStmt e')
 
 -- | Reorder values to match expected grammatical cases.
@@ -451,14 +453,15 @@ reorderByCases expected actual xs
 
 -- | Type-check a clause in the context of argument types.
 tcClause :: [Arg Ann] -- ^ Argument signature.
+         -> Bool -- ^ Whether this is a gerund function (allows effects).
          -> Clause Ann -- ^ Clause to check.
          -> TCM (Clause Ann) -- ^ Type-checked clause.
-tcClause args (Clause pat body) = do
+tcClause args isGerund (Clause pat body) = do
   let argNames = map fst args
       patNames = patIdentifiers pat
   patTys <- inferPatTypes pat args
   let argTys = args
-  body' <- withCtx (patNames ++ argNames) (withVarTypes (patTys ++ argTys) (tcExp1 body))
+  body' <- withCtx (patNames ++ argNames) (withVarTypes (patTys ++ argTys) (tcExp1With isGerund body))
   return (Clause pat body')
 
 -- | Collect identifiers bound by a pattern.
@@ -819,15 +822,17 @@ registerForwardDecls = mapM_ registerStmt
                  -> TCM () -- ^ No result.
     registerStmt stmt =
       case stmt of
-        Function name args _ _ _ ->
+        Function name args _ _ isGerund ->
           modify (\s -> s { tcCtx = name : tcCtx s
                           , tcFuncs = (name, length args) : tcFuncs s
                           , tcFuncSigs = (name, args) : tcFuncSigs s
+                          , tcGerunds = if isGerund then name : tcGerunds s else tcGerunds s
                           })
-        PrimFunc name args _ _ ->
+        PrimFunc name args _ isGerund ->
           modify (\s -> s { tcCtx = name : tcCtx s
                           , tcFuncs = (name, length args) : tcFuncs s
                           , tcFuncSigs = (name, args) : tcFuncSigs s
+                          , tcGerunds = if isGerund then name : tcGerunds s else tcGerunds s
                           })
         Defn name _ _ ->
           modify (\s -> s { tcCtx = name : tcCtx s })
