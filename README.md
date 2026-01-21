@@ -36,7 +36,6 @@ For you to get a taste of what Kip looks like, here is an example program that p
 
 - [Language Features](#language-features)
 - [Installation](#installation)
-- [Example Program](#example-program)
 - [WASM Playground](#wasm-playground)
 - [Bytecode Cache](#bytecode-cache)
 - [Project Structure](#project-structure)
@@ -224,31 +223,6 @@ If you want to force a fresh parse and type-check, delete the `.iz` file next to
 
 > [!IMPORTANT]
 > `.iz` files include a compiler hash. If the compiler changes, the cache is invalidated automatically.
-
-## Example Program
-
-```
-(* Natural numbers *)
-Bir doğal-sayı
-ya sıfır
-ya da bir doğal-sayının ardılı
-olabilir.
-
-(* Define some constants *)
-sıfırın ardılına bir diyelim.
-birin ardılına iki diyelim.
-ikinin ardılına üç diyelim.
-
-(* Addition function *)
-(bu doğal-sayıyla) (şu doğal-sayının) toplamı,
-  bu sıfırsa,
-    şu,
-  öncülün ardılıysa,
-    (öncülle) (şunun ardılının) toplamıdır.
-
-(* Print result *)
-(ikiyle üçün toplamını) yaz.
-```
 
 ## Project Structure
 
