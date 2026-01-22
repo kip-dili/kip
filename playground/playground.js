@@ -33,6 +33,43 @@ const keywordList = [
 const keywordSet = new Set(keywordList);
 const letterPattern = /\p{L}/u;
 
+const jsKeywordList = [
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "default",
+  "else",
+  "export",
+  "extends",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "let",
+  "new",
+  "return",
+  "switch",
+  "throw",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "await",
+  "async",
+  "of",
+];
+
+const jsLiteralList = ["true", "false", "null", "undefined"];
+const jsKeywordSet = new Set(jsKeywordList);
+const jsLiteralSet = new Set(jsLiteralList);
+
 const examples = [
   { id: "selamlamak", file: "selamlamak.kip" },
   { id: "gün-örneği", file: "gün-örneği.kip" },
@@ -60,6 +97,102 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function highlightJsTokens(text) {
+  const tokenPattern = /\b[A-Za-z_]\w*\b|\d+(?:\.\d+)?|[()[\]{}]/g;
+  let result = "";
+  let lastIndex = 0;
+  let match;
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    const token = match[0];
+    const start = match.index;
+    const end = start + token.length;
+    result += escapeHtml(text.slice(lastIndex, start));
+
+    if (token === "(" || token === ")" || token === "[" || token === "]" || token === "{" || token === "}") {
+      result += `<span class="kip-paren">${token}</span>`;
+    } else if (/^\d/.test(token)) {
+      result += `<span class="kip-literal">${escapeHtml(token)}</span>`;
+    } else if (jsLiteralSet.has(token)) {
+      result += `<span class="kip-literal">${escapeHtml(token)}</span>`;
+    } else if (jsKeywordSet.has(token)) {
+      result += `<span class="kip-keyword">${escapeHtml(token)}</span>`;
+    } else {
+      result += escapeHtml(token);
+    }
+
+    lastIndex = end;
+  }
+
+  result += escapeHtml(text.slice(lastIndex));
+  return result;
+}
+
+function highlightJs(text) {
+  let result = "";
+  let lastIndex = 0;
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (ch === "/" && next === "/") {
+      result += highlightJsTokens(text.slice(lastIndex, i));
+      let j = i + 2;
+      while (j < text.length && text[j] !== "\n") {
+        j += 1;
+      }
+      result += `<span class="kip-comment">${escapeHtml(text.slice(i, j))}</span>`;
+      i = j;
+      lastIndex = i;
+      continue;
+    }
+
+    if (ch === "/" && next === "*") {
+      result += highlightJsTokens(text.slice(lastIndex, i));
+      let j = i + 2;
+      while (j < text.length) {
+        if (text[j] === "*" && text[j + 1] === "/") {
+          j += 2;
+          break;
+        }
+        j += 1;
+      }
+      result += `<span class="kip-comment">${escapeHtml(text.slice(i, j))}</span>`;
+      i = j;
+      lastIndex = i;
+      continue;
+    }
+
+    if (ch === "\"" || ch === "'" || ch === "`") {
+      result += highlightJsTokens(text.slice(lastIndex, i));
+      const quote = ch;
+      let j = i + 1;
+      while (j < text.length) {
+        if (text[j] === "\\\\") {
+          j += 2;
+          continue;
+        }
+        if (text[j] === quote) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      result += `<span class="kip-literal">${escapeHtml(text.slice(i, j))}</span>`;
+      i = j;
+      lastIndex = i;
+      continue;
+    }
+
+    i += 1;
+  }
+
+  result += highlightJsTokens(text.slice(lastIndex));
+  return result;
 }
 
 function highlightNonString(text) {
@@ -418,7 +551,7 @@ function handleWorkerMessage(event) {
       if (activeMode === "codegen") {
         codegenLines.push(line ?? "");
         if (codegenOutputEl) {
-          codegenOutputEl.textContent = codegenLines.join("\n");
+          codegenOutputEl.innerHTML = highlightJs(codegenLines.join("\n"));
         }
       } else {
         appendTerminalLine(line ?? "");
@@ -428,7 +561,7 @@ function handleWorkerMessage(event) {
       if (activeMode === "codegen") {
         codegenLines.push(line ?? "");
         if (codegenOutputEl) {
-          codegenOutputEl.textContent = codegenLines.join("\n");
+          codegenOutputEl.innerHTML = highlightJs(codegenLines.join("\n"));
         }
       } else {
         appendTerminalLine(line ?? "");
@@ -457,7 +590,7 @@ function handleWorkerMessage(event) {
       if (activeMode === "codegen") {
         codegenLines.push(error ?? "Unknown error");
         if (codegenOutputEl) {
-          codegenOutputEl.textContent = codegenLines.join("\n");
+          codegenOutputEl.innerHTML = highlightJs(codegenLines.join("\n"));
         }
       } else {
         appendTerminalLine(error ?? "Unknown error");
@@ -539,7 +672,7 @@ function runCodegen() {
   worker.addEventListener("message", handleWorkerMessage);
   worker.addEventListener("error", (event) => {
     codegenLines.push(String(event.message || event.error || event));
-    codegenOutputEl.textContent = codegenLines.join("\n");
+    codegenOutputEl.innerHTML = highlightJs(codegenLines.join("\n"));
     runBtn.disabled = false;
     codegenBtn.disabled = false;
   });
