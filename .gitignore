@@ -30,3 +30,4 @@ stack.yaml.lock
 *.iz
 AGENTS.md
 CLAUDE.md
+.vscode/
