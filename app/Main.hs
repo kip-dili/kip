@@ -1616,7 +1616,7 @@ main = do
           let cachePath = cacheFilePath absPath
           liftIO (loadCachedModule cachePath) >>= \case
             Just cached -> do
-              depPaths <- liftIO $ mapM canonicalizePath (map (\(p, _, _, _) -> p) (dependencies (metadata cached)))
+              depPaths <- liftIO $ mapM (canonicalizePath . (\(p, _, _, _) -> p)) (dependencies (metadata cached))
               let pst' = fromCachedParserState fsm uCache dCache (cachedParser cached)
                   tcSt' = fromCachedTCState (cachedTC cached)
                   loaded = Set.fromList (absPath : depPaths)

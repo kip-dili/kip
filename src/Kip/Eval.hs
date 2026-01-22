@@ -279,8 +279,8 @@ matchCtor ctor vars v =
 -- | Try resolving an ip-converb function to its base name when prim lookup fails.
 -- | Recognize the random primitive in either split or dashed identifier form.
 isRandomCandidate :: [(Identifier, Case)] -> Bool
-isRandomCandidate candidates =
-  any (\(ident, _) -> ident == (["sayı"], "çek") || ident == ([], "sayı-çek")) candidates
+isRandomCandidate =
+  any (\(ident, _) -> ident == (["sayı"], "çek") || ident == ([], "sayı-çek"))
 -- | Apply a record selector or fall back when out of range.
 applySelector :: Int -- ^ Selector index.
               -> Exp Ann -- ^ Argument expression.
