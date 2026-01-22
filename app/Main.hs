@@ -41,6 +41,7 @@ import Kip.Eval hiding (Unknown, inferType)
 import Kip.TypeCheck
 import Kip.Render
 import Kip.Cache
+import Kip.Codegen.JS (codegenProgram)
 import Data.Word
 import Crypto.Hash.SHA256 (hash)
 import qualified Data.ByteString as BS
@@ -67,6 +68,7 @@ data CliMode
   | ModeTest
   | ModeExec
   | ModeBuild
+  | ModeCodegen Text
   deriving (Eq, Show)
 
 -- | Parsed CLI options.
@@ -762,20 +764,38 @@ main = do
       showDefn = optMode opts == ModeRepl || optMode opts == ModeTest
       basicCtx = RenderCtx lang useColor Nothing Nothing Nothing Nothing
       renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm) (Just upsCache) (Just downsCache)
-  (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-    runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
   case optMode opts of
     ModeTest -> do
+      (preludePst, preludeTC, preludeEval, preludeLoaded) <-
+        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
       _ <- runReaderT (runFiles showDefn showDefn False preludePst preludeTC preludeEval moduleDirs preludeLoaded (optFiles opts)) renderCtx
       exitSuccess
     ModeExec -> do
+      (preludePst, preludeTC, preludeEval, preludeLoaded) <-
+        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
       _ <- runReaderT (runFiles False False False preludePst preludeTC preludeEval moduleDirs preludeLoaded (optFiles opts)) renderCtx
       exitSuccess
+    ModeCodegen target -> do
+      when (null (optFiles opts)) $
+        die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
+      case target of
+        "js" -> do
+          -- Parse and type-check files, collect all statements
+          (codegenPst, codegenTC, codegenLoaded) <-
+            runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs fsm upsCache downsCache) renderCtx
+          allStmts <- runReaderT (codegenFiles codegenPst codegenTC moduleDirs codegenLoaded (optFiles opts)) renderCtx
+          -- Emit JS and print
+          TIO.putStrLn (codegenProgram allStmts)
+          exitSuccess
+        _ ->
+          die ("Unknown codegen target: " ++ T.unpack target)
     ModeBuild -> do
+      (preludePst, preludeTC, preludeEval, preludeLoaded) <-
+        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFileOrDir) basicCtx
       buildTargets <- resolveBuildTargets (optFiles opts)
@@ -788,10 +808,14 @@ main = do
     ModeRepl ->
       if null (optFiles opts)
         then do
+          (preludePst, preludeTC, preludeEval, preludeLoaded) <-
+            runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
           emitMsgIO renderCtx (MsgHeader title)
           emitMsgIO renderCtx (MsgSeparator title)
           runInputT defaultSettings (runReaderT (loop (ReplState (parserCtx preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
         else do
+          (preludePst, preludeTC, preludeEval, preludeLoaded) <-
+            runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
           when showHeader $ do
             emitMsgIO renderCtx (MsgHeader title)
             emitMsgIO renderCtx (MsgSeparator title)
@@ -835,6 +859,11 @@ main = do
       flag' ModeExec (long "exec" <> help "Run files and exit (no REPL, no definition logs)")
         <|> flag' ModeTest (long "test" <> help "Test mode: run files without REPL (definition logs on)")
         <|> flag' ModeBuild (long "build" <> help "Build cache files for the given files or directories")
+        <|> (ModeCodegen . T.pack <$> strOption
+              ( long "codegen"
+              <> metavar "TARGET"
+              <> help "Codegen target for the given files (e.g. js)"
+              ))
         <|> pure ModeRepl
     -- | Locate the morphology FST data file or exit.
     locateTrmorph :: Lang -- ^ Language selection.
@@ -1118,6 +1147,103 @@ main = do
               emitMsgTCtx (MsgPrimTypeAdded name)
             _ -> return ()
           return (Just evalSt')
+    -- | Collect statements from files for code generation (parse, type-check, no eval).
+    codegenFiles :: ParserState -- ^ Base parser state.
+                 -> TCState -- ^ Base type checker state.
+                 -> [FilePath] -- ^ Module search paths.
+                 -> Set FilePath -- ^ Already loaded files.
+                 -> [FilePath] -- ^ Files to codegen.
+                 -> AppM [Stmt Ann] -- ^ Collected statements.
+    codegenFiles basePst baseTC moduleDirs loaded files = do
+      (_, _, stmts, _) <- foldM' (collectFileStmts moduleDirs) (basePst, baseTC, [], loaded) files
+      return stmts
+
+    -- | Collect statements from a single file (recursively handles Load).
+    collectFileStmts :: [FilePath] -- ^ Module search paths.
+                     -> (ParserState, TCState, [Stmt Ann], Set FilePath) -- ^ Current state.
+                     -> FilePath -- ^ File to process.
+                     -> AppM (ParserState, TCState, [Stmt Ann], Set FilePath) -- ^ Updated state.
+    collectFileStmts moduleDirs (pst, tcSt, accStmts, loaded) path = do
+      exists <- liftIO (doesFileExist path)
+      unless exists $ do
+        msg <- renderMsg (MsgFileNotFound path)
+        liftIO (die (T.unpack msg))
+      absPath <- liftIO (canonicalizePath path)
+      if Set.member absPath loaded
+        then return (pst, tcSt, accStmts, loaded)
+        else do
+          (uCache, dCache) <- requireParserCaches
+          (_, fsm) <- requireCacheFsm
+          let cachePath = cacheFilePath absPath
+          mCached <- liftIO (loadCachedModule cachePath)
+          case mCached of
+            Just cached -> do
+              let loaded' = Set.insert absPath loaded
+                  pstCached = fromCachedParserState fsm uCache dCache (cachedParser cached)
+                  tcCached = fromCachedTCState (cachedTC cached)
+                  stmts = cachedTypedStmts cached
+              (_, _, newStmts, loaded'') <-
+                foldM' (collectCachedStmt moduleDirs) (pst, tcSt, [], loaded') stmts
+              return (pstCached, tcCached, accStmts ++ newStmts, loaded'')
+            Nothing -> do
+              input <- liftIO (TIO.readFile path)
+              liftIO (parseFromFile pst input) >>= \case
+                Left err -> do
+                  emitMsgIOCtx (MsgParseError err)
+                  msg <- renderMsg MsgRunFailed
+                  liftIO (die (T.unpack msg))
+                Right (stmts, pst') -> do
+                  let paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
+                  -- Type-check
+                  liftIO (runTCM (registerForwardDecls stmts) tcSt) >>= \case
+                    Left tcErr -> do
+                      msg <- renderMsg (MsgTCError tcErr (Just input) paramTyCons (parserTyMods pst'))
+                      liftIO (die (T.unpack msg))
+                    Right (_, tcStWithDecls) -> do
+                      -- Type-check each statement
+                      (pst'', tcSt'', newStmts, loaded') <- foldM' (collectStmt moduleDirs absPath paramTyCons (parserTyMods pst') input)
+                        (pst', tcStWithDecls, [], Set.insert absPath loaded) stmts
+                      return (pst'', tcSt'', accStmts ++ newStmts, loaded')
+
+    -- | Collect a single statement, recursively loading modules.
+    collectStmt :: [FilePath] -- ^ Module search paths.
+                -> FilePath -- ^ Current file path.
+                -> [Identifier] -- ^ Type parameter names for error messages.
+                -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
+                -> Text -- ^ Source input.
+                -> (ParserState, TCState, [Stmt Ann], Set FilePath) -- ^ Current state.
+                -> Stmt Ann -- ^ Statement to process.
+                -> AppM (ParserState, TCState, [Stmt Ann], Set FilePath) -- ^ Updated state.
+    collectStmt moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, accStmts, loaded) stmt =
+      case stmt of
+        Load name -> do
+          path <- resolveModulePath moduleDirs name
+          absPath <- liftIO (canonicalizePath path)
+          if Set.member absPath loaded
+            then return (pst, tcSt, accStmts, loaded)
+            else collectFileStmts moduleDirs (pst, tcSt, accStmts, loaded) path
+        _ -> do
+          -- Type-check the statement
+          liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
+            Left tcErr -> do
+              msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
+              liftIO (die (T.unpack msg))
+            Right (stmt', tcSt') ->
+              return (pst, tcSt', accStmts ++ [stmt'], loaded)
+
+    -- | Collect a cached statement, expanding Load statements without re-typechecking.
+    collectCachedStmt :: [FilePath] -- ^ Module search paths.
+                      -> (ParserState, TCState, [Stmt Ann], Set FilePath) -- ^ Current state.
+                      -> Stmt Ann -- ^ Statement to process.
+                      -> AppM (ParserState, TCState, [Stmt Ann], Set FilePath) -- ^ Updated state.
+    collectCachedStmt moduleDirs (pst, tcSt, accStmts, loaded) stmt =
+      case stmt of
+        Load name -> do
+          path <- resolveModulePath moduleDirs name
+          collectFileStmts moduleDirs (pst, tcSt, accStmts, loaded) path
+        _ ->
+          return (pst, tcSt, accStmts ++ [stmt], loaded)
+
     -- | Run multiple files through parsing, type checking, and evaluation.
     runFiles :: Bool -- ^ Whether to show definitions.
              -> Bool -- ^ Whether to show load messages.
@@ -1184,9 +1310,9 @@ main = do
                       msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons (parserTyMods pst'))
                       liftIO (die (T.unpack msg))
                     Right (_, tcStWithDecls) -> do
-                      let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded)
-                      (pstFinal, tcSt', evalSt', loaded') <-
-                        foldM' (runStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
+                      let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded, [])
+                      (pstFinal, tcSt', evalSt', loaded', typedStmts) <-
+                        foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
 
                       -- Save to cache
                       let depStmts = [name | Load name <- stmts]
@@ -1220,6 +1346,7 @@ main = do
                               cachedModule = CachedModule
                                 { metadata = meta
                                 , cachedStmts = stmts
+                                , cachedTypedStmts = typedStmts
                                 , cachedParser = toCachedParserState pstFinal
                                 , cachedTC = toCachedTCState tcSt'
                                 , cachedEval = toCachedEvalState evalSt'
@@ -1290,6 +1417,70 @@ main = do
                       msg <- renderMsg (MsgEvalError evalErr)
                       liftIO (die (T.unpack msg))
                     Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
+
+    -- | Run a single statement while collecting type-checked statements for caching.
+    runStmtCollect :: Bool -- ^ Whether to show definitions.
+                   -> Bool -- ^ Whether to show load messages.
+                   -> Bool -- ^ Whether to build-only.
+                   -> [FilePath] -- ^ Module search paths.
+                   -> FilePath -- ^ Current file path.
+                   -> [Identifier] -- ^ Type parameters for rendering.
+                   -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
+                   -> [Identifier] -- ^ Non-gerund primitive refs.
+                   -> Text -- ^ Source input.
+                   -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Current states.
+                   -> Stmt Ann -- ^ Statement to run.
+                   -> AppM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Updated states.
+    runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAcc) stmt =
+      case stmt of
+        Load name -> do
+          path <- resolveModulePath moduleDirs name
+          absPath <- liftIO (canonicalizePath path)
+          if Set.member absPath loaded
+            then do
+              when showLoad $
+                emitMsgIOCtx (MsgLoaded name)
+              return (pst, tcSt, evalSt, loaded, typedAcc ++ [stmt])
+            else do
+              (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
+              when showLoad $
+                emitMsgIOCtx (MsgLoaded name)
+              return (pst', tcSt', evalSt', loaded', typedAcc ++ [stmt])
+        _ ->
+          liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
+            Left tcErr -> do
+              msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
+              liftIO (die (T.unpack msg))
+            Right (stmt', tcSt') -> do
+              when showDefn $
+                case stmt' of
+                  Defn name _ _ -> emitMsgIOCtx (MsgDefnAdded name)
+                  Function name args retTy _ isGerund ->
+                    if isExplicitRetTy retTy
+                      then emitMsgIOCtx (MsgFuncLoaded name args isGerund paramTyCons tyMods)
+                      else emitMsgIOCtx (MsgFuncAdded name args isGerund paramTyCons tyMods)
+                  PrimFunc name args _ isGerund -> do
+                    when (name `elem` primRefs || isWritePrim name) $
+                      emitMsgIOCtx (MsgPrimFuncAdded name args isGerund paramTyCons tyMods)
+                  NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
+                  PrimType name -> emitMsgIOCtx (MsgPrimTypeAdded name)
+                  _ -> return ()
+              if buildOnly
+                then
+                  case stmt' of
+                    ExpStmt _ -> return (pst, tcSt', evalSt, loaded, typedAcc ++ [stmt'])
+                    _ ->
+                      liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
+                        Left evalErr -> do
+                          msg <- renderMsg (MsgEvalError evalErr)
+                          liftIO (die (T.unpack msg))
+                        Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, typedAcc ++ [stmt'])
+                else
+                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
+                    Left evalErr -> do
+                      msg <- renderMsg (MsgEvalError evalErr)
+                      liftIO (die (T.unpack msg))
+                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, typedAcc ++ [stmt'])
 
     -- | Collect non-gerund primitive references from statements.
     collectNonGerundRefs :: [Stmt Ann] -- ^ Statements to inspect.
@@ -1406,6 +1597,33 @@ main = do
           liftIO (parseFromFile pst input) >>= \case
             Left _ -> return pst
             Right (_, pst') -> return pst'
+
+    -- | Load the prelude module for code generation (no eval, cached when possible).
+    loadPreludeCodegenState :: Bool -- ^ Whether to skip the prelude.
+                            -> [FilePath] -- ^ Module search paths.
+                            -> FSM -- ^ Morphology FSM.
+                            -> MorphCache -- ^ Shared ups cache.
+                            -> MorphCache -- ^ Shared downs cache.
+                            -> AppM (ParserState, TCState, Set FilePath) -- ^ Loaded parser/TC states.
+    loadPreludeCodegenState noPrelude moduleDirs fsm uCache dCache = do
+      let pst = newParserStateWithCaches fsm uCache dCache
+          tcSt = emptyTCState
+      if noPrelude
+        then return (pst, tcSt, Set.empty)
+        else do
+          path <- resolveModulePath moduleDirs ([], T.pack "giriş")
+          absPath <- liftIO (canonicalizePath path)
+          let cachePath = cacheFilePath absPath
+          liftIO (loadCachedModule cachePath) >>= \case
+            Just cached -> do
+              depPaths <- liftIO $ mapM canonicalizePath (map (\(p, _, _, _) -> p) (dependencies (metadata cached)))
+              let pst' = fromCachedParserState fsm uCache dCache (cachedParser cached)
+                  tcSt' = fromCachedTCState (cachedTC cached)
+                  loaded = Set.fromList (absPath : depPaths)
+              return (pst', tcSt', loaded)
+            Nothing -> do
+              (pst', tcSt', _, loaded') <- collectFileStmts moduleDirs (pst, tcSt, [], Set.empty) path
+              return (pst', tcSt', loaded')
 
     -- | Load the prelude module into parser/type/eval states unless disabled.
     loadPreludeState :: Bool -- ^ Whether to skip the prelude.

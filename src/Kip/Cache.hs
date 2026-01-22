@@ -57,6 +57,7 @@ instance Binary CacheMetadata
 data CachedModule = CachedModule
   { metadata      :: !CacheMetadata -- ^ Cache validation metadata.
   , cachedStmts   :: ![Stmt Ann] -- ^ Parsed statements.
+  , cachedTypedStmts :: ![Stmt Ann] -- ^ Type-checked statements.
   , cachedParser  :: !CachedParserState -- ^ Parser state snapshot.
   , cachedTC      :: !CachedTCState -- ^ Type checker state snapshot.
   , cachedEval    :: !CachedEvalState -- ^ Evaluator state snapshot.

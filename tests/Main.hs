@@ -1,12 +1,14 @@
 -- | Golden tests for the Kip CLI.
 module Main where
 
+import Control.Exception (bracket)
 import Data.List (isInfixOf, sort, stripPrefix)
 import Data.Maybe (fromMaybe)
-import System.Directory (doesFileExist, doesDirectoryExist, findExecutable, listDirectory)
+import System.Directory (doesFileExist, doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath ((</>), replaceExtension, takeExtension)
+import System.IO (hClose, openTempFile)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -15,18 +17,26 @@ import Test.Tasty.HUnit
 main :: IO () -- ^ Test entry point.
 main = do
   kipPath <- locateKip
+  nodePath <- locateNode
   succeedFiles <- listKipFiles ("tests" </> "succeed")
   failFiles <- listKipFiles ("tests" </> "fail")
   replFiles <- listReplFiles ("tests" </> "repl")
   let succeedTests = map (mkTest kipPath True) succeedFiles
       failTests = map (mkTest kipPath False) failFiles
       replTests = map (mkReplTest kipPath) replFiles
+      jsTests = case nodePath of
+        Nothing -> []
+        Just node -> map (mkJsTest kipPath node) succeedFiles
+      jsGroupName = case nodePath of
+        Nothing -> "js (skipped: node missing)"
+        Just _ -> "js"
   defaultMain $
     testGroup
       "kip"
       [ testGroup "succeed" succeedTests
       , testGroup "fail" failTests
       , testGroup "repl" replTests
+      , testGroup jsGroupName jsTests
       ]
 
 -- | Resolve the Kip executable path from env or PATH.
@@ -41,6 +51,14 @@ locateKip = do
         Just path -> return path
         Nothing ->
           fail "kip executable not found. Run stack install or set KIP_BIN."
+
+-- | Resolve the Node.js executable path from env or PATH.
+locateNode :: IO (Maybe FilePath) -- ^ Resolved Node.js executable path.
+locateNode = do
+  envPath <- lookupEnv "NODE_BIN"
+  case envPath of
+    Just path -> return (Just path)
+    Nothing -> findExecutable "node"
 
 -- | List `.kip` files in a directory, sorted for stable test order.
 listKipFiles :: FilePath -- ^ Directory to scan.
@@ -113,6 +131,51 @@ mkReplTest kipPath path =
             let expected = normalizeLines outText
                 actual = normalizeReplLines stdout
             in assertEqual (renderOutputMismatch expected actual) expected actual
+
+-- | Compare native execution output with generated JS output.
+mkJsTest :: FilePath -- ^ Kip executable path.
+         -> FilePath -- ^ Node.js executable path.
+         -> FilePath -- ^ Test file path.
+         -> TestTree -- ^ Test case.
+mkJsTest kipPath nodePath path =
+  testCase ("js:" ++ path) $ do
+    inputText <- readIfExists (replaceExtension path "in")
+    let stdinText = fromMaybe "" inputText
+    (exitCode, kipOut, kipErr) <- readProcessWithExitCode kipPath ["--exec", path] stdinText
+    case exitCode of
+      ExitFailure _ ->
+        assertFailure (path ++ " failed in kip --exec:\n" ++ kipOut ++ kipErr)
+      ExitSuccess -> do
+        (jsExit, jsSrc, jsErr) <- readProcessWithExitCode kipPath ["--codegen", "js", "--no-prelude", "lib/giriş.kip", path] ""
+        case jsExit of
+          ExitFailure _ ->
+            assertFailure (path ++ " failed in kip --codegen js:\n" ++ jsSrc ++ jsErr)
+          ExitSuccess -> do
+            (nodeExit, nodeOut, nodeErr) <- runNodeOnJs nodePath jsSrc stdinText
+            case nodeExit of
+              ExitFailure _ ->
+                assertFailure (path ++ " failed under node:\n" ++ nodeOut ++ nodeErr)
+              ExitSuccess -> do
+                let expected = normalizeLines kipOut
+                    actual = normalizeLines nodeOut
+                assertEqual (renderOutputMismatch expected actual) expected actual
+
+-- | Write JS source to a temp file and execute it with Node.js.
+runNodeOnJs :: FilePath -- ^ Node.js executable path.
+            -> String -- ^ JavaScript source.
+            -> String -- ^ stdin payload.
+            -> IO (ExitCode, String, String) -- ^ Exit code, stdout, stderr.
+runNodeOnJs nodePath jsSrc stdinText = do
+  tempDir <- getTemporaryDirectory
+  bracket
+    (do
+      (path, handle) <- openTempFile tempDir "kip-js-test-.mjs"
+      hClose handle
+      return path)
+    removeFile
+    (\path -> do
+      writeFile path jsSrc
+      readProcessWithExitCode nodePath [path] stdinText)
 
 -- | Render a diff-friendly output mismatch message.
 renderOutputMismatch :: [String] -- ^ Expected lines.

@@ -1,16 +1,13 @@
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 -- | Non-interactive runner for Kip (playground/WASM).
 module Main where
 
 import Control.Applicative ((<|>))
-import Control.Monad (forM, when, unless, filterM)
+import Control.Monad (when, unless, filterM)
 import Control.Monad.IO.Class
-import Control.Monad.Reader (ReaderT, runReaderT, ask)
-import Data.List (intercalate, isPrefixOf, nub, tails, findIndex)
-import Data.Maybe (fromMaybe)
+import Control.Monad.Reader (runReaderT, ask)
+import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -19,32 +16,25 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Options.Applicative hiding (ParseError)
 import Paths_kip (getDataFileName)
-import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (canonicalizePath, doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (die, exitSuccess)
-import System.FilePath ((</>), takeDirectory, takeExtension)
-import Text.Megaparsec (ParseErrorBundle(..), errorBundlePretty)
-import Text.Megaparsec.Error (ParseError(..), ErrorFancy(..), ShowErrorComponent(..))
-import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
-import qualified Data.List.NonEmpty as NE
-import qualified Data.ByteString as BS
-import Data.Text.Encoding (encodeUtf8)
-import Crypto.Hash.SHA256 (hash)
+import System.FilePath ((</>), takeDirectory)
 
 import Language.Foma
 import Kip.AST
-import Kip.Cache
-import Kip.Eval hiding (Unknown, inferType)
+import Kip.Eval hiding (Unknown)
 import Kip.Parser
 import Kip.Render
-import Kip.Transpile.JS (transpileProgram)
+import Kip.Runner
+import Kip.Codegen.JS (codegenProgram)
 import Kip.TypeCheck
 
 -- | Supported CLI modes.
 data CliMode
   = ModeExec
   | ModeBuild
-  | ModeEmitJs
+  | ModeCodegen Text
   deriving (Eq, Show)
 
 -- | Parsed CLI options.
@@ -56,359 +46,6 @@ data CliOptions =
     , optLang :: Lang
     , optNoPrelude :: Bool
     }
-
--- | Diagnostic language selection.
-data Lang
-  = LangTr
-  | LangEn
-  deriving (Eq, Show)
-
--- | Rendering context for diagnostics.
-data RenderCtx =
-  RenderCtx
-    { rcLang :: Lang
-    , rcCache :: RenderCache
-    , rcFsm :: FSM
-    , rcUpsCache :: MorphCache
-    , rcDownsCache :: MorphCache
-    }
-
--- | Rendering helper context.
-type RenderM = ReaderT RenderCtx IO
-
--- | Messages emitted by the playground runner.
-data CompilerMsg
-  = MsgNeedFile
-  | MsgNeedFileOrDir
-  | MsgTrmorphMissing
-  | MsgLibMissing
-  | MsgFileNotFound FilePath
-  | MsgModuleNotFound Identifier
-  | MsgParseError (ParseErrorBundle Text ParserError)
-  | MsgRunFailed
-  | MsgTCError TCError (Maybe Text) [Identifier] [(Identifier, [Identifier])]
-  | MsgEvalError EvalError
-
--- | Turkish parse error wrapper for Megaparsec rendering.
-newtype ParserErrorTr = ParserErrorTr ParserError
-  deriving (Eq, Ord, Show)
-
--- | English parse error wrapper for Megaparsec rendering.
-newtype ParserErrorEn = ParserErrorEn ParserError
-  deriving (Eq, Ord, Show)
-
-instance ShowErrorComponent ParserErrorTr where
-  showErrorComponent (ParserErrorTr err) = T.unpack (renderParserErrorTr err)
-
-instance ShowErrorComponent ParserErrorEn where
-  showErrorComponent (ParserErrorEn err) = T.unpack (renderParserErrorEn err)
-
--- | Emit a message using a concrete render context in IO.
-emitMsgIO :: RenderCtx -> CompilerMsg -> IO ()
-emitMsgIO ctx msg = do
-  rendered <- runReaderT (renderMsg msg) ctx
-  TIO.putStrLn rendered
-
--- | Render a compiler message to text.
-renderMsg :: CompilerMsg -> RenderM Text
-renderMsg msg = do
-  ctx <- ask
-  case msg of
-    MsgNeedFile ->
-      return $
-        case rcLang ctx of
-          LangTr -> "En az bir dosya bekleniyor."
-          LangEn -> "Expected at least one file."
-    MsgNeedFileOrDir ->
-      return $
-        case rcLang ctx of
-          LangTr -> "En az bir dosya veya dizin bekleniyor."
-          LangEn -> "Expected at least one file or directory."
-    MsgTrmorphMissing ->
-      return $
-        case rcLang ctx of
-          LangTr -> "vendor/trmorph.fst bulunamadı."
-          LangEn -> "vendor/trmorph.fst not found."
-    MsgLibMissing ->
-      return $
-        case rcLang ctx of
-          LangTr -> "lib/temel.kip bulunamadı."
-          LangEn -> "lib/temel.kip not found."
-    MsgFileNotFound path ->
-      return $
-        case rcLang ctx of
-          LangTr -> "Dosya bulunamadı: " <> T.pack path
-          LangEn -> "File not found: " <> T.pack path
-    MsgModuleNotFound name ->
-      return $
-        case rcLang ctx of
-          LangTr -> T.pack (prettyIdent name) <> " modülü bulunamadı."
-          LangEn -> "Module not found: " <> T.pack (prettyIdent name)
-    MsgParseError err ->
-      return (renderParseError (rcLang ctx) err)
-    MsgRunFailed ->
-      return $
-        case rcLang ctx of
-          LangTr -> "Dosya çalıştırılamadı."
-          LangEn -> "File could not be executed."
-    MsgEvalError evalErr ->
-      return $
-        case rcLang ctx of
-          LangTr -> "Değerleme hatası: " <> T.pack (show evalErr)
-          LangEn -> "Evaluation error: " <> T.pack (show evalErr)
-    MsgTCError tcErr mSource paramTyCons tyMods ->
-      case mSource of
-        Nothing -> renderTCError paramTyCons tyMods tcErr
-        Just source -> renderTCErrorWithSource paramTyCons tyMods source tcErr
-
--- | Render a parse error bundle in the requested language.
-renderParseError :: Lang -> ParseErrorBundle Text ParserError -> Text
-renderParseError lang err =
-  case lang of
-    LangTr ->
-      let trBundle = mapParseErrorBundle ParserErrorTr err
-      in "Sözdizim hatası:\n" <> T.pack (turkifyParseError (errorBundlePretty trBundle))
-    LangEn ->
-      let enBundle = mapParseErrorBundle ParserErrorEn err
-      in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
-
--- | Map custom error components inside a parse error bundle.
-mapParseErrorBundle :: Ord e'
-                    => (e -> e') -> ParseErrorBundle s e -> ParseErrorBundle s e'
-mapParseErrorBundle f (ParseErrorBundle errs posState) =
-  ParseErrorBundle (NE.map (mapParseError f) errs) posState
-  where
-    mapParseError :: Ord e' => (e -> e') -> ParseError s e -> ParseError s e'
-    mapParseError g err =
-      case err of
-        TrivialError o u e -> TrivialError o u e
-        FancyError o xs -> FancyError o (Set.map (mapFancy g) xs)
-    mapFancy :: (e -> e') -> ErrorFancy e -> ErrorFancy e'
-    mapFancy g fancy =
-      case fancy of
-        ErrorCustom e -> ErrorCustom (g e)
-        ErrorFail msg -> ErrorFail msg
-        ErrorIndentation o r lvl -> ErrorIndentation o r lvl
-
--- | Translate parse error text into Turkish labels.
-turkifyParseError :: String -> String
-turkifyParseError =
-  replace "unexpected end of input" "beklenmeyen girişin sonu"
-  . replace "unexpected" "beklenmeyen"
-  . replace "expecting" "bekleniyor"
-  . replace "end of input" "girişin sonu"
-  . replace "line" "satır"
-  . replace "column" "sütun"
-
--- | Replace all occurrences of a substring.
-replace :: String -> String -> String -> String
-replace old new = intercalate new . splitOn old
-
--- | Split a string on a substring.
-splitOn :: String -> String -> [String]
-splitOn pat s =
-  case breakOn pat s of
-    Nothing -> [s]
-    Just (before, after) -> before : splitOn pat after
-
--- | Break a string on the first occurrence of a substring.
-breakOn :: String -> String -> Maybe (String, String)
-breakOn pat s =
-  case findIndex (isPrefixOf pat) (tails s) of
-    Nothing -> Nothing
-    Just idx ->
-      let (before, rest) = splitAt idx s
-          after = drop (length pat) rest
-      in Just (before, after)
-
--- | Render a type checker error without source context.
-renderTCError :: [Identifier] -> [(Identifier, [Identifier])] -> TCError -> RenderM Text
-renderTCError paramTyCons tyMods tcErr = do
-  ctx <- ask
-  case rcLang ctx of
-    LangTr ->
-      case tcErr of
-        Unknown ->
-          return "Tip hatası: bilinmeyen hata."
-        NoType sp ->
-          return ("Tip hatası: uygun bir tip bulunamadı." <> renderSpan (rcLang ctx) sp)
-        Ambiguity sp ->
-          return ("Tip hatası: ifade belirsiz." <> renderSpan (rcLang ctx) sp)
-        UnknownName name sp ->
-          return ("Tip hatası: " <> T.pack (prettyIdent name) <> " tanınmıyor." <> renderSpan (rcLang ctx) sp)
-        NoMatchingOverload name argTys sigs sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          nameStr <- liftIO (renderIdentWithCase cache fsm name Gen)
-          sigStrs <- liftIO (mapM (renderSigText cache fsm paramTyCons tyMods) sigs)
-          let baseName = T.pack (prettyIdent name)
-              nameStr' =
-                if T.isSuffixOf "ne" baseName && T.isSuffixOf "nin" (T.pack nameStr)
-                  then T.dropEnd 3 (T.pack nameStr) <> "'n"
-                  else T.pack nameStr
-              header =
-                "Tip hatası: " <> nameStr' <> " için uygun bir tanım bulunamadı." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argüman tipleri: " <> T.intercalate ", " argStrs
-              sigLines =
-                case sigStrs of
-                  [] -> []
-                  _ -> (nameStr' <> " için verili tanımlar:") : map ("- " <>) sigStrs
-          return (T.intercalate "\n" (header : argsLine : sigLines))
-        NoMatchingCtor name argTys tys sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          nameStr <- liftIO (renderIdentWithCase cache fsm name Nom)
-          expStrs <- liftIO (mapM (renderTyText cache fsm paramTyCons tyMods) tys)
-          let header =
-                "Tip hatası: " <> T.pack nameStr <> " için uygun bir örnek bulunamadı." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argüman tipleri: " <> T.intercalate ", " argStrs
-              expLine = "Beklenen tipler: " <> T.intercalate ", " expStrs
-          return (T.intercalate "\n" [header, argsLine, expLine])
-        PatternTypeMismatch ctor expectedTy actualTy _ -> do
-          (cache, fsm) <- requireCacheFsm
-          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
-          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
-          let header =
-                T.pack (prettyIdent ctor) <> " yapıcısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
-          return header
-    LangEn ->
-      case tcErr of
-        Unknown ->
-          return "Type error: unknown error."
-        NoType sp ->
-          return ("Type error: no suitable type found." <> renderSpan (rcLang ctx) sp)
-        Ambiguity sp ->
-          return ("Type error: expression is ambiguous." <> renderSpan (rcLang ctx) sp)
-        UnknownName name sp ->
-          return ("Type error: " <> T.pack (prettyIdent name) <> " is not recognized." <> renderSpan (rcLang ctx) sp)
-        NoMatchingOverload name argTys sigs sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          sigStrs <- liftIO (mapM (renderSigText cache fsm paramTyCons tyMods) sigs)
-          let header =
-                "Type error: no matching definition for " <> T.pack (prettyIdent name) <> "." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argument types: " <> T.intercalate ", " argStrs
-              sigLines =
-                case sigStrs of
-                  [] -> []
-                  _ -> ("Available definitions for " <> T.pack (prettyIdent name) <> ":") : map ("- " <>) sigStrs
-          return (T.intercalate "\n" (header : argsLine : sigLines))
-        NoMatchingCtor name argTys tys sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          nameStr <- liftIO (renderIdentWithCase cache fsm name Nom)
-          expStrs <- liftIO (mapM (renderTyText cache fsm paramTyCons tyMods) tys)
-          let header =
-                "Type error: no matching constructor for " <> T.pack nameStr <> "." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argument types: " <> T.intercalate ", " argStrs
-              expLine = "Expected types: " <> T.intercalate ", " expStrs
-          return (T.intercalate "\n" [header, argsLine, expLine])
-        PatternTypeMismatch ctor expectedTy actualTy _ -> do
-          (cache, fsm) <- requireCacheFsm
-          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
-          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
-          let header =
-                T.pack (prettyIdent ctor) <> " constructor has type " <> expStr <> ", but " <> actStr <> " is expected here"
-          return header
-
--- | Render a type checker error with a source snippet.
-renderTCErrorWithSource :: [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
-renderTCErrorWithSource paramTyCons tyMods source tcErr = do
-  msg <- renderTCError paramTyCons tyMods tcErr
-  case tcErrSpan tcErr of
-    Nothing -> return msg
-    Just sp ->
-      let snippet = renderSpanSnippet source sp
-      in return (msg <> "\n" <> snippet)
-
--- | Extract a span from a type checker error when present.
-tcErrSpan :: TCError -> Maybe Span
-tcErrSpan tcErr =
-  case tcErr of
-    NoType sp -> Just sp
-    Ambiguity sp -> Just sp
-    UnknownName _ sp -> Just sp
-    NoMatchingOverload _ _ _ sp -> Just sp
-    NoMatchingCtor _ _ _ sp -> Just sp
-    PatternTypeMismatch _ _ _ sp -> Just sp
-    Unknown -> Nothing
-
--- | Render a caret snippet for a source span.
-renderSpanSnippet :: Text -> Span -> Text
-renderSpanSnippet source sp =
-  case sp of
-    NoSpan -> ""
-    Span start end ->
-      let ls = T.lines source
-          sLine = unPos (sourceLine start)
-          sCol = unPos (sourceColumn start)
-          eLine = unPos (sourceLine end)
-          eCol = unPos (sourceColumn end)
-          getLine n =
-            if n > 0 && n <= length ls then ls !! (n - 1) else ""
-          caretLine lineText fromCol toCol =
-            let len = max 1 (toCol - fromCol)
-                prefix = T.replicate (max 0 (fromCol - 1)) " "
-                carets = T.replicate len "^"
-            in T.concat [lineText, "\n", prefix, carets]
-      in if sLine == eLine
-           then caretLine (getLine sLine) sCol eCol
-           else
-             let first = caretLine (getLine sLine) sCol (T.length (getLine sLine) + 1)
-                 lastLine = caretLine (getLine eLine) 1 eCol
-             in T.concat [first, "\n", lastLine]
-
--- | Render a span into human-readable text.
-renderSpan :: Lang -> Span -> Text
-renderSpan lang sp =
-  case sp of
-    NoSpan -> ""
-    Span start end ->
-      case lang of
-        LangTr ->
-          T.concat
-            [ " (satır "
-            , T.pack (show (unPos (sourceLine start)))
-            , ", sütun "
-            , T.pack (show (unPos (sourceColumn start)))
-            , " - satır "
-            , T.pack (show (unPos (sourceLine end)))
-            , ", sütun "
-            , T.pack (show (unPos (sourceColumn end)))
-            , ")"
-            ]
-        LangEn ->
-          T.concat
-            [ " (line "
-            , T.pack (show (unPos (sourceLine start)))
-            , ", column "
-            , T.pack (show (unPos (sourceColumn start)))
-            , " - line "
-            , T.pack (show (unPos (sourceLine end)))
-            , ", column "
-            , T.pack (show (unPos (sourceColumn end)))
-            , ")"
-            ]
-
--- | Render an optional type for diagnostics.
-renderTyOpt :: [Identifier] -> [(Identifier, [Identifier])] -> Maybe (Ty Ann) -> RenderM Text
-renderTyOpt paramTyCons tyMods mty = do
-  ctx <- ask
-  case mty of
-    Nothing ->
-      return $
-        case rcLang ctx of
-          LangTr -> "bilinmiyor"
-          LangEn -> "unknown"
-    Just ty -> do
-      (cache, fsm) <- requireCacheFsm
-      liftIO (renderTyText cache fsm paramTyCons tyMods ty)
-
--- | Require the render cache and FSM from the context.
-requireCacheFsm :: RenderM (RenderCache, FSM)
-requireCacheFsm = do
-  ctx <- ask
-  return (rcCache ctx, rcFsm ctx)
 
 -- | Entry point for CLI modes.
 main :: IO ()
@@ -435,18 +72,22 @@ main = do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (renderMsg MsgNeedFileOrDir) renderCtx
       buildTargets <- resolveBuildTargets (optFiles opts)
-      let extraDirs = nub (concatMap takeDirectories buildTargets)
+      let extraDirs = nub (map takeDirectory buildTargets)
           buildModuleDirs = nub (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
         runReaderT (loadPreludeState (optNoPrelude opts) buildModuleDirs renderCache fsm upsCache downsCache) renderCtx
       _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
       exitSuccess
-    ModeEmitJs -> do
+    ModeCodegen target -> do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (renderMsg MsgNeedFile) renderCtx
-      js <- runReaderT (emitJsFiles preludePst preludeTC (optFiles opts)) renderCtx
-      TIO.putStrLn js
-      exitSuccess
+      case target of
+        "js" -> do
+          js <- runReaderT (emitJsFilesWithDeps moduleDirs preludePst preludeTC Set.empty (optFiles opts)) renderCtx
+          TIO.putStrLn js
+          exitSuccess
+        _ ->
+          die ("Unknown codegen target: " ++ T.unpack target)
   where
     cliParser :: Parser CliOptions
     cliParser =
@@ -477,7 +118,11 @@ main = do
     modeParser =
       flag' ModeExec (long "exec" <> help "Run files and exit")
         <|> flag' ModeBuild (long "build" <> help "Build cache files for the given files or directories")
-        <|> flag' ModeEmitJs (long "emit-js" <> help "Emit JavaScript for the given files")
+        <|> (ModeCodegen . T.pack <$> strOption
+              ( long "codegen"
+              <> metavar "TARGET"
+              <> help "Codegen target for the given files (e.g. js)"
+              ))
         <|> pure ModeExec
 
     locateTrmorph :: Lang -> IO FilePath
@@ -513,40 +158,41 @@ main = do
         p:_ -> return p
         [] -> return cabalPath
 
-    takeDirectories :: FilePath -> [FilePath]
-    takeDirectories path = [takeDirectory path]
+-- | Generate a single JS-like output for files and dependencies.
+emitJsFilesWithDeps :: [FilePath] -> ParserState -> TCState -> Set FilePath -> [FilePath] -> RenderM Text
+emitJsFilesWithDeps moduleDirs basePst baseTC _preludeLoaded files = do
+  -- First load the prelude entry point to get all library definitions
+  preludePath <- resolveModulePath moduleDirs ([], T.pack "giriş")
+  (preludeStmts, pst', tcSt', loaded') <- emitJsFileWithDeps moduleDirs ([], basePst, baseTC, Set.empty) preludePath
+  -- Then load the user files
+  (stmts, _, _, _) <- foldM' (emitJsFileWithDeps moduleDirs) (preludeStmts, pst', tcSt', loaded') files
+  return (codegenProgram stmts)
 
--- | Run multiple files through parsing, type checking, and evaluation.
-runFiles :: Bool -> Bool -> Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM ReplState
-runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
-  (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-  return (ReplState (parserCtx pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
-
--- | Transpile files into a single JS-like output.
-emitJsFiles :: ParserState -> TCState -> [FilePath] -> RenderM Text
-emitJsFiles basePst baseTC files = do
-  (stmts, _, _) <- foldM' emitJsFile ([], basePst, baseTC) files
-  return (transpileProgram stmts)
-  where
-    emitJsFile :: ([Stmt Ann], ParserState, TCState) -> FilePath -> RenderM ([Stmt Ann], ParserState, TCState)
-    emitJsFile (acc, pst, tcSt) path = do
-      exists <- liftIO (doesFileExist path)
-      unless exists $ do
-        ctx <- ask
-        liftIO (emitMsgIO ctx (MsgFileNotFound path))
-        msg <- renderMsg MsgRunFailed
-        liftIO (die (T.unpack msg))
+-- | Generate a single file and its dependencies.
+emitJsFileWithDeps :: [FilePath] -> ([Stmt Ann], ParserState, TCState, Set FilePath) -> FilePath -> RenderM ([Stmt Ann], ParserState, TCState, Set FilePath)
+emitJsFileWithDeps moduleDirs (acc, pst, tcSt, loaded) path = do
+  exists <- liftIO (doesFileExist path)
+  unless exists $ do
+    msg <- renderMsg (MsgFileNotFound path)
+    liftIO (die (T.unpack msg))
+  absPath <- liftIO (canonicalizePath path)
+  if Set.member absPath loaded
+    then return (acc, pst, tcSt, loaded)
+    else do
       input <- liftIO (TIO.readFile path)
       liftIO (parseFromFile pst input) >>= \case
         Left err -> do
-          ctx <- ask
-          liftIO (emitMsgIO ctx (MsgParseError err))
-          msg <- renderMsg MsgRunFailed
+          msg <- renderMsg (MsgParseError err)
           liftIO (die (T.unpack msg))
         Right (fileStmts, pst') -> do
           let paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
               tyMods = parserTyMods pst'
-          liftIO (runTCM (registerForwardDecls fileStmts) tcSt) >>= \case
+              loaded' = Set.insert absPath loaded
+          -- First, process Load statements to get dependencies
+          let loadStmts = [name | Load name <- fileStmts]
+          (depStmts, pst'', tcSt', loaded'') <- foldM' (emitJsLoad moduleDirs paramTyCons tyMods) ([], pst', tcSt, loaded') loadStmts
+          -- Now type-check the current file's statements
+          liftIO (runTCM (registerForwardDecls fileStmts) tcSt') >>= \case
             Left tcErr -> do
               msg <- renderMsg (MsgTCError tcErr (Just input) paramTyCons tyMods)
               liftIO (die (T.unpack msg))
@@ -555,251 +201,18 @@ emitJsFiles basePst baseTC files = do
                 Left tcErr -> do
                   msg <- renderMsg (MsgTCError tcErr (Just input) paramTyCons tyMods)
                   liftIO (die (T.unpack msg))
-                Right (typedStmts, tcSt') ->
-                  return (acc ++ typedStmts, pst', tcSt')
+                Right (typedStmts, tcSt'') ->
+                  -- Filter out Load statements from typed output
+                  let filteredStmts = filter (not . isLoadStmt) typedStmts
+                  in return (acc ++ depStmts ++ filteredStmts, pst'', tcSt'', loaded'')
 
--- | REPL runtime state (parser/type context + evaluator).
-data ReplState =
-  ReplState
-    { replCtx :: [Identifier]
-    , replTyParams :: [Identifier]
-    , replTyCons :: [(Identifier, Int)]
-    , replTyMods :: [(Identifier, [Identifier])]
-    , replPrimTypes :: [Identifier]
-    , replTCState :: TCState
-    , replEvalState :: EvalState
-    , replModuleDirs :: [FilePath]
-    , replLoaded :: Set FilePath
-    }
+-- | Check if a statement is a Load statement.
+isLoadStmt :: Stmt Ann -> Bool
+isLoadStmt (Load _) = True
+isLoadStmt _ = False
 
--- | Run a single file and update all states.
-runFile :: Bool -> Bool -> Bool -> [FilePath] -> (ParserState, TCState, EvalState, Set FilePath) -> FilePath -> RenderM (ParserState, TCState, EvalState, Set FilePath)
-runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
-  exists <- liftIO (doesFileExist path)
-  unless exists $ do
-    ctx <- ask
-    liftIO (emitMsgIO ctx (MsgFileNotFound path))
-    msg <- renderMsg MsgRunFailed
-    liftIO (die (T.unpack msg))
-  absPath <- liftIO (canonicalizePath path)
-  if Set.member absPath loaded
-    then return (pst, tcSt, evalSt, loaded)
-    else do
-      ctx <- ask
-      let cache = rcCache ctx
-          fsm = rcFsm ctx
-          uCache = rcUpsCache ctx
-          dCache = rcDownsCache ctx
-      let cachePath = cacheFilePath absPath
-      mCached <- liftIO (loadCachedModule cachePath)
-      case mCached of
-        Just cached -> do
-          let loaded' = Set.insert absPath loaded
-          if buildOnly
-            then return (pst, tcSt, evalSt, loaded')
-            else do
-              let pst' = fromCachedParserState fsm uCache dCache (cachedParser cached)
-                  tcSt' = tcSt
-                  evalSt' = evalSt
-                  stmts = cachedStmts cached
-                  paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
-                  source = ""
-                  primRefs = collectNonGerundRefs stmts
-              foldM' (runStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) (pst', tcSt', evalSt', loaded') stmts
-        Nothing -> do
-          input <- liftIO (TIO.readFile path)
-          liftIO (parseFromFile pst input) >>= \case
-            Left err -> do
-              ctx <- ask
-              liftIO (emitMsgIO ctx (MsgParseError err))
-              msg <- renderMsg MsgRunFailed
-              liftIO (die (T.unpack msg))
-            Right (stmts, pst') -> do
-              let paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
-                  source = input
-                  primRefs = collectNonGerundRefs stmts
-              liftIO (runTCM (registerForwardDecls stmts) tcSt) >>= \case
-                Left tcErr -> do
-                  msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons (parserTyMods pst'))
-                  liftIO (die (T.unpack msg))
-                Right (_, tcStWithDecls) -> do
-                  let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded)
-                  (pstFinal, tcSt', evalSt', loaded') <-
-                    foldM' (runStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
-                  let depStmts = [name | Load name <- stmts]
-                  depPaths <- mapM (resolveModulePath moduleDirs) depStmts
-                  depHashes <- liftIO $ mapM (\p -> do
-                    mDigest <- hashFile p
-                    digest <- case mDigest of
-                      Just d -> return d
-                      Nothing -> hash <$> BS.readFile p
-                    mMeta <- getFileMeta p
-                    let fallbackSize = maybe 0 fst mMeta
-                        (depSize, depMTime) = fromMaybe (fallbackSize, 0) mMeta
-                    return (p, digest, depSize, depMTime)) depPaths
-                  mCompilerHash <- liftIO getCompilerHash
-                  case mCompilerHash of
-                    Nothing -> return ()
-                    Just compilerHash -> do
-                      mSourceMeta <- liftIO (getFileMeta absPath)
-                      let sourceBytes = encodeUtf8 input
-                          sourceDigest = hash sourceBytes
-                          fallbackSourceSize = fromIntegral (BS.length sourceBytes)
-                          (srcSize, srcMTime) = fromMaybe (fallbackSourceSize, 0) mSourceMeta
-                          meta = CacheMetadata
-                            { compilerHash = compilerHash
-                            , sourceHash = sourceDigest
-                            , sourceSize = srcSize
-                            , sourceMTime = srcMTime
-                            , dependencies = depHashes
-                            }
-                          cachedModule = CachedModule
-                            { metadata = meta
-                            , cachedStmts = stmts
-                            , cachedParser = toCachedParserState pstFinal
-                            , cachedTC = toCachedTCState tcSt'
-                            , cachedEval = toCachedEvalState evalSt'
-                            }
-                      liftIO (saveCachedModule cachePath cachedModule)
-                  return (pstFinal, tcSt', evalSt', loaded')
-
--- | Run a single statement in the context of a file.
-runStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath)
-runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded) stmt =
-  case stmt of
-    Load name -> do
-      path <- resolveModulePath moduleDirs name
-      absPath <- liftIO (canonicalizePath path)
-      if Set.member absPath loaded
-        then return (pst, tcSt, evalSt, loaded)
-        else do
-          (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-          when showLoad $ return ()
-          return (pst', tcSt', evalSt', loaded')
-    _ ->
-      liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
-        Left tcErr -> do
-          msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
-          liftIO (die (T.unpack msg))
-        Right (stmt', tcSt') -> do
-          when showDefn $ return ()
-          if buildOnly
-            then
-              case stmt' of
-                ExpStmt _ -> return (pst, tcSt', evalSt, loaded)
-                _ ->
-                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                    Left evalErr -> do
-                      msg <- renderMsg (MsgEvalError evalErr)
-                      liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
-            else
-              liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                Left evalErr -> do
-                  msg <- renderMsg (MsgEvalError evalErr)
-                  liftIO (die (T.unpack msg))
-                Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
-
--- | Collect non-gerund primitive references from statements.
-collectNonGerundRefs :: [Stmt Ann] -> [Identifier]
-collectNonGerundRefs stmts =
-  nub (concatMap (stmtRefs []) stmts)
-  where
-    stmtRefs :: [Identifier] -> Stmt Ann -> [Identifier]
-    stmtRefs bound stmt =
-      case stmt of
-        Defn name _ body ->
-          expRefs (name : bound) body
-        Function _ args _ clauses _ ->
-          concatMap (clauseRefs (map fst args ++ bound)) clauses
-        ExpStmt e ->
-          expRefs bound e
-        _ -> []
-    clauseRefs :: [Identifier] -> Clause Ann -> [Identifier]
-    clauseRefs bound (Clause _ body) = expRefs bound body
-    expRefs :: [Identifier] -> Exp Ann -> [Identifier]
-    expRefs bound exp =
-      case exp of
-        Var {varCandidates} ->
-          if any (\(ident, _) -> ident `elem` bound) varCandidates
-            then []
-            else map fst varCandidates
-        Bind {bindName, bindExp} ->
-          expRefs bound bindExp
-        App {fn, args} -> expRefs bound fn ++ concatMap (expRefs bound) args
-        Match {scrutinee, clauses} ->
-          expRefs bound scrutinee ++ concatMap (clauseRefs bound) clauses
-        Seq {first, second} ->
-          case first of
-            Bind {bindName, bindExp} ->
-              expRefs bound bindExp ++ expRefs (bindName : bound) second
-            _ -> expRefs bound first ++ expRefs bound second
-        Let {varName, body} ->
-          expRefs (varName : bound) body
-        _ -> []
-
--- | Resolve a module name to a file path.
-resolveModulePath :: [FilePath] -> Identifier -> RenderM FilePath
-resolveModulePath dirs name = do
-  let base = prettyIdent name ++ ".kip"
-      candidates = map (</> base) dirs
-  found <- liftIO (filterM doesFileExist candidates)
-  case found of
-    path:_ -> return path
-    [] -> do
-      msg <- renderMsg (MsgModuleNotFound name)
-      liftIO (die (T.unpack msg))
-
--- | Resolve build targets from file or directory inputs.
-resolveBuildTargets :: [FilePath] -> IO [FilePath]
-resolveBuildTargets paths = fmap nub (concat <$> mapM expandPath paths)
-  where
-    expandPath :: FilePath -> IO [FilePath]
-    expandPath p = do
-      isDir <- doesDirectoryExist p
-      if isDir
-        then listKipFilesRecursive p
-        else return [p]
-
--- | Recursively list .kip files in a directory tree.
-listKipFilesRecursive :: FilePath -> IO [FilePath]
-listKipFilesRecursive dir = do
-  entries <- listDirectory dir
-  fmap concat $ forM entries $ \entry -> do
-    let path = dir </> entry
-    isDir <- doesDirectoryExist path
-    if isDir
-      then listKipFilesRecursive path
-      else return [path | takeExtension path == ".kip"]
-
--- | Load the prelude module into parser/type/eval states unless disabled.
-loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> MorphCache -> MorphCache -> RenderM (ParserState, TCState, EvalState, Set FilePath)
-loadPreludeState noPrelude moduleDirs cache fsm uCache dCache = do
-  let pst = newParserStateWithCaches fsm uCache dCache
-      tcSt = emptyTCState
-      evalSt = mkEvalState cache fsm
-  if noPrelude
-    then return (pst, tcSt, evalSt, Set.empty)
-    else do
-      path <- resolveModulePath moduleDirs ([], T.pack "giriş")
-      runFile False False False moduleDirs (pst, tcSt, evalSt, Set.empty) path
-
--- | Build an evaluator state wired to the render cache.
-mkEvalState :: RenderCache -> FSM -> EvalState
-mkEvalState cache fsm =
-  emptyEvalState { evalRender = renderExpValue cache fsm }
-
--- | Strict monadic left fold to avoid building thunks on large inputs.
-foldM' :: forall m b a.
-          Monad m
-       => (b -> a -> m b)
-       -> b
-       -> [a]
-       -> m b
-foldM' f = go
-  where
-    go :: b -> [a] -> m b
-    go acc [] = return acc
-    go acc (y:ys) = do
-      acc' <- f acc y
-      acc' `seq` go acc' ys
+-- | Load a dependency for JS code generation.
+emitJsLoad :: [FilePath] -> [Identifier] -> [(Identifier, [Identifier])] -> ([Stmt Ann], ParserState, TCState, Set FilePath) -> Identifier -> RenderM ([Stmt Ann], ParserState, TCState, Set FilePath)
+emitJsLoad moduleDirs _paramTyCons _tyMods (acc, pst, tcSt, loaded) name = do
+  path <- resolveModulePath moduleDirs name
+  emitJsFileWithDeps moduleDirs (acc, pst, tcSt, loaded) path

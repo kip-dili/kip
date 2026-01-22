@@ -36,7 +36,7 @@ sourceEl.value = `(bu tam-sayı listesini) bastırmak,
     ilki yazıp,
     devamı bastırmaktır.
 
-(1'in (2'nin boşa ekine) ekinin) tersini yaz.`;
+((1'in (2'nin boşa ekine) ekinin) tersini) bastır.`;
 
 async function loadText(path) {
   const res = await fetch(path);
