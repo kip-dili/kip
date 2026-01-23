@@ -294,13 +294,25 @@ estimateCandidates useCtx (ss, s) = do
     -- Fast path: already in scope, avoid morphology round-trips.
     then return [(directIdent, Nom)]
     else do
+      let mCopula = stripCopulaSuffix s
+      (sAnalyses, mCopulaAnalyses) <- case mCopula of
+        Just stripped -> do
+          analysesList <- upsCachedBatch [s, stripped]
+          case analysesList of
+            [sAn, strippedAn] -> return (sAn, Just (stripped, strippedAn))
+            _ -> do
+              sAn <- upsCached s
+              return (sAn, Nothing)
+        Nothing -> do
+          sAn <- upsCached s
+          return (sAn, Nothing)
       mCtxMatch <- if useCtx
-        then findCtxCandidate ss s parserCtx
+        then findCtxCandidateWithAnalyses ss s parserCtx sAnalyses
         else return Nothing
       case mCtxMatch of
         Just match -> return [match]
         Nothing -> do
-          (candidates0, filtered0) <- candidatesFor s parserCtx
+          (candidates0, filtered0) <- candidatesForWithAnalyses s parserCtx sAnalyses
           let hasCond = any (\(_, cas) -> cas == Cond) candidates0
               candidates =
                 if hasCond
@@ -320,13 +332,16 @@ estimateCandidates useCtx (ss, s) = do
               case ipMatch of
                 Just match -> return match
                 Nothing ->
-                  case stripCopulaSuffix s of
+                  case mCopula of
                     Just stripped -> do
                       baseIdent <- normalizePossessive (ss, stripped)
                       if useCtx && baseIdent `elem` parserCtx
                         then return [(baseIdent, Nom)]
                         else do
-                          (candidates1, filtered1) <- candidatesFor stripped parserCtx
+                          strippedAnalyses <- case mCopulaAnalyses of
+                            Just (_, analyses) -> return analyses
+                            Nothing -> upsCached stripped
+                          (candidates1, filtered1) <- candidatesForWithAnalyses stripped parserCtx strippedAnalyses
                           let hasCond1 = any (\(_, cas) -> cas == Cond) candidates1
                               candidates' =
                                 if hasCond1
@@ -371,6 +386,15 @@ estimateCandidates useCtx (ss, s) = do
                      -> KipParser (Maybe (Identifier, Case)) -- ^ Unique context match, if any.
     findCtxCandidate mods surfaceRoot ctx = do
       analyses <- upsCached surfaceRoot
+      findCtxCandidateWithAnalyses mods surfaceRoot ctx analyses
+
+    -- | Find a matching identifier in context using pre-fetched analyses.
+    findCtxCandidateWithAnalyses :: [Text] -- ^ Identifier modifiers.
+                                 -> Text -- ^ Surface root.
+                                 -> [Identifier] -- ^ Context identifiers.
+                                 -> [Text] -- ^ Morphology analyses for the surface form.
+                                 -> KipParser (Maybe (Identifier, Case)) -- ^ Unique context match, if any.
+    findCtxCandidateWithAnalyses mods _surfaceRoot ctx analyses = do
       let nounAnalyses =
             filter (\a -> "<N>" `T.isInfixOf` a && not ("<V>" `T.isInfixOf` a)) analyses
           baseAnalyses =
@@ -408,6 +432,13 @@ estimateCandidates useCtx (ss, s) = do
                   -> KipParser ([(Identifier, Case)], [(Identifier, Case)]) -- ^ All candidates and context-filtered ones.
     candidatesFor surface ctx = do
       morphAnalyses <- upsCached surface
+      candidatesForWithAnalyses surface ctx morphAnalyses
+
+    candidatesForWithAnalyses :: Text -- ^ Surface form.
+                              -> [Identifier] -- ^ Context identifiers.
+                              -> [Text] -- ^ Morphology analyses.
+                              -> KipParser ([(Identifier, Case)], [(Identifier, Case)]) -- ^ All candidates and context-filtered ones.
+    candidatesForWithAnalyses _surface ctx morphAnalyses = do
       let stems = map stripCaseTags morphAnalyses
           uniqueStems = nub stems
           -- Collect stems that need a possessive form so we can batch downs.
@@ -787,6 +818,25 @@ upsCached s = do
       res <- liftIO (ups fsm s)
       liftIO $ HT.insert parserUpsCache s res
       return res
+
+-- | Cached batch morphology analysis lookup.
+-- Uses batch FFI when multiple surfaces are missing to avoid repeated handle setup.
+upsCachedBatch :: [Text] -- ^ Surface forms.
+               -> KipParser [[Text]] -- ^ Analyses per surface.
+upsCachedBatch [] = return []
+upsCachedBatch surfaces = do
+  MkParserState{fsm, parserUpsCache} <- getP
+  cached <- liftIO $ mapM (HT.lookup parserUpsCache) surfaces
+  let missing = [s | (s, Nothing) <- zip surfaces cached]
+  fetched <-
+    if null missing
+      then return []
+      else liftIO (upsBatch fsm missing)
+  let fetchedMap = M.fromList (zip missing fetched)
+  liftIO $
+    mapM_ (uncurry (HT.insert parserUpsCache)) (zip missing fetched)
+  let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
+  return (zipWith resolve surfaces cached)
 
 -- | Cached morphology generation lookup.
 downsCached :: Text -- ^ Morphology stem.
