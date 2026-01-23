@@ -223,7 +223,7 @@ addGenSuffix :: String -- ^ Surface form.
              -> String -- ^ Inflected form.
 addGenSuffix s
   | null s = s
-  | isDigit (last s) = s ++ "'nin"
+  | maybe False isDigit (lastChar s) = s ++ "'nin"
   | otherwise =
       case lastVowel s of
         Nothing -> s ++ "in"
@@ -247,7 +247,7 @@ addAccSuffix s =
     Nothing -> s ++ "'i"
     Just v ->
       let suffixV = accVowel v
-          separator = if isDigit (last s) then "'" else ""
+          separator = if maybe False isDigit (lastChar s) then "'" else ""
           connector = if endsWithVowel s then "y" else ""
       in s ++ separator ++ connector ++ [suffixV]
   where
@@ -266,7 +266,7 @@ addDatSuffix s =
     Nothing -> s ++ "'e"
     Just v ->
       let suffixV = if v `elem` "eiöü" then 'e' else 'a'
-          separator = if isDigit (last s) then "'" else ""
+          separator = if maybe False isDigit (lastChar s) then "'" else ""
           connector = if endsWithVowel s then "y" else ""
       in s ++ separator ++ connector ++ [suffixV]
 
@@ -278,7 +278,7 @@ addLocSuffix s =
     Nothing -> s ++ "'de"
     Just v ->
       let suffixV = if v `elem` "eiöü" then 'e' else 'a'
-          separator = if isDigit (last s) then "'" else ""
+          separator = if maybe False isDigit (lastChar s) then "'" else ""
       in s ++ separator ++ "d" ++ [suffixV]
 
 -- | Add the ablative suffix for a simple fallback inflection.
@@ -289,7 +289,7 @@ addAblSuffix s =
     Nothing -> s ++ "'den"
     Just v ->
       let suffixV = if v `elem` "eiöü" then 'e' else 'a'
-          separator = if isDigit (last s) then "'" else ""
+          separator = if maybe False isDigit (lastChar s) then "'" else ""
       in s ++ separator ++ "d" ++ [suffixV] ++ "n"
 
 -- | Add the 3rd person possessive suffix for a simple fallback inflection.
@@ -307,10 +307,16 @@ addP3sSuffix s =
 -- | Find the last vowel in a word.
 lastVowel :: String -- ^ Input word.
           -> Maybe Char -- ^ Last vowel when present.
-lastVowel s =
-  case filter isVowel s of
+lastVowel =
+  foldl (\acc c -> if isVowel c then Just c else acc) Nothing
+
+-- | Get the last character of a string.
+lastChar :: String -- ^ Input string.
+         -> Maybe Char -- ^ Last character when present.
+lastChar s =
+  case reverse s of
+    c:_ -> Just c
     [] -> Nothing
-    vs -> Just (last vs)
 
 -- | Check whether a word ends with a vowel.
 endsWithVowel :: String -- ^ Input word.

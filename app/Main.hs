@@ -959,7 +959,9 @@ main = do
           (uCache, dCache) <- runApp requireParserCaches
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
           -- If input ends with a period, parse as statement; otherwise parse as expression
-          if not (null input) && last input == '.'
+          if case reverse input of
+               '.':_ -> True
+               _ -> False
             then do
               liftIO (parseFromRepl pst (T.pack input)) >>= \case
                 Left err -> do
@@ -1111,10 +1113,12 @@ main = do
         inflectLastWord cache fsm cas s =
           case words s of
             [] -> return s
-            ws -> do
-              let lastWord = last ws
-              inflected <- renderIdentWithCases cache fsm ([], T.pack lastWord) [cas]
-              return (unwords (init ws ++ [inflected]))
+            ws ->
+              case reverse ws of
+                lastWord:revRest -> do
+                  inflected <- renderIdentWithCases cache fsm ([], T.pack lastWord) [cas]
+                  return (unwords (reverse (inflected : revRest)))
+                [] -> return s
 
     -- | Evaluate a REPL statement and update the evaluator state.
     evalReplStmt :: [Identifier] -- ^ Type parameters for rendering.

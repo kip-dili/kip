@@ -23,6 +23,7 @@ import Data.Void (Void)
 import Data.Hashable (Hashable)
 import qualified Data.HashTable.IO as HT
 import Data.Functor (($>))
+import Text.Read (readMaybe)
 
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -247,7 +248,9 @@ identifier :: KipParser Identifier -- ^ Parsed identifier.
 identifier = do
   ws <- sepBy1 word (char '-') <?>
         "Tek kelimeli veya tire ile ayrılmış çok kelimeli bir isim kullanmanız"
-  return (init ws, last ws)
+  case reverse ws of
+    w:revPrefix -> return (reverse revPrefix, w)
+    [] -> customFailure (ErrInternal (T.pack "identifier"))
 
 -- | Parse an identifier and reject keywords.
 identifierNotKeyword :: KipParser Identifier -- ^ Parsed identifier.
@@ -947,8 +950,9 @@ parseExpWithCtx useCtx =
             case allClauses of
               [] -> annSpan (annExp scrutVar)
               _ ->
-                let Clause _ lastBody = last allClauses
-                in annSpan (annExp lastBody)
+                case reverse allClauses of
+                  Clause _ lastBody:_ -> annSpan (annExp lastBody)
+                  [] -> annSpan (annExp scrutVar)
           ann = mkAnn (annCase (annExp scrutVar)) (mergeSpan start end)
       return (Match ann scrutVar allClauses)
     -- | Parse additional clauses for a match continuation.
@@ -1009,31 +1013,36 @@ parseExpWithCtx useCtx =
       case xs of
         [] -> error "application needs at least one item"
         [x] -> return x
-        _ ->
-          let x = last xs
-              rest = init xs
-              start = annSpan (annExp (head xs))
-              end = annSpan (annExp x)
-              ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
-          in case x of
-               Var {varCandidates} | isWriteCandidates varCandidates -> do
-                 case rest of
-                   [] -> return (App ann x [])
-                   [arg] -> do
-                     let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                     return (App ann' x [arg])
-                   _ ->
-                     case last rest of
-                       Var {} -> do
-                         arg <- buildAppFrom rest
+        first:_ ->
+          case reverse xs of
+            x:revRest ->
+              let rest = reverse revRest
+                  start = annSpan (annExp first)
+                  end = annSpan (annExp x)
+                  ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
+              in case x of
+                   Var {varCandidates} | isWriteCandidates varCandidates -> do
+                     case rest of
+                       [] -> return (App ann x [])
+                       [arg] -> do
                          let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
                          return (App ann' x [arg])
-                       App {} -> do
-                         arg <- buildAppFrom rest
-                         let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                         return (App ann' x [arg])
-                       _ -> return (App ann x rest)
-               _ -> return (App ann x rest)
+                       _ ->
+                         case reverse rest of
+                           lastRest:_ ->
+                             case lastRest of
+                               Var {} -> do
+                                 arg <- buildAppFrom rest
+                                 let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                                 return (App ann' x [arg])
+                               App {} -> do
+                                 arg <- buildAppFrom rest
+                                 let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                                 return (App ann' x [arg])
+                               _ -> return (App ann x rest)
+                           [] -> return (App ann x rest)
+                   _ -> return (App ann x rest)
+            [] -> error "application needs at least one item"
     -- | Attempt to reinterpret application as a type cast.
     tryApplyTypeCase :: Exp Ann -- ^ Candidate expression.
                      -> Exp Ann -- ^ Candidate type expression.
@@ -1268,9 +1277,9 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> try def <|> expF
     def = do
       items <- some (lexeme defItem)
       let (exprItems, nameItem) =
-            case items of
+            case reverse items of
+              name:revExpr -> (reverse revExpr, name)
               [] -> error "definition needs at least two items"
-              _ -> (init items, last items)
       st <- getP
       exprItems' <- mapM (restrictCandidates (parserCtx st)) exprItems
       rawName <- case nameItem of
@@ -1317,13 +1326,15 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> try def <|> expF
       case xs of
         [] -> customFailure ErrDefinitionBodyMissing
         [x] -> return x
-        _ ->
-          let x = last xs
-              rest = init xs
-              start = annSpan (annExp (head xs))
-              end = annSpan (annExp x)
-              ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
-          in return (App ann x rest)
+        first:_ ->
+          case reverse xs of
+            x:revRest ->
+              let rest = reverse revRest
+                  start = annSpan (annExp first)
+                  end = annSpan (annExp x)
+                  ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
+              in return (App ann x rest)
+            [] -> customFailure ErrDefinitionBodyMissing
     -- | Restrict variable candidates to the current context.
     restrictCandidates :: [Identifier] -- ^ Context identifiers.
                        -> Exp Ann -- ^ Expression to restrict.
@@ -1565,8 +1576,11 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> try def <|> expF
                   then do
                     let cas' = preferSurfaceCase rawIdent cas
                         ann = mkAnn cas' sp
-                    let argIdent = (init xs, last xs)
-                    return (TyApp ann (TyInd (mkAnn Nom NoSpan) baseName) [argTy argIdent])
+                    case reverse xs of
+                      arg:revPrefix -> do
+                        let argIdent = (reverse revPrefix, arg)
+                        return (TyApp ann (TyInd (mkAnn Nom NoSpan) baseName) [argTy argIdent])
+                      [] -> customFailure (ErrInternal (T.pack "parseTypeHead"))
                   else do
                     (name, cas') <- resolveTypeCandidatePreferCtx rawIdent
                     requireInCtx name
@@ -1637,8 +1651,9 @@ parseMatchExpr useCtx = do
         case allClauses of
           [] -> annSpan (annExp scrutVar)
           _ ->
-            let Clause _ lastBody = last allClauses
-            in annSpan (annExp lastBody)
+            case reverse allClauses of
+              Clause _ lastBody:_ -> annSpan (annExp lastBody)
+              [] -> annSpan (annExp scrutVar)
       ann = mkAnn (annCase (annExp scrutVar)) (mergeSpan start end)
   return (Match ann scrutVar allClauses)
   where
@@ -1737,7 +1752,7 @@ parseNumberValue :: Text -- ^ Numeric token.
                  -> Integer -- ^ Parsed integer value.
 parseNumberValue token =
   let stripped = T.filter (\c -> c /= '\'' && (isDigit c || c == '-')) token
-  in read (T.unpack stripped)
+  in fromMaybe 0 (readMaybe (T.unpack stripped))
 
 -- | Check whether a numeric token contains a fractional part.
 isFloatToken :: Text -- ^ Numeric token.
@@ -1749,7 +1764,7 @@ parseNumberValueFloat :: Text -- ^ Numeric token.
                       -> Double -- ^ Parsed floating value.
 parseNumberValueFloat token =
   let stripped = T.filter (\c -> c /= '\'' && (isDigit c || c == '-' || c == '.')) token
-  in read (T.unpack stripped)
+  in fromMaybe 0 (readMaybe (T.unpack stripped))
 
 -- | Parse a quoted string with an optional case suffix.
 parseStringToken :: KipParser (Text, Case) -- ^ Parsed string and case.

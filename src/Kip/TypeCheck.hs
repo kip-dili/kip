@@ -264,7 +264,10 @@ tcExp1With allowEffect e =
                       if Nothing `elem` argTys
                         then return (App annApp fn' args')
                         else lift (throwE (NoMatchingOverload nameForErr argTys allSigs (annSpan annApp)))
-                    else return (App annApp fn' (head matches))
+                    else
+                      case matches of
+                        firstMatch:_ -> return (App annApp fn' firstMatch)
+                        [] -> return (App annApp fn' args')
         _ -> return (App annApp fn' args')
     StrLit {annExp, lit} ->
       return (StrLit annExp lit)
