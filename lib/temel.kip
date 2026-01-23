@@ -8,7 +8,7 @@ Bir doğruluk ya doğru ya da yanlış olabilir.
 
 (* Çokbiçimli olasılık tipi. Haskell'deki Maybe gibi. *)
 Bir (öğenin olasılığı)
-ya yokluğu
+ya yokluk
 ya da bir öğenin varlığı olabilir.
 
 (* Çokbiçimli bağlı liste (polymorphic linked list). *)
