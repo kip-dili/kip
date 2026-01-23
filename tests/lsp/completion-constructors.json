@@ -1,0 +1,8 @@
+{
+  "diagnosticsAtLeast": 0,
+  "formattingEdits": false,
+  "hover": false,
+  "completionIncludes": ["kırmızı", "yeşil"],
+  "completionAt": { "line": 4, "character": 0 },
+  "cache": false
+}

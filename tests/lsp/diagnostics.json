@@ -1,0 +1,8 @@
+{
+  "diagnosticsAtLeast": 1,
+  "diagnosticMessageContains": ["is not recognized"],
+  "formattingEdits": false,
+  "hover": false,
+  "completionIncludes": [],
+  "cache": false
+}

@@ -1,0 +1,10 @@
+{
+  "diagnosticsAtLeast": 0,
+  "formattingEdits": false,
+  "hover": true,
+  "hoverAt": { "line": 3, "character": 2 },
+  "hoverContains": [],
+  "completionIncludes": ["uzunluk", "dizge"],
+  "completionAt": { "line": 3, "character": 3 },
+  "cache": false
+}

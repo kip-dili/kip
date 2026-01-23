@@ -1,0 +1,10 @@
+{
+  "diagnosticsAtLeast": 0,
+  "formattingEdits": true,
+  "hover": true,
+  "hoverAt": { "line": 0, "character": 0 },
+  "hoverContains": ["tam-sayı"],
+  "completionIncludes": ["yaz"],
+  "completionAt": { "line": 0, "character": 0 },
+  "cache": true
+}

@@ -135,18 +135,57 @@ executable kip-playground
     , time
   default-language: Haskell2010
 
+executable kip-lsp
+  main-is: Lsp.hs
+  other-modules:
+      Paths_kip
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  if os(wasi)
+    buildable: False
+  if os(darwin)
+    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w
+  build-depends:
+      base >=4.7 && <5
+    , bytestring
+    , containers
+    , directory
+    , filepath
+    , hashtables
+    , kip
+    , lens
+    , lsp
+    , lsp-types
+    , megaparsec
+    , row-types
+    , text
+    , transformers
+    , binary
+    , cryptohash-sha256
+    , mtl
+  default-language: Haskell2010
+
 test-suite kip-tests
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  other-modules:
+      LspTest
   hs-source-dirs:
       tests
   if os(darwin)
     ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w
   build-depends:
       base >=4.7 && <5
+    , aeson
+    , bytestring
     , directory
     , filepath
     , process
+    , scientific
     , tasty
     , tasty-hunit
+    , text
+    , time
+    , vector
   default-language: Haskell2010

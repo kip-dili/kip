@@ -1,0 +1,8 @@
+{
+  "diagnosticsAtLeast": 1,
+  "diagnosticMessageContains": ["TrivialError"],
+  "formattingEdits": false,
+  "hover": false,
+  "completionIncludes": [],
+  "cache": false
+}

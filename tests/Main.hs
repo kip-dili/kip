@@ -12,6 +12,7 @@ import System.IO (hClose, openTempFile)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty
 import Test.Tasty.HUnit
+import qualified LspTest
 
 -- | Discover tests and run them through tasty.
 main :: IO () -- ^ Test entry point.
@@ -19,6 +20,7 @@ main = do
   setEnv "KIP_RANDOM_SEED" "12345"
   kipPath <- locateKip
   nodePath <- locateNode
+  lspPath <- locateKipLsp
   succeedFiles <- listKipFiles ("tests" </> "succeed")
   failFiles <- listKipFiles ("tests" </> "fail")
   replFiles <- listReplFiles ("tests" </> "repl")
@@ -31,6 +33,12 @@ main = do
       jsGroupName = case nodePath of
         Nothing -> "js (skipped: node missing)"
         Just _ -> "js"
+  lspTests <- case lspPath of
+    Nothing -> return []
+    Just lsp -> LspTest.lspTestsFor lsp
+  let lspGroupName = case lspPath of
+        Nothing -> "lsp (skipped: kip-lsp missing)"
+        Just _ -> "lsp"
   defaultMain $
     testGroup
       "kip"
@@ -38,6 +46,7 @@ main = do
       , testGroup "fail" failTests
       , testGroup "repl" replTests
       , testGroup jsGroupName jsTests
+      , testGroup lspGroupName lspTests
       ]
 
 -- | Resolve the Kip executable path from env or PATH.
@@ -60,6 +69,14 @@ locateNode = do
   case envPath of
     Just path -> return (Just path)
     Nothing -> findExecutable "node"
+
+-- | Resolve the Kip LSP executable path from env or PATH.
+locateKipLsp :: IO (Maybe FilePath) -- ^ Resolved executable path.
+locateKipLsp = do
+  envPath <- lookupEnv "KIP_LSP_BIN"
+  case envPath of
+    Just path -> return (Just path)
+    Nothing -> findExecutable "kip-lsp"
 
 -- | List `.kip` files in a directory, sorted for stable test order.
 listKipFiles :: FilePath -- ^ Directory to scan.
@@ -178,6 +195,7 @@ runNodeOnJs nodePath jsSrc stdinText = do
       writeFile path jsSrc
       readProcessWithExitCode nodePath [path] stdinText)
 
+
 -- | Render a diff-friendly output mismatch message.
 renderOutputMismatch :: [String] -- ^ Expected lines.
                      -> [String] -- ^ Actual lines.
@@ -245,7 +263,7 @@ normalizeReplLines =
                  -> Bool -- ^ True when line is a banner.
     isBannerLine s =
       let stripped = filter (/= ' ') s
-          boxChars = "┌┐└┘─│"
+          boxChars = "┌┐└┘─│" :: String
       in (not (null stripped) && all (`elem` boxChars) stripped)
          || ("Kip " `isInfixOf` s && any (`elem` boxChars) s)
 

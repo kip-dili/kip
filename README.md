@@ -199,6 +199,44 @@ kip --exec path/to/file.kip
 kip --codegen js path/to/file.kip
 ```
 
+### Language Server (kip-lsp)
+
+`kip-lsp` speaks LSP over stdio. You can run it directly for editor integration:
+
+```bash
+stack exec kip-lsp
+```
+
+#### Editor setup (PATH guidance)
+
+Make sure `kip-lsp` is on your `PATH`, or configure your editor to call the
+absolute path from `stack exec -- which kip-lsp`.
+
+**VS Code (generic LSP extension):**
+
+```json
+{
+  "languageServerExecutable": "kip-lsp",
+  "languageServerArgs": []
+}
+```
+
+**Neovim (init.lua):**
+
+```lua
+vim.lsp.start({
+  name = "kip-lsp",
+  cmd = { "kip-lsp" },
+  root_dir = vim.fn.getcwd(),
+})
+```
+
+**Emacs (eglot):**
+
+```elisp
+(add-to-list 'eglot-server-programs '(kip-mode . ("kip-lsp")))
+```
+
 ## WASM Playground
 
 A browser playground can be built from source under `playground/`. It compiles the
@@ -274,6 +312,8 @@ stack test
 ```
 
 Tests are in `tests/succeed/` (expected to pass) and `tests/fail/` (expected to fail).
+The test suite also runs a basic `kip-lsp` roundtrip if `kip-lsp` is on `PATH`
+or `KIP_LSP_BIN` is set.
 
 ## Morphological Analysis
 
