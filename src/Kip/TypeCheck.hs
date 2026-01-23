@@ -4,36 +4,89 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 -- | Type checker and type inference for Kip.
 -- |
--- | This module performs a single-pass, syntax-directed type check over the AST
--- | while threading a mutable 'TCState'. The overall shape is:
+-- | This module performs a single-pass, syntax-directed check over the AST while
+-- | threading a mutable 'TCState'. The main flow is:
 -- |
--- |   1. Resolve identifiers against the current scope ('tcCtx') and collect
--- |      candidate bindings (values, functions, constructors).
--- |   2. Infer types for subexpressions bottom-up, producing 'Maybe (Ty Ann)'
--- |      so unknowns can be propagated without immediately failing.
--- |   3. Validate applications by matching argument types and grammatical cases
--- |      against function signatures and constructor signatures.
--- |   4. Commit successful matches by returning a rewritten expression with
--- |      arguments reordered to the signature's expected case order.
+-- |   1. 'registerForwardDecls' pre-seeds 'tcCtx', 'tcFuncSigs', 'tcCtors', and
+-- |      'tcTyCons' so later references can resolve in one pass.
+-- |   2. 'tcStmt' walks statements, checking and recording definitions,
+-- |      constructor signatures, and return types in 'tcFuncSigRets'.
+-- |   3. 'tcExp1With' checks expressions bottom-up, resolves names, matches
+-- |      overloads, and rewrites applications with case-ordered arguments.
 -- |
--- | Ambiguity elimination is handled at the call-site resolution step:
+-- | Name resolution and overloads
 -- |
--- |   * Each function name may have multiple overloads ('tcFuncSigs'). We
--- |     filter by arity first, then by argument case, then by type unification.
--- |   * Argument cases are compared against the signature's case annotations.
--- |     If needed, 'reorderByCases' permutes arguments so they line up with the
--- |     expected cases. If case matching fails, that overload is rejected.
--- |   * For types, 'typeMatchesAllowUnknown' permits unknowns during inference,
--- |     but if all argument types are known and no overload matches, the checker
--- |     raises 'NoMatchingOverload' rather than picking arbitrarily.
--- |   * Constructor applications are checked similarly via 'tcCtors', but do
--- |     not allow overload-style ambiguity: any mismatch yields 'NoMatchingCtor'.
+-- |   * Each identifier occurrence carries candidate bindings and a grammatical
+-- |     case. 'resolveVar' filters candidates by scope ('tcCtx'), optional
+-- |     arity (for applications), and then case; failure yields 'UnknownName',
+-- |     'NoType', or 'Ambiguity'.
+-- |   * Functions may be overloaded ('tcFuncSigs'). For a call, we filter by
+-- |     arity, then by case compatibility, then by type compatibility.
+-- |   * Constructors ('tcCtors') are /not/ overloaded: any mismatch in arity,
+-- |     case, or type yields 'NoMatchingCtor'.
 -- |
--- | The combination of case-aware reordering plus arity/type filtering makes
--- | overload resolution deterministic: there is either a unique applicable
--- | overload or a precise error describing why none match.
+-- | Grammatical cases and when they are resolved
 -- |
--- | Type name syntax:
+-- |   * Cases are stored in annotations ('Ann') on expressions and in argument
+-- |     signatures. During application, 'tcExp1With' gathers the actual cases
+-- |     and attempts to align them with the signature’s expected case order.
+-- |   * 'reorderByCases' permutes the argument list only when the expected and
+-- |     actual cases are the same set with no duplicates; otherwise the
+-- |     signature is rejected.
+-- |   * After reordering, each argument is checked for a case mismatch. Strict
+-- |     mismatches reject the overload, except for /flexible/ cases:
+-- |
+-- |       - Pattern-bound variables (found in 'tcVarTys') are allowed to float
+-- |         across cases.
+-- |       - Constructor applications are always strict (no flexible case).
+-- |       - Other function calls are treated as flexible.
+-- |
+-- |   * Case resolution happens at call sites (not later): successful matches
+-- |     return an 'App' with arguments reordered to the signature. When a type
+-- |     constructor is applied as a unary "case marker", 'applyTypeCase' updates
+-- |     the argument’s case immediately.
+-- |
+-- | Type inference and unknowns
+-- |
+-- |   * 'inferType' returns 'Maybe (Ty Ann)'. Unknowns propagate as 'Nothing' so
+-- |     we can defer errors during partial inference.
+-- |   * For variables, we first consult 'tcVarTys' (pattern/let bindings), then
+-- |     inlineable values ('tcVals'), then nullary constructors. Otherwise we
+-- |     fall back to a 'TyVar' tagged with the occurrence case, or 'Nothing' if
+-- |     the name is not in scope.
+-- |   * For applications, constructors use 'unifyTypes' to produce a
+-- |     substitution for type variables, which is applied to the constructor’s
+-- |     result type. Functions use 'typeMatchesAllowUnknown' and
+-- |     'tcFuncSigRets' to pick a return type; unknown arguments allow us to
+-- |     keep going without choosing arbitrarily.
+-- |
+-- | Parametric polymorphism and skolems
+-- |
+-- |   * Unknown type identifiers in annotations are parsed as 'TyVar' and are
+-- |     treated as implicitly quantified type variables. A 'TyInd' whose name
+-- |     is /not/ present in 'tcTyCons' is also treated as a type variable.
+-- |   * When type-checking a function body, argument types are skolemized
+-- |     ('TyVar' -> 'TySkolem') before being added to 'tcVarTys'/'tcFuncSigs'.
+-- |     This makes them rigid inside the body and prevents unification with
+-- |     concrete types (e.g., @tam-sayı@) unless instantiated at the call site.
+-- |   * 'tyEq' and 'unifyTypes' treat 'TyVar' as flexible (with the exception
+-- |     that it cannot unify with function types), while 'TySkolem' matches only
+-- |     itself (or a flexible 'TyVar').
+-- |   * For explicit polymorphic annotations, 'tyMatchesRigid' compares the
+-- |     inferred type against the declared type, requiring rigid variables on
+-- |     the right-hand side to match /exactly/. This avoids collapsing
+-- |     parametric types into primitives.
+-- |
+-- | Pattern matching
+-- |
+-- |   * 'tcClause' infers pattern-bound variables via 'inferPatTypes'. The
+-- |     scrutinee type is unified with the constructor’s result type; the
+-- |     resulting substitution is applied to the constructor’s argument types
+-- |     and bound into 'tcVarTys'.
+-- |   * A mismatch raises 'PatternTypeMismatch' with both expected and actual
+-- |     types.
+-- |
+-- | Type name syntax
 -- |
 -- |   * Hyphens are part of a type name (e.g., @tam-sayı@). A space between
 -- |     identifiers denotes type application, not a composite name, so
@@ -41,26 +94,6 @@
 -- |   * The checker does not normalize between hyphenated and space-separated
 -- |     forms; it relies on the parser's structure to distinguish names from
 -- |     applications.
--- |
--- | Skolemization and rigid type variables:
--- |
--- |   * Unknown type identifiers in type annotations are parsed as 'TyVar'.
--- |     These are treated as universally quantified placeholders, not concrete
--- |     types. For example, @sayı@ in a signature is a type variable, not the
--- |     primitive @tam-sayı@ type.
--- |   * When type-checking a function body, argument types are skolemized
--- |     ('TyVar' -> 'TySkolem') before they are added to 'tcVarTys' and
--- |     'tcFuncSigs'. This makes them rigid inside the body: they cannot unify
--- |     with concrete types like @tam-sayı@ unless the variable is instantiated
--- |     by an explicit type application at the call site.
--- |   * Unification and type equality treat skolems as only matching themselves
--- |     (or a flexible 'TyVar'), preventing accidental inference from
--- |     collapsing a parametric type into a primitive.
--- |
--- | In effect, the checker separates “unknown but fixed” types (skolems inside
--- | a definition) from “unknown and flexible” types (type variables at use
--- | sites), which removes the @sayı@ vs @tam-sayı@ ambiguity without blocking
--- | legitimate polymorphic uses.
 module Kip.TypeCheck where
 
 import GHC.Generics (Generic)
