@@ -19,9 +19,10 @@ import qualified Data.Map.Strict as Map
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
-import Crypto.Hash.SHA256 (hash)
+import Crypto.Hash.SHA256 (hash, hashlazy)
 import qualified Data.ByteString as BS
 import Data.ByteString.Lazy (fromStrict, toStrict)
+import qualified Data.ByteString.Lazy as BL
 
 import Kip.AST
 import Kip.Parser (ParserState(..), MorphCache)
@@ -262,11 +263,11 @@ hashFile path = do
   case Map.lookup path cached of
     Just digest -> return (Just digest)
     Nothing -> do
-      res <- try (BS.readFile path)
+      res <- try (BL.readFile path)
       case res of
         Left (_ :: SomeException) -> return Nothing
         Right bytes -> do
-          let digest = hash bytes
+          let digest = hashlazy bytes
           modifyIORef' hashCache (Map.insert path digest)
           return (Just digest)
 
