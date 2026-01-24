@@ -16,6 +16,9 @@ const codegenPanelEl = document.getElementById("codegen-panel");
 const codegenOutputEl = document.getElementById("codegen-output");
 const panelsEl = document.querySelector(".playground-panels");
 const panelDividerEl = document.getElementById("panel-divider");
+const playgroundShellEl = document.querySelector(".playground-shell");
+const fullscreenBtn = document.getElementById("fullscreen");
+const fullscreenLabelEl = fullscreenBtn ? fullscreenBtn.querySelector(".btn-label") : null;
 
 let busyCursor = false;
 
@@ -537,6 +540,7 @@ let pendingInput = false;
 let interactiveSupported = true;
 let activeMode = null;
 let codegenLines = [];
+let isFullscreen = false;
 
 function setRunState(isRunning) {
   runBtn.disabled = isRunning;
@@ -545,6 +549,22 @@ function setRunState(isRunning) {
   }
   if (stopBtn) {
     stopBtn.disabled = !isRunning;
+  }
+}
+
+function setFullscreen(nextFullscreen) {
+  isFullscreen = nextFullscreen;
+  if (playgroundShellEl) {
+    playgroundShellEl.classList.toggle("fullscreen", isFullscreen);
+  }
+  if (document.body) {
+    document.body.classList.toggle("playground-fullscreen", isFullscreen);
+  }
+  if (fullscreenBtn) {
+    fullscreenBtn.setAttribute("aria-pressed", String(isFullscreen));
+    if (fullscreenLabelEl) {
+      fullscreenLabelEl.textContent = isFullscreen ? "Exit Fullscreen" : "Fullscreen";
+    }
   }
 }
 
@@ -839,5 +859,11 @@ if (stopBtn) {
     hideTerminalInput();
     activeMode = null;
     setRunState(false);
+  });
+}
+
+if (fullscreenBtn) {
+  fullscreenBtn.addEventListener("click", () => {
+    setFullscreen(!isFullscreen);
   });
 }

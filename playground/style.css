@@ -46,6 +46,10 @@ body.busy-cursor * {
   cursor: progress !important;
 }
 
+body.playground-fullscreen {
+  overflow: hidden;
+}
+
 /* Links */
 a {
   color: inherit;
@@ -379,6 +383,28 @@ a.badge:hover {
   background: rgba(255, 255, 255, 0.03);
   box-shadow: var(--shadow);
   overflow: hidden;
+}
+
+.playground-shell.fullscreen {
+  position: fixed;
+  inset: 0.75rem;
+  z-index: 60;
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 12, 18, 0.96);
+}
+
+.playground-shell.fullscreen .playground-panels {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  resize: none;
+}
+
+.playground-shell.fullscreen .playground-codegen {
+  max-height: 35vh;
+  overflow: auto;
 }
 
 .playground-controls {
