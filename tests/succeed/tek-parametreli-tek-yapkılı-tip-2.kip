@@ -1,0 +1,9 @@
+(* Çokbiçimli tekli tipi. Tip ve yapkı ismi farklı. *)
+Bir (a teklisi)
+ya bir a birlisi
+olabilir.
+
+(bu tam-sayı teklisinin) değeri,
+  bu şu birlisiyse, şudur.
+
+((5 birlisinin) değerini) yaz.
