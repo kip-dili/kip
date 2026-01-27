@@ -19,7 +19,7 @@ olabilir.
 
 (* Çokbiçimli ikili çifti tipi. Haskell'deki (,) gibi. *)
 Bir (a'yla b çifti)
-ya bir a'yla bir b çifti
+ya bir a'yla bir b ikilisi
 olabilir.
 
 (* Çokbiçimli ikili toplam tipi. Haskell'deki Either gibi. *)

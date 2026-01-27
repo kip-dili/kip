@@ -82,7 +82,7 @@ import Data.List
 import Data.Maybe (maybeToList, mapMaybe, isJust, isNothing, fromMaybe)
 import qualified Data.Map.Strict as M
 import Control.Applicative (optional)
-import Control.Monad (forM, guard, unless, when)
+import Control.Monad (forM, forM_, guard, unless, when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, get, put, modify, runStateT)
@@ -140,7 +140,7 @@ renderParserErrorTr err =
     ErrPatternOnlyNames -> "Örüntüde sadece isimler kullanılabilir."
     ErrPatternArgNameRepeated -> "Örüntüde argüman adı tekrar edilemez."
     ErrYaDaInvalid -> "\"ya da\" yalnızca çok yapkılı tiplerin son yapkısında kullanılabilir."
-    ErrInternal _ -> "Beklenmeyen hata."
+    ErrInternal msg -> msg
 
 -- | Render parser errors in English.
 renderParserErrorEn :: ParserError -> Text
@@ -159,7 +159,7 @@ renderParserErrorEn err =
     ErrPatternOnlyNames -> "Only identifiers are allowed in patterns."
     ErrPatternArgNameRepeated -> "Pattern argument names cannot be repeated."
     ErrYaDaInvalid -> "\"ya da\" can only appear before the last constructor."
-    ErrInternal _ -> "Unexpected error."
+    ErrInternal msg -> msg
 
 {- | Hash table type alias for morphology caches.
 
@@ -920,14 +920,9 @@ normalizePossessive (mods, word) = do
 normalizeTypeHead :: Identifier -- ^ Surface identifier.
                   -> KipParser Identifier -- ^ Normalized identifier.
 normalizeTypeHead ident@(mods, word) =
-  if null mods && not (hasBufferS word)
+  if null mods
     then normalizePossessive ident
     else return ident
-  where
-    hasBufferS :: Text -- ^ Surface word.
-               -> Bool -- ^ True when the word ends with buffer s.
-    hasBufferS txt =
-      any (`T.isSuffixOf` txt) ["sı", "si", "su", "sü"]
 
 -- | Resolve a type candidate without requiring it to be in scope.
 resolveTypeCandidateLoose :: Identifier -- ^ Surface type identifier.
@@ -1554,14 +1549,13 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     ctorIdent = do
       rawIdent <- identifier
       (_, sp) <- withSpan (return ())
-      -- Use resolveCandidatePreferCtx to get the actual case
+      -- Constructor names should use their surface form without normalization
+      -- Only detect the grammatical case for annotation purposes
       candidates <- estimateCandidates False rawIdent
-      case candidates of
-        (ident, cas):_ -> return (ident, mkAnn cas sp)
-        [] -> do
-          -- Fallback: use nominative
-          (ident, cas) <- resolveCandidatePreferNom rawIdent
-          return (ident, mkAnn cas sp)
+      let cas = case candidates of
+                  (_,c):_ -> c
+                  [] -> Nom
+      return (rawIdent, mkAnn cas sp)
     -- | Parse constructors without arguments.
     ctor :: KipParser (Ctor Ann) -- ^ Parsed constructor.
     ctor = try ((, []) <$> ctorIdent)
@@ -1667,8 +1661,18 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       ctors <- try (lexeme (string "var olamaz") $> [])
            <|> (parseCtors <* lexeme (string "olabilir"))
       period
+      -- Validate that no constructor name would normalize to the same name as the type
+      -- This check prevents ambiguity in collectArgsLoop where "bir a teklisi" could be
+      -- interpreted as type application if "teklisi" normalizes to type "tekli"
+      let ctorNames = map (fst . fst) ctors
+      forM_ ctorNames $ \ctorName -> do
+        normalizedCtorName <- normalizeTypeHead ctorName
+        when (normalizedCtorName == n) $
+          customFailure (ErrInternal (T.concat
+            ["Constructor '", snd ctorName, "' normalizes to '", snd normalizedCtorName,
+             "' which matches type name '", snd n, "' and creates parsing ambiguity"]))
       -- Extract constructor names (now from ((Identifier, Ann), [Ty Ann]))
-      modifyP (\ps -> ps {parserCtx = n : map (fst . fst) ctors ++ parserCtx ps})
+      modifyP (\ps -> ps {parserCtx = n : ctorNames ++ parserCtx ps})
       return (NewType n params ctors)
     -- | Parse a type head (name and parameters).
     typeHead :: KipParser (Identifier, [Ty Ann], [Identifier]) -- ^ Type head parts.
