@@ -108,7 +108,7 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
 import Control.Monad.IO.Class
-import Data.List (find, foldl', nub)
+import Data.List (find, foldl', intersect, nub)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -156,6 +156,7 @@ data TCError =
  | NoMatchingOverload Identifier [Maybe (Ty Ann)] [(Identifier, [Arg Ann])] Span
  | NoMatchingCtor Identifier [Maybe (Ty Ann)] [Ty Ann] Span
  | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) Span  -- ctor, expected (ctor result), actual (scrutinee)
+ | NonExhaustivePattern Span
  deriving (Show, Ord, Eq, Generic)
 
 -- | Binary instance for type checker errors.
@@ -167,6 +168,7 @@ instance Binary TCError where
   put (NoMatchingOverload ident mty sigs sp) = B.put (4 :: Word8) >> B.put ident >> B.put mty >> B.put sigs >> B.put sp
   put (NoMatchingCtor ident mty tys sp) = B.put (5 :: Word8) >> B.put ident >> B.put mty >> B.put tys >> B.put sp
   put (PatternTypeMismatch ctor expTy actTy sp) = B.put (6 :: Word8) >> B.put ctor >> B.put expTy >> B.put actTy >> B.put sp
+  put (NonExhaustivePattern sp) = B.put (7 :: Word8) >> B.put sp
 
   get = do
     tag <- B.get :: Get Word8
@@ -178,6 +180,7 @@ instance Binary TCError where
       4 -> NoMatchingOverload <$> B.get <*> B.get <*> B.get <*> B.get
       5 -> NoMatchingCtor <$> B.get <*> B.get <*> B.get <*> B.get
       6 -> PatternTypeMismatch <$> B.get <*> B.get <*> B.get <*> B.get
+      7 -> NonExhaustivePattern <$> B.get
       _ -> fail "Invalid TCError tag"
 
 -- | Type checker monad stack.
@@ -331,6 +334,9 @@ tcExp1With allowEffect e =
               Just ty -> [(([], T.pack "_scrutinee"), ty)]
               Nothing -> []
       clauses' <- mapM (tcClause scrutArg allowEffect) clauses
+      case mScrutTy of
+        Just scrutTy -> checkExhaustivePatterns scrutTy clauses annExp
+        Nothing -> return ()
       return (Match annExp scrutinee' clauses')
     Let {annExp, varName, body} ->
       withCtx [varName] (tcExp1With allowEffect body)
@@ -518,6 +524,9 @@ tcStmt stmt =
           skolemArgs = map (Bifunctor.second skolemizeTy) args
       mRet <- withCtx (name : argNames) (withVarTypes skolemArgs (inferReturnType body))
       body' <- withCtx (name : argNames) (withFuncRet name (map snd skolemArgs) mRet (withFuncSig name skolemArgs (mapM (tcClause skolemArgs isGerund) body)))
+      case skolemArgs of
+        (_, argTy):_ -> checkExhaustivePatterns argTy body (annTy ty)
+        _ -> return ()
       -- Check that the inferred return type matches the declared type with rigid type variables
       -- Only apply this check if the declared type contains type variables (polymorphism)
       -- AND the type annotation is explicit (not the default TyString)
@@ -630,8 +639,9 @@ patIdentifiers :: Pat Ann -- ^ Pattern to inspect.
                -> [Identifier] -- ^ Identifiers in the pattern.
 patIdentifiers pat =
   case pat of
-    PWildcard -> []
-    PCtor _ vars -> map fst vars
+    PWildcard _ -> []
+    PVar n _ -> [n]
+    PCtor _ pats -> concatMap patIdentifiers pats
 
 -- | Lookup a binding by candidate identifiers.
 lookupByCandidates :: forall a.
@@ -807,23 +817,184 @@ inferPatTypes :: Pat Ann -- ^ Pattern to inspect.
               -> TCM [(Identifier, Ty Ann)] -- ^ Inferred bindings.
 inferPatTypes pat args =
   case (pat, args) of
-    (PCtor ctor vars, (_, scrutTy):_) -> do
+    (PWildcard _, _) -> return []
+    (PVar n ann, (_, ty):_) -> return [(n, ty)]
+    (PCtor ctor pats, (_, scrutTy):_) -> do
       MkTCState{tcCtors, tcTyCons} <- get
       case lookup ctor tcCtors of
         Just (argTys, resTy) ->
           case unifyTypes tcTyCons [resTy] [scrutTy] of
-            Just subst ->
+            Just subst -> do
               let argTys' = map (applySubst subst) argTys
-                  names = map fst vars
-              in return (zip names argTys')
+              -- Recursively infer types for nested patterns
+              bindings <- sequence [ inferPatTypes p [(([], T.pack "_"), ty)]
+                                   | (p, ty) <- zip pats argTys' ]
+              return (concat bindings)
             Nothing -> do
               -- Pattern type doesn't match scrutinee type
-              let sp = case vars of
-                         (_, ann):_ -> annSpan ann
-                         [] -> annSpan (annTy scrutTy)
+              let sp = case pats of
+                         (PVar _ ann):_ -> annSpan ann
+                         (PWildcard ann):_ -> annSpan ann
+                         _ -> annSpan (annTy scrutTy)
               lift (throwE (PatternTypeMismatch ctor resTy scrutTy sp))
         Nothing -> return []  -- Constructor not found - might be undefined, let other checks handle it
     _ -> return []
+
+-- | Check whether a set of patterns exhausts a scrutinee type.
+checkExhaustivePatterns :: Ty Ann -- ^ Scrutinee type.
+                        -> [Clause Ann] -- ^ Clauses to inspect.
+                        -> Ann -- ^ Annotation for span reporting.
+                        -> TCM ()
+checkExhaustivePatterns scrutTy clauses ann = do
+  MkTCState{tcTyCons} <- get
+  let pats = map (\(Clause pat _) -> pat) clauses
+      hasTopWildcard = any isWildcardPat pats
+  if hasTopWildcard
+    then return ()
+    else do
+      mCtors <- ctorsForType scrutTy
+      case mCtors of
+        Nothing -> return ()
+        Just _ -> do
+          exhaustive <- isExhaustive [scrutTy] (map (: []) pats)
+          unless exhaustive $
+            lift (throwE (NonExhaustivePattern (annSpan ann)))
+  where
+    isWildcardPat pat =
+      case pat of
+        PWildcard _ -> True
+        PVar {} -> True
+        _ -> False
+
+-- | Constructor info for exhaustiveness checking.
+data CtorInfo = CtorInfo
+  { ctorName :: Identifier
+  , ctorArgs :: [Ty Ann]
+  }
+
+-- | Resolve constructors for a concrete scrutinee type.
+ctorsForType :: Ty Ann -- ^ Scrutinee type.
+             -> TCM (Maybe [CtorInfo]) -- ^ Constructors when the type is known.
+ctorsForType ty =
+  case ty of
+    TyVar {} -> return Nothing
+    TySkolem {} -> return Nothing
+    _ -> do
+      MkTCState{tcCtors, tcTyCons} <- get
+      let pickCtor (ctor, (argTys, resTy)) =
+            case unifyTypes tcTyCons [resTy] [ty] of
+              Just subst -> Just (CtorInfo ctor (map (applySubst subst) argTys))
+              Nothing -> Nothing
+          ctors = mapMaybe pickCtor tcCtors
+      return $
+        if null ctors
+          then Nothing
+          else Just ctors
+
+-- | Check if a pattern matrix exhausts all cases for the given types.
+isExhaustive :: [Ty Ann] -- ^ Column types.
+             -> [[Pat Ann]] -- ^ Pattern matrix.
+             -> TCM Bool -- ^ True when exhaustive.
+isExhaustive tys matrix = do
+  useful <- isUseful tys matrix (replicate (length tys) (PWildcard (mkAnn Nom NoSpan)))
+  return (not useful)
+
+-- | Determine whether a pattern vector is useful (matches an uncovered case).
+isUseful :: [Ty Ann] -- ^ Column types.
+         -> [[Pat Ann]] -- ^ Pattern matrix.
+         -> [Pat Ann] -- ^ Pattern vector.
+         -> TCM Bool
+isUseful _ [] _ = return True
+isUseful [] _ _ = return False
+isUseful tys matrix vec =
+  case (tys, vec) of
+    (t:ts, p:ps) -> do
+      mCtors <- ctorsForType t
+      case mCtors of
+        Nothing ->
+          isUseful ts (map tail matrix) ps
+        Just ctors ->
+          case p of
+            PWildcard {} -> usefulWildcard ctors ts matrix ps
+            PVar {} -> usefulWildcard ctors ts matrix ps
+            PCtor ctorName subPats ->
+              case findCtor ctors ctorName of
+                Nothing -> return True
+                Just ctorInfo ->
+                  let matrix' = specializeMatrix ctorInfo matrix
+                  in isUseful (ctorArgs ctorInfo ++ ts) matrix' (subPats ++ ps)
+    _ -> return False
+  where
+    usefulWildcard ctors ts matrix ps = do
+      let present = constructorsInColumn matrix
+          complete = constructorsComplete ctors present
+      if complete
+        then anyM (\ctorInfo ->
+          isUseful (ctorArgs ctorInfo ++ ts)
+                   (specializeMatrix ctorInfo matrix)
+                   (replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan)) ++ ps)
+          ) ctors
+        else isUseful ts (defaultMatrix matrix) ps
+
+    constructorsInColumn = mapMaybe firstCtor
+    firstCtor row =
+      case row of
+        (PCtor name _ : _) -> Just name
+        _ -> Nothing
+
+    constructorsComplete ctors present =
+      all (\ctorInfo -> any (identMatchesCtor (ctorName ctorInfo)) present) ctors
+
+    findCtor ctors name =
+      find (\ctorInfo -> identMatchesCtor (ctorName ctorInfo) name) ctors
+
+    defaultMatrix = map tail . filter (isWildcardHead . head)
+    isWildcardHead pat =
+      case pat of
+        PWildcard {} -> True
+        PVar {} -> True
+        _ -> False
+
+    specializeMatrix ctorInfo =
+      mapMaybe (specializeRow ctorInfo)
+    specializeRow ctorInfo row =
+      case row of
+        [] -> Nothing
+        (p:ps) ->
+          case p of
+            PCtor name subPats | identMatchesCtor (ctorName ctorInfo) name ->
+              Just (subPats ++ ps)
+            PWildcard {} ->
+              Just (replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan)) ++ ps)
+            PVar {} ->
+              Just (replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan)) ++ ps)
+            _ -> Nothing
+
+    anyM _ [] = return False
+    anyM f (x:xs) = do
+      ok <- f x
+      if ok then return True else anyM f xs
+
+    identMatchesCtor left right =
+      identMatches left right || identMatchesPoss left right
+
+    identMatchesPoss (xs1, x1) (xs2, x2) =
+      (xs1 == xs2 || null xs1 || null xs2)
+      && not (null (roots x1 `intersect` roots x2))
+
+    roots txt =
+      nub (catMaybes [Just txt, dropTrailingVowel txt >>= dropTrailingSoftG])
+
+    dropTrailingVowel txt =
+      case T.unsnoc txt of
+        Just (pref, c)
+          | c `elem` ['i', 'ı', 'u', 'ü'] -> Just pref
+        _ -> Nothing
+
+    dropTrailingSoftG txt =
+      case T.unsnoc txt of
+        Just (pref, 'ğ') -> Just (pref <> T.pack "k")
+        _ -> Nothing
 
 -- | Compare a maybe-inferred type with an expected type.
 typeMatches :: [(Identifier, Int)] -- ^ Type constructor arities.

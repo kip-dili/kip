@@ -69,6 +69,7 @@ instance Binary CachedModule
 -- | Serialized parser state subset needed to restore a module.
 data CachedParserState = CachedParserState
   { pctx :: [Identifier] -- ^ Parser context identifiers.
+  , pctors :: [Identifier] -- ^ Constructor identifiers.
   , ptyParams :: [Identifier] -- ^ Type parameter identifiers.
   , ptyCons :: [(Identifier, Int)] -- ^ Type constructor arities.
   , ptyMods :: [(Identifier, [Identifier])] -- ^ Type modifier expansions.
@@ -84,6 +85,7 @@ toCachedParserState ::
 toCachedParserState ps =
   CachedParserState
     { pctx = parserCtx ps
+    , pctors = parserCtors ps
     , ptyParams = parserTyParams ps
     , ptyCons = parserTyCons ps
     , ptyMods = parserTyMods ps
@@ -98,7 +100,7 @@ fromCachedParserState ::
   -> CachedParserState -- ^ Cached parser snapshot.
   -> ParserState -- ^ Rehydrated parser state.
 fromCachedParserState fsm upsCache downsCache CachedParserState{..} =
-  MkParserState fsm pctx ptyParams ptyCons ptyMods pprimTypes upsCache downsCache
+  MkParserState fsm pctx pctors ptyParams ptyCons ptyMods pprimTypes upsCache downsCache
 
 -- | Cached wrapper for the type checker state.
 newtype CachedTCState = CachedTCState TCState

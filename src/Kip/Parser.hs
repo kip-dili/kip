@@ -210,6 +210,7 @@ data ParserState =
   MkParserState
     { fsm :: FSM
     , parserCtx :: [Identifier]
+    , parserCtors :: [Identifier]
     , parserTyParams :: [Identifier]
     , parserTyCons :: [(Identifier, Int)]
     , parserTyMods :: [(Identifier, [Identifier])]
@@ -279,31 +280,34 @@ newParserState :: FSM -- ^ Morphology FSM.
 newParserState fsm' = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' [] [] [] [] [] upsCache <$> HT.new
+  MkParserState fsm' [] [] [] [] [] [] upsCache <$> HT.new
 
 -- | Create a parser state with a given context and fresh caches.
 newParserStateWithCtx :: FSM -- ^ Morphology FSM.
                       -> [Identifier] -- ^ Initial identifier context.
+                      -> [Identifier] -- ^ Initial constructor identifiers.
                       -> [Identifier] -- ^ Initial type parameters.
                       -> [(Identifier, Int)] -- ^ Type constructor arities.
                       -> [(Identifier, [Identifier])] -- ^ Type modifiers.
                       -> [Identifier] -- ^ Primitive types.
                       -> IO ParserState -- ^ Fresh parser state.
-newParserStateWithCtx fsm' ctx tyParams tyCons tyMods primTypes = do
+newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx tyParams tyCons tyMods primTypes upsCache <$> HT.new
+  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared ups cache.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
-newParserStateWithCaches fsm' = MkParserState fsm' [] [] [] [] []
+newParserStateWithCaches fsm' =
+  MkParserState fsm' [] [] [] [] [] []
 
 -- | Create a parser state with context and shared caches.
 newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> [Identifier] -- ^ Initial identifier context.
+                               -> [Identifier] -- ^ Initial constructor identifiers.
                                -> [Identifier] -- ^ Initial type parameters.
                                -> [(Identifier, Int)] -- ^ Type constructor arities.
                                -> [(Identifier, [Identifier])] -- ^ Type modifiers.
@@ -889,18 +893,44 @@ resolveTypeCandidatePreferCtx :: Identifier -- ^ Surface type identifier.
 resolveTypeCandidatePreferCtx ident = do
   MkParserState{parserTyCons, parserTyParams, parserPrimTypes} <- getP
   let tyNames = map fst parserTyCons ++ parserTyParams ++ parserPrimTypes
-  if ident `elem` tyNames
-    then return (ident, Nom)
-    else do
-      candidates <- estimateCandidates False ident
-      let filtered = filter (\(ident', _) -> ident' `elem` tyNames) candidates
-      case preferInflected filtered of
-        x:_ -> return x
-        [] -> do
-          mMatch <- matchCtxByInflection tyNames ident candidates
-          case mMatch of
-            Just matched -> return matched
-            Nothing -> resolveCandidatePreferCtx ident
+  let normalizeCandidate (name, cas) = do
+        base <- normalizeTypeHead name
+        if base `elem` tyNames
+          then return (base, cas)
+          else return (name, cas)
+  case stripBareCaseSuffix ident of
+    Just (base, cas) | base `elem` tyNames -> return (base, cas)
+    _ ->
+      if ident `elem` tyNames
+        then return (ident, Nom)
+        else do
+          candidates <- estimateCandidates False ident
+          let filtered = filter (\(ident', _) -> ident' `elem` tyNames) candidates
+          case preferInflected filtered of
+            x:_ -> normalizeCandidate x
+            [] -> do
+              mMatch <- matchCtxByInflection tyNames ident candidates
+              case mMatch of
+                Just matched -> normalizeCandidate matched
+                Nothing -> resolveCandidatePreferCtx ident
+  where
+    stripBareCaseSuffix :: Identifier -> Maybe (Identifier, Case)
+    stripBareCaseSuffix (mods, word) =
+      let suffixes =
+            [ ("nın", Gen), ("nin", Gen), ("nun", Gen), ("nün", Gen)
+            , ("ın", Gen), ("in", Gen), ("un", Gen), ("ün", Gen)
+            , ("yla", Ins), ("yle", Ins), ("la", Ins), ("le", Ins)
+            , ("den", Abl), ("dan", Abl), ("ten", Abl), ("tan", Abl)
+            , ("de", Loc), ("da", Loc), ("te", Loc), ("ta", Loc)
+            , ("ye", Dat), ("ya", Dat), ("e", Dat), ("a", Dat)
+            , ("yi", Acc), ("yı", Acc), ("yu", Acc), ("yü", Acc)
+            , ("i", Acc), ("ı", Acc), ("u", Acc), ("ü", Acc)
+            ]
+          tryStrip (suf, cas) =
+            case T.stripSuffix (T.pack suf) word of
+              Just base | T.length base > 1 -> Just ((mods, base), cas)
+              _ -> Nothing
+      in foldr (\s acc -> acc <|> tryStrip s) Nothing suffixes
 
 -- | Normalize a possessive surface form to its nominative root.
 normalizePossessive :: Identifier -- ^ Surface identifier.
@@ -912,9 +942,30 @@ normalizePossessive (mods, word) = do
       let baseRoot = T.takeWhile (/= '<') analysis
       forms <- downsCached (stripCaseTags analysis)
       case forms of
-        (x:_) -> return (mods, x)
-        [] -> return (mods, baseRoot)
-    Nothing -> return (mods, word)
+        (x:_) ->
+          if x == word
+            then case stripPossessiveSuffix word of
+                   Just base -> return (mods, base)
+                   Nothing -> return (mods, x)
+            else return (mods, x)
+        [] ->
+          if baseRoot == word
+            then case stripPossessiveSuffix word of
+                   Just base -> return (mods, base)
+                   Nothing -> return (mods, baseRoot)
+            else return (mods, baseRoot)
+    Nothing ->
+      case stripPossessiveSuffix word of
+        Just base -> return (mods, base)
+        Nothing -> return (mods, word)
+  where
+    stripPossessiveSuffix txt =
+      case T.stripSuffix "si" txt
+        <|> T.stripSuffix "sı" txt
+        <|> T.stripSuffix "su" txt
+        <|> T.stripSuffix "sü" txt of
+        Just base | not (T.null base) -> Just base
+        _ -> Nothing
 
 -- | Normalize type head names when they use bare possessive suffixes.
 normalizeTypeHead :: Identifier -- ^ Surface identifier.
@@ -1162,7 +1213,13 @@ parseExpAny = parseExpWithCtx False
 -- | Parse an expression with optional context filtering.
 parseExpWithCtx :: Bool -- ^ Whether to use context when resolving names.
                 -> KipParser (Exp Ann) -- ^ Parsed expression.
-parseExpWithCtx useCtx =
+parseExpWithCtx useCtx = parseExpWithCtx' useCtx True
+
+-- | Parse an expression with optional context filtering and match-expression support.
+parseExpWithCtx' :: Bool -- ^ Whether to use context when resolving names.
+                 -> Bool -- ^ Whether to allow match expressions.
+                 -> KipParser (Exp Ann) -- ^ Parsed expression.
+parseExpWithCtx' useCtx allowMatch =
   letExp <|> seqExp
   where
     -- | Parse a numeric literal with case.
@@ -1190,7 +1247,12 @@ parseExpWithCtx useCtx =
       return (Var (mkAnn (pickCase True candidates) sp) name candidates)
     -- | Parse an atomic expression.
     atom :: KipParser (Exp Ann) -- ^ Parsed atomic expression.
-    atom = try matchExpr <|> try stringLiteral <|> try numberLiteral <|> try var <|> parens (parseExpWithCtx useCtx)
+    atom =
+      (if allowMatch then try matchExpr else empty)
+      <|> try stringLiteral
+      <|> try numberLiteral
+      <|> try var
+      <|> parens (parseExpWithCtx' useCtx allowMatch)
     -- | Parse application chains.
     app :: KipParser (Exp Ann) -- ^ Parsed application expression.
     app = do
@@ -1234,7 +1296,7 @@ parseExpWithCtx useCtx =
           lexeme (char ',')
           st <- getP
           putP st { parserCtx = name : parserCtx st }
-          body <- parseExpWithCtx useCtx
+          body <- parseExpWithCtx' useCtx allowMatch
           putP st
           let ann = mkAnn (annCase (annExp body)) (mergeSpan bindSpan (annSpan (annExp body)))
           return (Seq ann bindExp body)
@@ -1254,17 +1316,17 @@ parseExpWithCtx useCtx =
                 Bind {bindName} -> do
                   st <- getP
                   putP st { parserCtx = bindName : parserCtx st }
-                  res <- parseExpWithCtx useCtx
+                  res <- parseExpWithCtx' useCtx allowMatch
                   putP st
                   return res
-                _ -> parseExpWithCtx useCtx
+                _ -> parseExpWithCtx' useCtx allowMatch
               let ann = mkAnn (annCase (annExp e2)) (mergeSpan (annSpan (annExp e1)) (annSpan (annExp e2)))
               return (Seq ann e1 e2)
             else
               -- e1 is not a converb, check if it looks like a match pattern (Cond case)
               -- This handles match expressions without outer parens (like bir-fazlası.kip)
               -- Only do this when useCtx=True to avoid triggering in pattern parsing
-              if useCtx && isCondExpr e1
+              if allowMatch && useCtx && isCondExpr e1
                 then parseMatchCont e1
                 else return e1
     -- | Check if expression looks like a match pattern (Cond case).
@@ -1291,7 +1353,7 @@ parseExpWithCtx useCtx =
       let argNames = [scrutName]
       pat <- expToPat True argNames patExp
       lexeme (char ',')
-      body <- parseExpWithCtx useCtx
+      body <- parseExpWithCtx' useCtx allowMatch
       let clause1 = Clause pat body
       clauses <- parseMoreClausesCont argNames
       let allClauses = clause1 : clauses
@@ -1315,7 +1377,7 @@ parseExpWithCtx useCtx =
         Just _ -> do
           pat <- parsePatternCont False argNames
           lexeme (char ',')
-          body <- parseExpWithCtx useCtx
+          body <- parseExpWithCtx' useCtx allowMatch
           rest <- parseMoreClausesCont argNames
           return (Clause pat body : rest)
     -- | Parse a pattern in continuation form.
@@ -1323,7 +1385,7 @@ parseExpWithCtx useCtx =
                      -> [Identifier] -- ^ Bound pattern names.
                      -> KipParser (Pat Ann) -- ^ Parsed pattern.
     parsePatternCont allowScrutinee argNames =
-      (lexeme (string "değilse") $> PWildcard) <|>
+      (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
       (parseExpAny >>= expToPat allowScrutinee argNames)
     -- | Infer the scrutinee expression in continuation form.
     inferScrutineeCont :: Exp Ann -- ^ Pattern expression.
@@ -1672,7 +1734,9 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             ["Constructor '", snd ctorName, "' normalizes to '", snd normalizedCtorName,
              "' which matches type name '", snd n, "' and creates parsing ambiguity"]))
       -- Extract constructor names (now from ((Identifier, Ann), [Ty Ann]))
-      modifyP (\ps -> ps {parserCtx = n : ctorNames ++ parserCtx ps})
+      modifyP (\ps -> ps { parserCtx = n : ctorNames ++ parserCtx ps
+                         , parserCtors = ctorNames ++ parserCtors ps
+                         })
       return (NewType n params ctors)
     -- | Parse a type head (name and parameters).
     typeHead :: KipParser (Identifier, [Ty Ann], [Identifier]) -- ^ Type head parts.
@@ -1862,9 +1926,9 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       let isDefnCandidate = null args && not isGerund && isNothing mRetTy
       if isDefnCandidate
         then do
-          clauses <- parseBodyOnly
+          clauses <- parseBodyOnly []
           case clauses of
-            [Clause PWildcard body] -> do
+            [Clause (PWildcard _) body] -> do
               modifyP (\ps -> ps {parserCtx = fname : parserCtx ps})
               return (Defn fname (TyString (mkAnn Nom NoSpan)) body)
             _ -> customFailure ErrDefinitionBodyMissing
@@ -1883,8 +1947,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               isBindStart <- option False (try bindStartLookahead)
               clauses <-
                 if isBindStart
-                  then parseBodyOnly
-                  else try parseBodyOnly <|> parseClauses argNames
+                  then parseBodyOnly argNames
+                  else try (parseBodyOnly argNames) <|> parseClauses argNames
               st' <- getP
               putP (st' {parserCtx = fname : parserCtx st})
               return (Function fname args retTy clauses isGerund)
@@ -1934,12 +1998,29 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             then return (TyString ann)
             else return (TyVar ann name)
     -- | Parse a function body without explicit clauses.
-    parseBodyOnly :: KipParser [Clause Ann] -- ^ Parsed clauses.
-    parseBodyOnly = do
-      -- Try parsing as a match expression first (no parens required in function body)
-      body <- try (parseMatchExpr True) <|> parseExp
+    parseBodyOnly :: [Identifier] -- ^ Function argument names.
+                  -> KipParser [Clause Ann] -- ^ Parsed clauses.
+    parseBodyOnly argNames = do
+      body <- parseExp
+      unless (null argNames) $ do
+        ambiguous <- isAmbiguousMatchExpr body
+        guard (not ambiguous)
       period
-      return [Clause PWildcard body]
+      return [Clause (PWildcard (Nom, NoSpan)) body]
+    -- | Reject match expressions that likely represent function clauses.
+    isAmbiguousMatchExpr :: Exp Ann -> KipParser Bool
+    isAmbiguousMatchExpr expItem =
+      case expItem of
+        Match _ scrutinee _ ->
+          case scrutinee of
+            Var {varCandidates} -> do
+              MkParserState{parserCtx, parserCtors} <- getP
+              let candidateNames = map fst varCandidates
+                  isCtor = any (`elem` parserCtors) candidateNames
+                  inScope = any (`elem` parserCtx) candidateNames
+              return (isCtor && inScope)
+            _ -> return False
+        _ -> return False
     -- | Parse match clauses for a function.
     parseClauses :: [Identifier] -- ^ Function argument names.
                  -> KipParser [Clause Ann] -- ^ Parsed clauses.
@@ -1966,12 +2047,13 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       case mWildcard of
         Just _ -> do
           lexeme (char ',')
-          Clause PWildcard <$> parseExp
+          Clause (PWildcard (Nom, NoSpan)) <$> parseExp
         Nothing -> do
-          -- Parse pattern expression first to extract pattern variables
+          -- Parse pattern expression and convert to pattern
           patExp <- parseExpAny
-          let patVarNames = extractPatVarNames patExp
           pat <- expToPat allowScrutinee argNames patExp
+          -- Extract pattern variables from the converted pattern
+          let patVarNames = extractPatVars pat
           lexeme (char ',')
           -- Add pattern variables to context when parsing body
           body <- withPatVars patVarNames parseExp
@@ -1981,7 +2063,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                  -> [Identifier] -- ^ Function argument names.
                  -> KipParser (Pat Ann) -- ^ Parsed pattern.
     parsePattern allowScrutinee argNames =
-      (lexeme (string "değilse") $> PWildcard) <|>
+      (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
       try (parseExpAny >>= expToPat allowScrutinee argNames)
     -- | Look ahead for a binding expression start.
     bindStartLookahead :: KipParser Bool -- ^ True when a binding start is found.
@@ -2306,22 +2388,37 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
         [] -> empty
 
 -- | Extract pattern variable names from a pattern expression.
+-- This must check if identifiers are constructors to distinguish variables.
+extractPatVarNamesInContext :: [Identifier] -- ^ Constructor identifiers.
+                            -> Exp Ann -- ^ Pattern expression.
+                            -> [Identifier] -- ^ Pattern variable names.
+extractPatVarNamesInContext ctx e =
+  case e of
+    Var _ _ candidates ->
+      -- If this matches a constructor in context, it's not a variable
+      case selectCondNameInCtors ctx candidates of
+        Nothing ->
+          -- Not a constructor, treat as variable
+          case preferInflected candidates of
+            (n, _):_ -> [n]
+            _ -> []
+        Just _ -> []  -- Constructor with no arguments
+    App _ (Var {}) es -> concatMap (extractPatVarNamesInContext ctx) es
+    _ -> []
+
+-- | Legacy version that doesn't check context (returns empty for safety).
 extractPatVarNames :: Exp Ann -- ^ Pattern expression.
                    -> [Identifier] -- ^ Pattern variable names.
-extractPatVarNames e =
-  case e of
-    Var {} -> []  -- Constructor with no arguments
-    App _ (Var {}) es -> concatMap getVarName es
-    _ -> []
-  where
-    getVarName (Var _ varName candidates) =
-      case preferInflected candidates of
-        (n, _):_ -> [n]
-        -- If no inflected candidates, try all candidates
-        _ -> case candidates of
-               (n, _):_ -> [n]
-               _ -> [varName]  -- Fallback to surface form
-    getVarName _ = []
+extractPatVarNames _ = []
+
+-- | Extract variable names bound by a pattern.
+extractPatVars :: Pat Ann -- ^ Pattern.
+               -> [Identifier] -- ^ Bound variable names.
+extractPatVars pat =
+  case pat of
+    PWildcard _ -> []
+    PVar n _ -> [n]
+    PCtor _ pats -> concatMap extractPatVars pats
 
 -- | Parse a match expression with optional context filtering.
 parseMatchExpr :: Bool -- ^ Whether to use context when resolving names.
@@ -2329,8 +2426,8 @@ parseMatchExpr :: Bool -- ^ Whether to use context when resolving names.
 parseMatchExpr useCtx = do
   (patExp, scrutVar, scrutName) <- parseFirstPattern
   let argNames = [scrutName]
-      patVarNames = extractPatVarNames patExp
   pat <- expToPat True argNames patExp
+  let patVarNames = extractPatVars pat
   lexeme (char ',')
   -- Add pattern variables to context when parsing body
   body <- withPatVars patVarNames (parseExpWithCtx useCtx)
@@ -2364,10 +2461,10 @@ parseMatchExpr useCtx = do
         Nothing -> return []
         Just _ -> do
           patExp <- parseWildcardOrExp
-          let clausePatVars = maybe [] extractPatVarNames patExp
           pat <- case patExp of
-                   Nothing -> return PWildcard
+                   Nothing -> return (PWildcard (Nom, NoSpan))
                    Just e -> expToPat False argNames e
+          let clausePatVars = extractPatVars pat
           lexeme (char ',')
           body <- withPatVars clausePatVars (parseExpWithCtx useCtx)
           rest <- parseMoreClauses argNames clausePatVars
@@ -2382,7 +2479,7 @@ parseMatchExpr useCtx = do
                  -> [Identifier] -- ^ Bound pattern names.
                  -> KipParser (Pat Ann) -- ^ Parsed pattern.
     parsePattern allowScrutinee argNames =
-      (lexeme (string "değilse") $> PWildcard) <|>
+      (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
       (parseExpAny >>= expToPat allowScrutinee argNames)
     -- | Infer the scrutinee expression and its name.
     inferScrutinee :: Exp Ann -- ^ Pattern expression.
@@ -2528,21 +2625,25 @@ expToPat :: Bool -- ^ Whether to allow scrutinee expressions.
          -> Exp Ann -- ^ Expression to convert.
          -> KipParser (Pat Ann) -- ^ Parsed pattern.
 expToPat allowScrutinee argNames e = do
-  MkParserState{parserCtx} <- getP
+  MkParserState{parserCtors} <- getP
   case e of
-    Var _ _ candidates ->
-      case selectCondName parserCtx candidates of
-        Nothing -> customFailure ErrPatternExpected
+    Var ann _ candidates ->
+      case selectCondNameInCtors parserCtors candidates of
+        Nothing ->
+          -- Not a constructor, treat as variable pattern
+          case preferInflected candidates of
+            (n, c):_ -> return (PVar n (mkAnn c NoSpan))
+            _ -> customFailure ErrPatternAmbiguousName
         Just ctorName -> return (PCtor ctorName [])
     App _ (Var _ _ candidates) es -> do
-      ctorName <- case selectCondName parserCtx candidates of
+      ctorName <- case selectCondNameInCtors parserCtors candidates of
         Nothing -> customFailure ErrPatternExpected
         Just n -> return n
-      -- Filter out scrutinee expressions before converting to pattern vars
+      -- Filter out scrutinee expressions before converting to patterns
       es' <- if allowScrutinee then dropScrutineeExp argNames es else return es
-      vars <- mapM expToPatVar es'
-      vars' <- dropScrutinee allowScrutinee argNames vars
-      return (PCtor ctorName vars')
+      pats <- mapM expToPatArg es'
+      pats' <- dropScrutineePat allowScrutinee argNames pats
+      return (PCtor ctorName pats')
     _ -> customFailure ErrPatternExpected
   where
     -- | Detect whether this is a match-expression context.
@@ -2563,6 +2664,84 @@ expToPat allowScrutinee argNames e = do
     dropScrutineeExp args (_:rest)
       | isMatchExprContext args = return rest  -- Match expression: OK to drop complex expressions
       | otherwise = customFailure ErrPatternComplexExpr -- Function clause: fail
+    -- | Drop a scrutinee pattern from pattern list when allowed.
+    dropScrutineePat :: Bool -- ^ Whether to allow scrutinee.
+                     -> [Identifier] -- ^ Bound pattern names.
+                     -> [Pat Ann] -- ^ Patterns.
+                     -> KipParser [Pat Ann] -- ^ Filtered patterns.
+    dropScrutineePat allowScrutinee argNames pats =
+      case pats of
+        (PVar n ann:rest) | annCase ann == Nom && n `elem` argNames ->
+          if allowScrutinee
+            then return rest
+            else customFailure ErrPatternArgNameRepeated
+        _ -> return pats
+
+-- | Convert a pattern argument expression into a pattern.
+-- Unlike expToPat, this treats bare Var nodes as variables without checking if they're constructors.
+-- This is correct for pattern arguments where "x'in y'ye ekiyse" should bind x and y as variables.
+expToPatArg :: Exp Ann -- ^ Expression to convert.
+            -> KipParser (Pat Ann) -- ^ Parsed pattern.
+expToPatArg e = do
+  MkParserState{parserCtors} <- getP
+  case e of
+    Var _ _ candidates ->
+      case selectCondNameInCtors parserCtors candidates of
+        Just ctorName -> return (PCtor ctorName [])
+        Nothing ->
+          case preferInflected candidates of
+            (n, c):_ -> return (PVar n (mkAnn c NoSpan))
+            _ -> customFailure ErrPatternAmbiguousName
+    App _ (Var _ _ candidates) es -> do
+      -- Nested constructor pattern - check if the function is a constructor
+      case selectCondNameInCtors parserCtors candidates of
+        Just ctorName -> do
+          pats <- mapM expToPatArg es
+          return (PCtor ctorName pats)
+        Nothing ->
+          -- Treat non-constructor applications as annotated variables (e.g., x öğe listesi)
+          case es of
+            (Var _ _ argCandidates : _) ->
+              case preferInflected argCandidates of
+                (n, c):_ -> return (PVar n (mkAnn c NoSpan))
+                _ -> customFailure ErrPatternAmbiguousName
+            _ -> customFailure ErrPatternOnlyNames
+    _ -> customFailure ErrPatternOnlyNames
+
+-- | Select a constructor name only when it is in scope.
+selectCondNameInCtors :: [Identifier] -- ^ Constructor identifiers.
+                      -> [(Identifier, Case)] -- ^ Candidate identifiers.
+                      -> Maybe Identifier -- ^ Selected constructor.
+selectCondNameInCtors ctors candidates =
+  case [name | (name, cas) <- candidates, cas == Cond, name `elem` ctors] of
+    n:_ -> Just n
+    [] ->
+      case [name | (name, _) <- candidates, name `elem` ctors] of
+        n:_ -> Just n
+        [] ->
+          case strippedCondMatches of
+            n:_ -> Just n
+            [] -> Nothing
+  where
+    strippedCondMatches =
+      [ base
+      | (name, _) <- candidates
+      , Just base <- [stripCondSuffixIdent name]
+      , base `elem` ctors
+      ]
+    stripCondSuffixIdent (mods, word) = do
+      base <- stripCondSuffix word
+      return (mods, base)
+    stripCondSuffix txt =
+      let suffixes = ["ysa", "yse"]
+          match = find (`T.isSuffixOf` txt) suffixes
+      in case match of
+           Nothing -> Nothing
+           Just suff ->
+             let len = T.length suff
+             in if T.length txt > len
+                  then Just (T.take (T.length txt - len) txt)
+                  else Nothing
 
 -- | Select a conditional constructor name from candidates.
 selectCondName :: [Identifier] -- ^ Context identifiers.

@@ -322,6 +322,8 @@ renderTCError paramTyCons tyMods tcErr = do
           let header =
                 T.pack (prettyIdent ctor) <> " yapıcısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
           return header
+        NonExhaustivePattern sp ->
+          return ("Tip hatası: örüntü eksik." <> renderSpan (rcLang ctx) sp)
     LangEn ->
       case tcErr of
         TC.Unknown ->
@@ -361,6 +363,8 @@ renderTCError paramTyCons tyMods tcErr = do
           let header =
                 T.pack (prettyIdent ctor) <> " constructor has type " <> expStr <> ", but " <> actStr <> " is expected here"
           return header
+        NonExhaustivePattern sp ->
+          return ("Type error: non-exhaustive pattern match." <> renderSpan (rcLang ctx) sp)
 
 -- | Render a type checker error with a source snippet.
 renderTCErrorWithSource :: [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
@@ -382,6 +386,7 @@ tcErrSpan tcErr =
     NoMatchingOverload _ _ _ sp -> Just sp
     NoMatchingCtor _ _ _ sp -> Just sp
     PatternTypeMismatch _ _ _ sp -> Just sp
+    NonExhaustivePattern sp -> Just sp
     TC.Unknown -> Nothing
 
 -- | Render a caret snippet for a source span.

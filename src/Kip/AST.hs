@@ -127,27 +127,36 @@ type Ctor ann = ((Identifier, ann), [Ty ann])
 
 -- | Pattern syntax tree.
 data Pat ann =
-    PWildcard -- ^ Wildcard pattern.
-  | PCtor Identifier [(Identifier, ann)] -- ^ Constructor pattern with named fields.
+    PWildcard ann -- ^ Wildcard pattern with annotation.
+  | PVar Identifier ann -- ^ Variable pattern (binds a name).
+  | PCtor Identifier [Pat ann] -- ^ Constructor pattern with nested sub-patterns.
   deriving (Show, Eq, Generic)
 
 -- | Functor instance for pattern annotations.
 instance Functor Pat where
-  fmap f PWildcard = PWildcard
-  fmap f (PCtor ident vars) = PCtor ident (map (fmap f) vars)
+  fmap f (PWildcard ann) = PWildcard (f ann)
+  fmap f (PVar ident ann) = PVar ident (f ann)
+  fmap f (PCtor ident pats) = PCtor ident (map (fmap f) pats)
 
 -- | Binary instance for pattern annotations.
 instance (Binary ann) => Binary (Pat ann) where
-  put PWildcard = put (0 :: Word8)
-  put (PCtor ident vars) = do
+  put (PWildcard ann) = do
+    put (0 :: Word8)
+    put ann
+  put (PVar ident ann) = do
     put (1 :: Word8)
     put ident
-    put vars
+    put ann
+  put (PCtor ident pats) = do
+    put (2 :: Word8)
+    put ident
+    put pats
   get = do
     tag <- get :: Get Word8
     case tag of
-      0 -> return PWildcard
-      1 -> PCtor <$> get <*> get
+      0 -> PWildcard <$> get
+      1 -> PVar <$> get <*> get
+      2 -> PCtor <$> get <*> get
       _ -> fail "Invalid Pat tag"
 
 -- | Match clause of a pattern and expression.
@@ -273,9 +282,10 @@ prettyExp (Match _ scrut clauses) =
               -> String -- ^ Rendered pattern.
     prettyPat scr pat =
       case pat of
-        PWildcard -> "değilse"
-        PCtor ctor vars ->
-          let argStrs = scr : map (prettyIdent' . fst) vars
+        PWildcard _ -> "değilse"
+        PVar n _ -> prettyIdent' n
+        PCtor ctor pats ->
+          let argStrs = scr : map (prettyPat "") pats
           in unwords (argStrs ++ [prettyIdent' ctor])
 prettyExp (Let _ name body) =
   "let " ++ T.unpack (T.intercalate "-" (fst name ++ [snd name])) ++ " in " ++ prettyExp body

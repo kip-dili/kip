@@ -373,7 +373,7 @@ renderFunction name args clauses =
   let argsText = renderArgNames args
       bodyLines =
         case clauses of
-          [Clause PWildcard body] ->
+          [Clause (PWildcard _) body] ->
             ["return " <> codegenExp body <> ";"]
           _ ->
             let arg0 = case args of
@@ -389,51 +389,61 @@ renderFunction name args clauses =
       ]
 
 renderClauseChain :: Text -> [Clause Ann] -> [Text]
-renderClauseChain scrutinee clauses =
-  ["switch (" <> scrutinee <> ".tag) {"]
-  ++ concatMap (renderSwitchCase scrutinee) clauses
-  ++ ["}"]
+renderClauseChain = renderClauseIfChain
 
-renderSwitchCase :: Text -> Clause Ann -> [Text]
-renderSwitchCase scrutinee (Clause pat body) =
-  case pat of
-    PWildcard ->
-      [ "  default: {"
-      , indent 4 (T.unlines ["return " <> codegenExp body <> ";"])
-      , "  }"
-      ]
-    PCtor ctor vars ->
-      let -- Generate unique names for pattern variables, handling duplicates
-          uniqueVars = makeUniqueVars (map (toJsIdent . fst) vars)
-          binds =
-            case vars of
-              [] -> []
-              _ ->
-                [ "const [" <> T.intercalate ", " uniqueVars <> "] = "
-                    <> scrutinee <> ".args || [];"]
-          bodyLines = binds ++ ["return " <> codegenExp body <> ";"]
-      in
-        [ "  case " <> renderString (normalizeCtorName ctor) <> ": {"
-        , indent 4 (T.unlines bodyLines)
-        , "  }"
-        ]
-
--- | Generate unique variable names by adding suffixes to duplicates.
-makeUniqueVars :: [Text] -> [Text]
-makeUniqueVars = go [] []
+-- | Render an if/else chain for ordered clause matching.
+renderClauseIfChain :: Text -> [Clause Ann] -> [Text]
+renderClauseIfChain scrutinee =
+  go True
   where
-    go _ acc [] = reverse acc
-    go seen acc (v:vs)
-      | v `elem` seen =
-          let newV = findUnique seen v 1
-          in go (newV : seen) (newV : acc) vs
-      | otherwise = go (v : seen) (v : acc) vs
+    go _ [] =
+      ["throw new Error(\"No match\");"]
+    go isFirst (Clause pat body : rest) =
+      let (cond, binds) = renderPatMatchCond scrutinee pat
+          bodyLines = binds ++ ["return " <> codegenExp body <> ";"]
+          header =
+            if cond == ""
+              then if isFirst then "{" else "else {"
+              else (if isFirst then "if (" else "else if (") <> cond <> ") {"
+          block =
+            [ header
+            , indent 2 (T.unlines bodyLines)
+            , "}"
+            ]
+      in if cond == ""
+           then block
+           else block ++ go False rest
 
-    findUnique seen base n =
-      let candidate = base <> "_" <> T.pack (show n)
-      in if candidate `elem` seen
-           then findUnique seen base (n + 1)
-           else candidate
+-- | Render pattern bindings for nested patterns, avoiding duplicate JS declarations.
+renderPatternBindings :: Text -> [Pat Ann] -> Int -> ([Text], Int)
+renderPatternBindings scrutinee pats startIdx =
+  let (binds, idx, _) = foldl collect ([], startIdx, []) pats
+  in (binds, idx)
+  where
+    collect (acc, idx, seen) pat =
+      let (binds, nextIdx, seen') = renderPatBinding scrutinee idx seen pat
+      in (acc ++ binds, nextIdx, seen')
+
+    renderPatBinding scrut idx seen pat =
+      case pat of
+        PWildcard _ -> ([], idx + 1, seen)
+        PVar n _ ->
+          let name = toJsIdent n
+              argAccess = scrut <> ".args[" <> T.pack (show idx) <> "]"
+          in if name `elem` seen
+               then ([], idx + 1, seen)
+               else ([ "const " <> name <> " = " <> argAccess <> ";" ], idx + 1, name : seen)
+        PCtor _ subPats ->
+          let argAccess = scrut <> ".args[" <> T.pack (show idx) <> "]"
+              (subBinds, _, seen') = renderPatternBindingsWithSeen argAccess subPats 0 seen
+          in (subBinds, idx + 1, seen')
+
+    renderPatternBindingsWithSeen scrut pats idx seen =
+      foldl collectWithSeen ([], idx, seen) pats
+      where
+        collectWithSeen (acc, ix, seenAcc) p =
+          let (binds, nextIx, seen') = renderPatBinding scrut ix seenAcc p
+          in (acc ++ binds, nextIx, seen')
 
 renderMatch :: Exp Ann -> [Clause Ann] -> Text
 renderMatch scrutinee clauses =
@@ -442,28 +452,37 @@ renderMatch scrutinee clauses =
       : renderMatchClauses "__scrut" clauses
 
 renderMatchClauses :: Text -> [Clause Ann] -> [Text]
-renderMatchClauses scrutinee clauses =
-  ["switch (" <> scrutinee <> ".tag) {"]
-  ++ concatMap (renderSwitchCase scrutinee) clauses
-  ++ ["  default: throw new Error(\"No match\");" | not hasDefault]
-  ++ ["}"]
-  where
-    hasDefault = any isWildcard clauses
-    isWildcard (Clause PWildcard _) = True
-    isWildcard _ = False
+renderMatchClauses = renderClauseIfChain
 
 renderPatMatch :: Text -> Pat Ann -> (Text, [Text])
-renderPatMatch _ PWildcard = ("", [])
-renderPatMatch scrutinee (PCtor ctor vars) =
-  let cond = scrutinee <> ".tag === " <> renderString (normalizeCtorName ctor)
-      uniqueVars = makeUniqueVars (map (toJsIdent . fst) vars)
-      binds =
-        case vars of
-          [] -> []
-          _ ->
-            [ "const [" <> T.intercalate ", " uniqueVars <> "] = "
-                <> scrutinee <> ".args || [];"]
-  in (cond, binds)
+renderPatMatch = renderPatMatchCond
+
+-- | Render pattern condition and bindings for nested patterns.
+renderPatMatchCond :: Text -> Pat Ann -> (Text, [Text])
+renderPatMatchCond scrutinee pat =
+  case pat of
+    PWildcard _ -> ("", [])
+    PVar n _ -> ("", ["const " <> toJsIdent n <> " = " <> scrutinee <> ";"])
+    PCtor ctor pats ->
+      let cond = renderPatCond scrutinee pat
+          (binds, _) = renderPatternBindings scrutinee pats 0
+      in (cond, binds)
+
+-- | Render a boolean condition for a pattern.
+renderPatCond :: Text -> Pat Ann -> Text
+renderPatCond scrutinee pat =
+  case pat of
+    PWildcard _ -> "true"
+    PVar _ _ -> "true"
+    PCtor ctor pats ->
+      let headCond = scrutinee <> ".tag === " <> renderString (normalizeCtorName ctor)
+          argConds =
+            [ cond
+            | (p, idx) <- zip pats [0 ..]
+            , let cond = renderPatCond (scrutinee <> ".args[" <> T.pack (show idx) <> "]") p
+            , cond /= "true"
+            ]
+      in T.intercalate " && " (headCond : argConds)
 
 -- | Normalize a constructor name by stripping Turkish suffixes.
 -- Handles conditional (-sa/-se with apostrophe) and possessive (-ı/-i/-u/-ü) forms.
@@ -571,11 +590,12 @@ toJsIdent :: Identifier -> Text
 toJsIdent ident =
   let raw = baseIdent ident
       sanitized = T.map replaceDash raw
+      cleaned = T.filter (/= '\'') sanitized
       prefixed =
-        case T.uncons sanitized of
+        case T.uncons cleaned of
           Nothing -> "_"
           Just (c, _) ->
-            if isIdentStart c then sanitized else "_" <> sanitized
+            if isIdentStart c then cleaned else "_" <> cleaned
       safe =
         if prefixed `elem` jsReserved
           then "_" <> prefixed

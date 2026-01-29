@@ -1,0 +1,9 @@
+(bu doğrulukla doğruluk çiftinin) ilk-değeri,
+  doğruyla doğru ikilisiyse,
+    doğru,
+  doğruyla yanlış ikilisiyse,
+    doğru,
+  yanlışla doğru ikilisiyse,
+    yanlış,
+  yanlışla yanlış ikilisiyse,
+    yanlıştır.

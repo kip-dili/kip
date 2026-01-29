@@ -1,0 +1,4 @@
+(bu tam-sayı listesinin) ikincisi,
+  bu boşsa, 0,
+  (* bunun boşa ekiyse, 0, *)
+  bunun (şunun devama ekine) ekiyse, şudur.

@@ -1,0 +1,18 @@
+(bu tam-sayı listesinin) ilki,
+  bu boşsa,
+    0,
+  başın devama ekiyse,
+    baştır.
+
+(bu tam-sayı listesinin) ikincisi,
+  bu boşsa,
+    0,
+  bunun boşa ekiyse,
+    0,
+  bunun (şunun devama ekine) ekiyse,
+    şudur.
+
+liste, 1'in (2'nin (3'ün boşa ekine) ekine) ekidir.
+
+(listenin ilkini) yaz.
+(listenin ikincisini) yaz.

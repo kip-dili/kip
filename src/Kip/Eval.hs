@@ -22,7 +22,7 @@ import System.Environment (lookupEnv)
 import System.FilePath (takeFileName, takeDirectory, (</>), isRelative)
 import System.Random (randomRIO)
 import Data.Word (Word32)
-import Control.Monad (guard)
+import Control.Monad (guard, zipWithM)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -225,28 +225,35 @@ matchPat :: Pat Ann -- ^ Pattern to match.
          -> Maybe [(Identifier, Exp Ann)] -- ^ Bindings when matched.
 matchPat pat mval =
   case pat of
-    PWildcard -> Just []
-    PCtor ctor vars ->
+    PWildcard _ -> Just []
+    PVar n _ ->
       case mval of
         Nothing -> Nothing
-        Just v -> matchCtor ctor vars v
+        Just v -> Just [(n, v)]
+    PCtor ctor pats ->
+      case mval of
+        Nothing -> Nothing
+        Just v -> matchCtor ctor pats v
 
 -- | Match a constructor pattern against an expression.
 matchCtor :: Identifier -- ^ Constructor identifier.
-          -> [(Identifier, Ann)] -- ^ Pattern variables.
+          -> [Pat Ann] -- ^ Sub-patterns.
           -> Exp Ann -- ^ Scrutinee expression.
           -> Maybe [(Identifier, Exp Ann)] -- ^ Bindings when matched.
-matchCtor ctor vars v =
+matchCtor ctor pats v =
   case v of
     Var {varCandidates, varName} ->
-      if ctorMatches ctor (Just varName) (map fst varCandidates) && null vars
+      if ctorMatches ctor (Just varName) (map fst varCandidates) && null pats
         then Just []
         else Nothing
     App {fn, args} ->
       case fn of
         Var {varCandidates, varName} | ctorMatches ctor (Just varName) (map fst varCandidates) ->
-          if length vars == length args
-            then Just (zip (map fst vars) args)
+          if length pats == length args
+            then do
+              -- Recursively match each sub-pattern
+              bindings <- zipWithM matchPat pats (map Just args)
+              return (concat bindings)
             else Nothing
         _ -> Nothing
     _ -> Nothing

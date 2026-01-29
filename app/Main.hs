@@ -55,6 +55,7 @@ import Data.Version (showVersion)
 data ReplState =
   ReplState
     { replCtx :: [Identifier]
+    , replCtors :: [Identifier]
     , replTyParams :: [Identifier]
     , replTyCons :: [(Identifier, Int)]
     , replTyMods :: [(Identifier, [Identifier])]
@@ -377,6 +378,8 @@ renderTCError paramTyCons tyMods tcErr = do
           let header =
                 T.pack (prettyIdent ctor) <> " yapıcısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
           return header
+        NonExhaustivePattern sp ->
+          return ("Tip hatası: örüntü eksik." <> renderSpan (rcLang ctx) sp)
     LangEn ->
       case tcErr of
         TC.Unknown ->
@@ -416,6 +419,8 @@ renderTCError paramTyCons tyMods tcErr = do
           let header =
                 T.pack (prettyIdent ctor) <> " constructor has type " <> expStr <> ", but " <> actStr <> " is expected here"
           return header
+        NonExhaustivePattern sp ->
+          return ("Type error: non-exhaustive pattern match." <> renderSpan (rcLang ctx) sp)
 
 -- | Render a type checker error with a source snippet.
 renderTCErrorWithSource :: [Identifier] -- ^ Type parameters for rendering.
@@ -442,6 +447,7 @@ tcErrSpan tcErr =
     NoMatchingOverload _ _ _ sp -> Just sp
     NoMatchingCtor _ _ _ sp -> Just sp
     PatternTypeMismatch _ _ _ sp -> Just sp
+    NonExhaustivePattern sp -> Just sp
     TC.Unknown -> Nothing
 
 -- | Render a caret snippet for a source span.
@@ -807,7 +813,7 @@ main = do
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
           emitMsgIO renderCtx (MsgHeader title)
           emitMsgIO renderCtx (MsgSeparator title)
-          runInputT defaultSettings (runReaderT (loop (ReplState (parserCtx preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
+          runInputT defaultSettings (runReaderT (loop (ReplState (parserCtx preludePst) (parserCtors preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
         else do
           (preludePst, preludeTC, preludeEval, preludeLoaded) <-
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
@@ -921,7 +927,7 @@ main = do
           ctx <- ask
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -952,7 +958,7 @@ main = do
       | otherwise = do
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
           -- If input ends with a period, parse as statement; otherwise parse as expression
           if case reverse input of
                '.':_ -> True
@@ -962,10 +968,10 @@ main = do
                 Left err -> do
                   emitMsgTCtx (MsgParseError err)
                   loop rs
-                Right (stmt, MkParserState _ pctx pty ptycons ptymods pprim _ _) -> do
+                Right (stmt, MkParserState _ pctx pctors pty ptycons ptymods pprim _ _) -> do
                   case stmt of
                     Load name -> do
-                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
+                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
                       path <- runApp (resolveModulePath (replModuleDirs rs) name)
                       absPath <- liftIO (canonicalizePath path)
                       if Set.member absPath (replLoaded rs)
@@ -974,6 +980,7 @@ main = do
                           (pst', tcSt', evalSt', loaded') <- runApp (runFile False False False (replModuleDirs rs) (loadPst, replTCState rs, replEvalState rs, replLoaded rs) path)
                           emitMsgTCtx (MsgLoaded name)
                           loop (rs { replCtx = parserCtx pst'
+                                               , replCtors = parserCtors pst'
                                                , replTyParams = parserTyParams pst'
                                                , replTyCons = parserTyCons pst'
                                                , replTyMods = parserTyMods pst'
@@ -993,6 +1000,7 @@ main = do
                             Nothing -> loop rs
                             Just evalSt ->
                               loop (rs { replCtx = pctx
+                                                   , replCtors = pctors
                                                    , replTyParams = pty
                                                    , replTyCons = ptycons
                                                    , replTyMods = ptymods
@@ -1258,7 +1266,7 @@ main = do
              -> AppM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
       (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-      return (ReplState (parserCtx pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
+      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
     -- | Run a single file and update all states.
     runFile :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.
