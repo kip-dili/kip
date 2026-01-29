@@ -2051,13 +2051,40 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
         Nothing -> do
           -- Parse pattern expression and convert to pattern
           patExp <- parseExpAny
-          pat <- expToPat allowScrutinee argNames patExp
-          -- Extract pattern variables from the converted pattern
-          let patVarNames = extractPatVars pat
-          lexeme (char ',')
-          -- Add pattern variables to context when parsing body
-          body <- withPatVars patVarNames parseExp
-          return (Clause pat body)
+          mClause <- try (parseClauseAfterScrutinee allowScrutinee argNames patExp)
+          case mClause of
+            Just clause -> return clause
+            Nothing -> do
+              pat <- expToPat allowScrutinee argNames patExp
+              -- Extract pattern variables from the converted pattern
+              let patVarNames = extractPatVars pat
+              lexeme (char ',')
+              -- Add pattern variables to context when parsing body
+              body <- withPatVars patVarNames parseExp
+              return (Clause pat body)
+    -- | Parse a clause of the form "scrutinee, pattern, body".
+    parseClauseAfterScrutinee :: Bool -- ^ Whether to allow scrutinee expressions.
+                              -> [Identifier] -- ^ Function argument names.
+                              -> Exp Ann -- ^ Parsed scrutinee expression.
+                              -> KipParser (Maybe (Clause Ann))
+    parseClauseAfterScrutinee allowScrutinee argNames scrutExp =
+      case scrutExp of
+        Var {varName, varCandidates} -> do
+          let candidateNames = map fst varCandidates
+              matchesArgs = any (`elem` argNames) (varName : candidateNames)
+          if not matchesArgs
+            then return Nothing
+            else do
+              clause <- try $ do
+                lexeme (char ',')
+                patExp <- parseExpAny
+                pat <- expToPat allowScrutinee argNames patExp
+                lexeme (char ',')
+                let patVarNames = extractPatVars pat
+                body <- withPatVars patVarNames parseExp
+                return (Clause pat body)
+              return (Just clause)
+        _ -> return Nothing
     -- | Parse a pattern, optionally allowing a scrutinee expression.
     parsePattern :: Bool -- ^ Whether to allow scrutinee expressions.
                  -> [Identifier] -- ^ Function argument names.

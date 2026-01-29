@@ -905,76 +905,58 @@ missingPatternsForType :: Ty Ann -- ^ Scrutinee type.
                        -> [Pat Ann] -- ^ Existing patterns.
                        -> TCM [Pat Ann]
 missingPatternsForType scrutTy pats = do
-  witness <- missingWitness [scrutTy] (map (: []) pats)
-  case witness of
-    Nothing -> return []
-    Just [pat] -> do
-      pat' <- annotateMissingPattern scrutTy pat
-      return [pat']
-    Just _ -> return []
+  vectors <- missingVectors [scrutTy] (map (: []) pats)
+  annotated <- mapM (annotateMissingPattern scrutTy . head) vectors
+  return (nub annotated)
 
--- | Find a witness pattern vector not covered by the matrix.
-missingWitness :: [Ty Ann] -- ^ Column types.
+-- | Compute missing pattern vectors for a pattern matrix.
+missingVectors :: [Ty Ann] -- ^ Column types.
                -> [[Pat Ann]] -- ^ Pattern matrix.
-               -> TCM (Maybe [Pat Ann])
-missingWitness [] matrix =
-  if null matrix then return (Just []) else return Nothing
-missingWitness (t:ts) matrix = do
-  mCtors <- ctorsForType t
-  case mCtors of
-    Nothing -> do
-      mw <- missingWitness ts (map tail matrix)
-      return (mw >>= \rest -> Just (PWildcard (mkAnn Nom NoSpan) : rest))
-    Just ctors -> do
-      let wildRows = filter (isWildcardHead . head) matrix
-          present = constructorsInColumn matrix
-          complete = constructorsComplete ctors present
-          missingCtor = find (\ctorInfo -> not (any (identMatchesCtor (ctorName ctorInfo)) present)) ctors
-      if not (null wildRows)
-        then do
-          mw <- missingWitness ts (defaultMatrix matrix)
-          return (mw >>= \rest -> Just (PWildcard (mkAnn Nom NoSpan) : rest))
-        else if not complete
-        then do
-          case missingCtor of
-            Just ctorInfo -> do
-              let argPats = replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan))
-                  restPats = replicate (length ts) (PWildcard (mkAnn Nom NoSpan))
-              return (Just (PCtor (ctorName ctorInfo) argPats : restPats))
-            Nothing -> return Nothing
-        else do
-          mFromCtors <- firstJustM
-            [ do
-                let matrix' = specializeMatrix ctorInfo matrix
-                mw <- missingWitness (ctorArgs ctorInfo ++ ts) matrix'
-                return (mw >>= \w ->
-                  let (argPats, restPats) = splitAt (length (ctorArgs ctorInfo)) w
-                  in Just (PCtor (ctorName ctorInfo) argPats : restPats))
+               -> TCM [[Pat Ann]]
+missingVectors [] matrix =
+  if null matrix then return [[]] else return []
+missingVectors (t:ts) matrix = do
+  if null matrix
+    then do
+      mCtors <- ctorsForType t
+      case mCtors of
+        Nothing ->
+          return [PWildcard (mkAnn Nom NoSpan) : replicate (length ts) (PWildcard (mkAnn Nom NoSpan))]
+        Just ctors ->
+          return
+            [ PCtor (ctorName ctorInfo) (replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan)))
+              : replicate (length ts) (PWildcard (mkAnn Nom NoSpan))
             | ctorInfo <- ctors
             ]
-          case mFromCtors of
-            Just _ -> return mFromCtors
-            Nothing ->
-              if null wildRows
-                then return Nothing
-                else do
-                  mw <- missingWitness ts (defaultMatrix matrix)
-                  return (mw >>= \rest -> Just (PWildcard (mkAnn Nom NoSpan) : rest))
+    else do
+      mCtors <- ctorsForType t
+      case mCtors of
+        Nothing -> do
+          rest <- missingVectors ts (map tail matrix)
+          return (map (PWildcard (mkAnn Nom NoSpan) :) rest)
+        Just ctors -> do
+          let wildRows = filter (isWildcardHead . head) matrix
+          if not (null wildRows)
+            then do
+              rest <- missingVectors ts (defaultMatrix matrix)
+              return (map (PWildcard (mkAnn Nom NoSpan) :) rest)
+            else do
+              let ctorMiss ctorInfo = do
+                    let matrix' = specializeMatrix ctorInfo matrix
+                    missingArgs <- missingVectors (ctorArgs ctorInfo ++ ts) matrix'
+                    return
+                      [ PCtor (ctorName ctorInfo) argPats : restPats
+                      | vec <- missingArgs
+                      , let (argPats, restPats) = splitAt (length (ctorArgs ctorInfo)) vec
+                      ]
+              misses <- mapM ctorMiss ctors
+              return (concat misses)
   where
     isWildcardHead pat =
       case pat of
         PWildcard {} -> True
         PVar {} -> True
         _ -> False
-
-    constructorsInColumn = mapMaybe firstCtor
-    firstCtor row =
-      case row of
-        (PCtor name _ : _) -> Just name
-        _ -> Nothing
-
-    constructorsComplete ctors present =
-      all (\ctorInfo -> any (identMatchesCtor (ctorName ctorInfo)) present) ctors
 
     defaultMatrix = map tail . filter (isWildcardHead . head)
 
@@ -1013,13 +995,6 @@ missingWitness (t:ts) matrix = do
       case T.unsnoc txt of
         Just (pref, 'ğ') -> Just (pref <> T.pack "k")
         _ -> Nothing
-
-    firstJustM [] = return Nothing
-    firstJustM (m:ms) = do
-      res <- m
-      case res of
-        Just _ -> return res
-        Nothing -> firstJustM ms
 
 -- | Replace wildcards in a missing pattern with fresh variables and cases.
 annotateMissingPattern :: Ty Ann -- ^ Expected type for the pattern.
