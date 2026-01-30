@@ -875,18 +875,20 @@ inferPatTypes pat args =
       case lookup ctor tcCtors of
         Just (argTys, resTy) ->
           case unifyTypes tcTyCons [resTy] [scrutTy] of
-    Just subst -> do
-      let argTys' = map (applySubst subst) argTys
-          -- Nested patterns match from the right, so we align argument
-          -- types with the pattern list by dropping leading args when
-          -- the constructor has more parameters than the pattern specifies.
-          argTysAligned =
-            if length pats < length argTys'
-              then drop (length argTys' - length pats) argTys'
-              else argTys'
+            Just subst -> do
+              let argTys' = map (applySubst subst) argTys
+                  -- Nested patterns match from the right, so we align argument
+                  -- types with the pattern list by dropping leading args when
+                  -- the constructor has more parameters than the pattern specifies.
+                  argTysAligned =
+                    if length pats < length argTys'
+                      then drop (length argTys' - length pats) argTys'
+                      else argTys'
               -- Recursively infer types for nested patterns
-              bindings <- sequence [ inferPatTypes p [(([], T.pack "_"), ty)]
-                                   | (p, ty) <- zip pats argTysAligned ]
+              bindings <- sequence
+                [ inferPatTypes p [(([], T.pack "_"), ty)]
+                | (p, ty) <- zip pats argTysAligned
+                ]
               return (concat bindings)
             Nothing -> do
               -- Pattern type doesn't match scrutinee type
