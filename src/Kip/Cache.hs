@@ -74,6 +74,7 @@ data CachedParserState = CachedParserState
   , ptyCons :: [(Identifier, Int)] -- ^ Type constructor arities.
   , ptyMods :: [(Identifier, [Identifier])] -- ^ Type modifier expansions.
   , pprimTypes :: [Identifier] -- ^ Primitive type identifiers.
+  , pdefSpans :: Map.Map Identifier [Span] -- ^ Definition spans.
   } deriving (Generic)
 
 instance Binary CachedParserState
@@ -90,6 +91,7 @@ toCachedParserState ps =
     , ptyCons = parserTyCons ps
     , ptyMods = parserTyMods ps
     , pprimTypes = parserPrimTypes ps
+    , pdefSpans = parserDefSpans ps
     }
 
 -- | Restore a parser state from its cached representation.
@@ -100,7 +102,7 @@ fromCachedParserState ::
   -> CachedParserState -- ^ Cached parser snapshot.
   -> ParserState -- ^ Rehydrated parser state.
 fromCachedParserState fsm upsCache downsCache CachedParserState{..} =
-  MkParserState fsm pctx pctors ptyParams ptyCons ptyMods pprimTypes upsCache downsCache
+  MkParserState fsm pctx pctors ptyParams ptyCons ptyMods pprimTypes pdefSpans upsCache downsCache
 
 -- | Cached wrapper for the type checker state.
 newtype CachedTCState = CachedTCState TCState

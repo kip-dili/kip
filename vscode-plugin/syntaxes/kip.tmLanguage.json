@@ -6,7 +6,8 @@
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#numbers" },
-    { "include": "#keywords" }
+    { "include": "#keywords" },
+    { "include": "#identifiers" }
   ],
   "repository": {
     "comments": {
@@ -17,8 +18,8 @@
         },
         {
           "name": "comment.block.kip",
-          "begin": "\\{-",
-          "end": "-\\}"
+          "begin": "\\(\\*",
+          "end": "\\*\\)"
         }
       ]
     },
@@ -26,14 +27,7 @@
       "patterns": [
         {
           "name": "string.quoted.double.kip",
-          "begin": "\"",
-          "end": "\"",
-          "patterns": [
-            {
-              "name": "constant.character.escape.kip",
-              "match": "\\\\."
-            }
-          ]
+          "match": "\"(?:[^\"\\\\]|\\\\.)*\"(?:'?\\p{L}+)?"
         }
       ]
     },
@@ -41,7 +35,7 @@
       "patterns": [
         {
           "name": "constant.numeric.kip",
-          "match": "\\b[0-9]+\\b"
+          "match": "\\b[0-9]+(?:\\.[0-9]+)?(?:'?\\p{L}+)?\\b"
         }
       ]
     },
@@ -50,6 +44,14 @@
         {
           "name": "keyword.control.kip",
           "match": "\\b(ya|ya\\s+da|olsun|için|ise|değilse)\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.kip",
+          "match": "\\b\\p{L}+(?:-\\p{L}+)*(?:'?\\p{L}+)?\\b"
         }
       ]
     }

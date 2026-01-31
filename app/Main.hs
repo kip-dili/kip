@@ -27,6 +27,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
 import Data.Set (Set)
+import qualified Data.Map.Strict as Map
 import Text.Megaparsec (ParseErrorBundle(..), errorBundlePretty)
 import Text.Megaparsec.Error (ParseError(..), ErrorFancy(..), ShowErrorComponent(..))
 import qualified Data.List.NonEmpty as NE
@@ -959,7 +960,7 @@ main = do
           ctx <- ask
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty uCache dCache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -990,7 +991,7 @@ main = do
       | otherwise = do
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty uCache dCache
           -- If input ends with a period, parse as statement; otherwise parse as expression
           if case reverse input of
                '.':_ -> True
@@ -1000,10 +1001,10 @@ main = do
                 Left err -> do
                   emitMsgTCtx (MsgParseError err)
                   loop rs
-                Right (stmt, MkParserState _ pctx pctors pty ptycons ptymods pprim _ _) -> do
+                Right (stmt, MkParserState _ pctx pctors pty ptycons ptymods pprim _ _ _) -> do
                   case stmt of
                     Load name -> do
-                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) uCache dCache
+                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty uCache dCache
                       path <- runApp (resolveModulePath (replModuleDirs rs) name)
                       absPath <- liftIO (canonicalizePath path)
                       if Set.member absPath (replLoaded rs)

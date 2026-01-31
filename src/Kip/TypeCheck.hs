@@ -112,8 +112,27 @@ import Control.Monad.IO.Class
 import Data.List (find, foldl', intersect, nub)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust)
 import qualified Data.Map.Strict as Map
+import System.FilePath (FilePath)
 import qualified Data.Set as Set
 import qualified Data.Text as T
+
+-- | Record a resolved name at a source span (most-recent wins).
+recordResolvedName :: Span -> Identifier -> TCM ()
+recordResolvedName sp ident =
+  modify (\s -> s { tcResolvedNames = (sp, ident) : tcResolvedNames s })
+
+recordResolvedSig :: Span -> Identifier -> [Ty Ann] -> TCM ()
+recordResolvedSig sp ident tys =
+  modify (\s -> s { tcResolvedSigs = (sp, (ident, tys)) : tcResolvedSigs s })
+
+-- | Merge definition locations from a file (latest wins).
+recordDefLocations :: FilePath -> Map.Map Identifier Span -> TCM ()
+recordDefLocations path defs =
+  modify (\s -> s { tcDefLocations = Map.union (Map.map (\sp -> (path, sp)) defs) (tcDefLocations s) })
+
+recordFuncSigLocations :: FilePath -> Map.Map (Identifier, [Ty Ann]) Span -> TCM ()
+recordFuncSigLocations path defs =
+  modify (\s -> s { tcFuncSigLocs = Map.union (Map.map (\sp -> (path, sp)) defs) (tcFuncSigLocs s) })
 
 -- | Type checker state for names, signatures, and constructors.
 data TCState =
@@ -127,6 +146,10 @@ data TCState =
     , tcCtors :: [(Identifier, ([Ty Ann], Ty Ann))] -- ^ Constructor signatures.
     , tcTyCons :: [(Identifier, Int)] -- ^ Type constructor arities.
     , tcGerunds :: [Identifier] -- ^ Gerund (effectful) functions.
+    , tcResolvedNames :: [(Span, Identifier)] -- ^ Resolved variable names by span.
+    , tcResolvedSigs :: [(Span, (Identifier, [Ty Ann]))] -- ^ Resolved function signatures by span.
+    , tcDefLocations :: Map.Map Identifier (FilePath, Span) -- ^ Definition locations by identifier.
+    , tcFuncSigLocs :: Map.Map (Identifier, [Ty Ann]) (FilePath, Span) -- ^ Definition locations by signature.
     }
   deriving (Generic)
 
@@ -142,11 +165,15 @@ instance Binary TCState where
     B.put tcCtors
     B.put tcTyCons
     B.put tcGerunds
-  get = MkTCState <$> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get
+    B.put tcResolvedNames
+    B.put tcResolvedSigs
+    B.put tcDefLocations
+    B.put tcFuncSigLocs
+  get = MkTCState <$> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get <*> B.get
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState [] [] [] [] [] [] [] [] []
+emptyTCState = MkTCState [] [] [] [] [] [] [] [] [] [] [] Map.empty Map.empty
 
 -- | Type checker errors.
 data TCError =
@@ -208,11 +235,14 @@ tcExp1With allowEffect e =
     Var {annExp, varName, varCandidates} -> do
       resolved <- resolveVar annExp varName Nothing varCandidates
       case resolved of
-        Var {varCandidates = [(ident, _)]} -> do
+        Var {annExp = annRes, varCandidates = [(ident, _)]} -> do
+          recordResolvedName (annSpan annRes) ident
           unless allowEffect (rejectReadEffect annExp ident)
           MkTCState{tcFuncs} <- get
           if (ident, 0) `elem` tcFuncs
-            then return (App annExp resolved [])
+            then do
+              recordResolvedSig (annSpan annRes) ident []
+              return (App annExp resolved [])
             else return resolved
         _ -> return resolved
     App {annExp = annApp, fn, args} -> do
@@ -326,12 +356,12 @@ tcExp1With allowEffect e =
                         in if hasCaseMismatch
                              then Nothing  -- Reject case mismatch
                              else if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTysForSig tys)
-                               then Just argsForSig
+                               then Just (argsForSig, tys)
                                else Nothing
                       matches =
-                        [ argsForSig
-                        | (_, argsSig) <- sigs
-                        , Just argsForSig <- [matchSig argsSig]
+                        [ (name, tysForSig, argsForSig)
+                        | (name, argsSig) <- sigs
+                        , Just (argsForSig, tysForSig) <- [matchSig argsSig]
                         ]
                   if null matches
                     then
@@ -340,7 +370,13 @@ tcExp1With allowEffect e =
                         else lift (throwE (NoMatchingOverload nameForErr argTys allSigs (annSpan annApp)))
                     else
                       case matches of
-                        firstMatch:_ -> return (App annApp fn' firstMatch)
+                        (name, tysForSig, firstMatch):_ -> do
+                          case fn' of
+                            Var {annExp = annFn, varCandidates = (ident, _):_} -> do
+                              recordResolvedName (annSpan annFn) ident
+                              recordResolvedSig (annSpan annFn) name tysForSig
+                            _ -> return ()
+                          return (App annApp fn' firstMatch)
                         [] -> return (App annApp fn' args')
         _ -> return (App annApp fn' args')
     StrLit {annExp, lit} ->
@@ -435,7 +471,18 @@ resolveVar annExp originalName mArity candidates = do
               then arityFiltered
               else caseFiltered
       case scoped of
-        [] -> lift (throwE (NoType (annSpan annExp)))
+        [] -> do
+          -- NOTE: We may have candidates in scope that fail the case/arity
+          -- filtering, but the surface form could still be a copula/gerund
+          -- variant of a known name (e.g. "yazmaktır" -> "yazmak").
+          -- Try the copula/gerund fallback *again* here so we don't
+          -- incorrectly reject a valid reference and lose overload info.
+          case fallbackCopulaIdent tcCtx originalName of
+            Just ident ->
+              -- Preserve the original case on the surface form while
+              -- resolving to the base identifier.
+              return (Var (setAnnCase annExp (annCase annExp)) originalName [(ident, annCase annExp)])
+            Nothing -> lift (throwE (NoType (annSpan annExp)))
         [(ident, cas)] -> return (Var (setAnnCase annExp cas) originalName [(ident, cas)])
         _ -> lift (throwE (Ambiguity (annSpan annExp)))
 

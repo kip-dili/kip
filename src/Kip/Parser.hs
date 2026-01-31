@@ -215,6 +215,7 @@ data ParserState =
     , parserTyCons :: [(Identifier, Int)]
     , parserTyMods :: [(Identifier, [Identifier])]
     , parserPrimTypes :: [Identifier]
+    , parserDefSpans :: M.Map Identifier [Span]
     , parserUpsCache :: !MorphCache
     , parserDownsCache :: !MorphCache
     }
@@ -280,7 +281,7 @@ newParserState :: FSM -- ^ Morphology FSM.
 newParserState fsm' = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' [] [] [] [] [] [] upsCache <$> HT.new
+  MkParserState fsm' [] [] [] [] [] [] M.empty upsCache <$> HT.new
 
 -- | Create a parser state with a given context and fresh caches.
 newParserStateWithCtx :: FSM -- ^ Morphology FSM.
@@ -294,7 +295,7 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes upsCache <$> HT.new
+  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -302,7 +303,7 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
 newParserStateWithCaches fsm' =
-  MkParserState fsm' [] [] [] [] [] []
+  MkParserState fsm' [] [] [] [] [] [] M.empty
 
 -- | Create a parser state with context and shared caches.
 newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
@@ -312,6 +313,7 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> [(Identifier, Int)] -- ^ Type constructor arities.
                                -> [(Identifier, [Identifier])] -- ^ Type modifiers.
                                -> [Identifier] -- ^ Primitive types.
+                               -> M.Map Identifier [Span] -- ^ Definition spans.
                                -> MorphCache -- ^ Shared ups cache.
                                -> MorphCache -- ^ Shared downs cache.
                                -> ParserState -- ^ Parser state.
@@ -330,6 +332,11 @@ putP = lift . put
 modifyP :: (ParserState -> ParserState) -- ^ State update function.
         -> KipParser () -- ^ No result.
 modifyP = lift . modify
+
+-- | Record a definition span for later lookup (prefers the first occurrence).
+recordDefSpan :: Identifier -> Span -> KipParser ()
+recordDefSpan ident sp =
+  modifyP (\ps -> ps { parserDefSpans = M.insertWith (\new old -> old <> new) ident [sp] (parserDefSpans ps) })
 
 -- | Parse an item and return it with a span.
 withSpan :: KipParser a -- ^ Parser to wrap.
@@ -1761,14 +1768,14 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     -}
     ctorIdent :: KipParser (Identifier, Ann) -- ^ Parsed constructor identifier with annotation.
     ctorIdent = do
-      rawIdent <- identifierNotKeyword
-      (_, sp) <- withSpan (return ())
+      (rawIdent, sp) <- withSpan identifierNotKeyword
       -- Constructor names should use their surface form without normalization
       -- Only detect the grammatical case for annotation purposes
       candidates <- estimateCandidates False rawIdent
       let cas = case candidates of
                   (_,c):_ -> c
                   [] -> Nom
+      recordDefSpan rawIdent sp
       return (rawIdent, mkAnn cas sp)
     -- | Parse constructors without arguments.
     ctor :: KipParser (Ctor Ann) -- ^ Parsed constructor.
@@ -1784,7 +1791,9 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     primTy = do
       lexeme (string "Bir")
       _ <- lexeme (string "yerleşik")
-      name <- fst <$> (identifierNotKeyword >>= resolveCandidatePreferNom)
+      (rawName, nameSpan) <- withSpan identifierNotKeyword
+      name <- fst <$> resolveCandidatePreferNom rawName
+      recordDefSpan name nameSpan
       lexeme (string "olsun")
       period
       modifyP (\ps -> ps { parserCtx = name : parserCtx ps
@@ -1861,7 +1870,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     ty :: KipParser (Stmt Ann) -- ^ Parsed type declaration.
     ty = do
       lexeme (string "Bir")
-      (n, params, mods) <- typeHead
+      (n, nameSpan, params, mods) <- typeHead
+      recordDefSpan n nameSpan
       -- Extract parameter identifiers from TyVar nodes for parser state
       let paramIdents = map (\(TyVar _ ident) -> ident) params
       modifyP (\ps -> ps { parserCtx = n : paramIdents ++ parserCtx ps
@@ -1891,7 +1901,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                          })
       return (NewType n params ctors)
     -- | Parse a type head (name and parameters).
-    typeHead :: KipParser (Identifier, [Ty Ann], [Identifier]) -- ^ Type head parts.
+    typeHead :: KipParser (Identifier, Span, [Ty Ann], [Identifier]) -- ^ Type head parts.
     typeHead = try typeHeadParens <|> typeHeadInline
     {- | Parse a type parameter, handling Turkish case suffixes.
 
@@ -1919,39 +1929,39 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           return (TyVar (mkAnn cas sp) ident)
 
     -- | Parse a parenthesized type head.
-    typeHeadParens :: KipParser (Identifier, [Ty Ann], [Identifier]) -- ^ Parsed type head.
+    typeHeadParens :: KipParser (Identifier, Span, [Ty Ann], [Identifier]) -- ^ Parsed type head.
     typeHeadParens = parens $ do
-      parts <- identifierNotKeyword `sepBy1` ws
+      parts <- withSpan identifierNotKeyword `sepBy1` ws
       let (paramIdents, nameIdent) =
             case parts of
-              [] -> ([], ([], T.pack ""))
-              [_] -> ([], ([], T.pack ""))
+              [] -> ([], (([], T.pack ""), NoSpan))
+              [_] -> ([], (([], T.pack ""), NoSpan))
               _ -> (init parts, last parts)
       when (length parts < 2) empty
       -- Parse type parameters with case detection
-      params <- mapM parseTypeParam paramIdents
-      rawName <- fst <$> resolveCandidatePreferNom nameIdent
+      params <- mapM parseTypeParam (map fst paramIdents)
+      rawName <- fst <$> resolveCandidatePreferNom (fst nameIdent)
       name <- normalizeTypeHead rawName
-      return (name, params, [])
+      return (name, snd nameIdent, params, [])
     -- | Parse a type head without parentheses.
-    typeHeadInline :: KipParser (Identifier, [Ty Ann], [Identifier]) -- ^ Parsed type head.
+    typeHeadInline :: KipParser (Identifier, Span, [Ty Ann], [Identifier]) -- ^ Parsed type head.
     typeHeadInline = do
-      first <- identifierNotKeyword
-      rest <- many (try (ws *> identifierNotKeyword))
+      first <- withSpan identifierNotKeyword
+      rest <- many (try (ws *> withSpan identifierNotKeyword))
       case rest of
         [] -> do
           -- Single identifier: just the type name
-          rawName <- fst <$> resolveCandidatePreferNom first
+          rawName <- fst <$> resolveCandidatePreferNom (fst first)
           name <- normalizeTypeHead rawName
-          return (name, [], [])
+          return (name, snd first, [], [])
         _ -> do
           -- Two or more identifiers: all but last are params, last is type name
           let paramIdents = first : init rest
               nameIdent = last rest
-          params <- mapM parseTypeParam paramIdents
-          rawName <- fst <$> resolveCandidatePreferNom nameIdent
+          params <- mapM parseTypeParam (map fst paramIdents)
+          rawName <- fst <$> resolveCandidatePreferNom (fst nameIdent)
           name <- normalizeTypeHead rawName
-          return (name, params, [])
+          return (name, snd nameIdent, params, [])
     -- | Parse a constructor with or without arguments.
     ctorWithArgs :: KipParser (Ctor Ann) -- ^ Parsed constructor with arguments.
     ctorWithArgs = try ctorArgs <|> ctor
@@ -2050,7 +2060,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     func :: KipParser (Stmt Ann) -- ^ Parsed function statement.
     func = do
       args <- many (try (lexeme (parens parseArg) <* notFollowedBy (lexeme (char ','))))
-      (rawName, mRetTy) <- parseFuncHeader
+      (rawName, nameSpan, mRetTy) <- parseFuncHeader
       let isGerund = isJust (gerundRoot rawName)
           baseName = fromMaybe rawName (gerundRoot rawName)
       (fname, _) <-
@@ -2074,6 +2084,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                       Nothing -> do
                         (cand, _) <- resolveCandidate False baseName
                         return (cand, Nom)
+      recordDefSpan fname nameSpan
       lexeme (char ',')
       let isDefnCandidate = null args && not isGerund && isNothing mRetTy
       if isDefnCandidate
@@ -2105,14 +2116,17 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               putP (st' {parserCtx = fname : parserCtx st})
               return (Function fname args retTy clauses isGerund)
     -- | Parse function header with optional return type.
-    parseFuncHeader :: KipParser (Identifier, Maybe (Ty Ann)) -- ^ Function name and optional return type.
+    parseFuncHeader :: KipParser (Identifier, Span, Maybe (Ty Ann)) -- ^ Function name, span, and optional return type.
     parseFuncHeader = do
-      mHeader <- optional (try (parens ((,) <$> identifierNotKeyword <*> (ws *> parseReturnType))))
+      mHeader <- optional (try (parens (do
+        (name, sp) <- withSpan identifierNotKeyword
+        ty <- ws *> parseReturnType
+        return (name, sp, Just ty))))
       case mHeader of
-        Just (name, ty) -> return (name, Just ty)
+        Just (name, sp, ty) -> return (name, sp, ty)
         Nothing -> do
-          name <- identifierNotKeyword
-          return (name, Nothing)
+          (name, sp) <- withSpan identifierNotKeyword
+          return (name, sp, Nothing)
     -- | Parse a return type with a lenient fallback for plain identifiers.
     parseReturnType :: KipParser (Ty Ann) -- ^ Parsed return type.
     parseReturnType =

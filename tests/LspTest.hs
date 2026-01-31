@@ -78,6 +78,9 @@ data DefinitionQuery = DefinitionQuery
   { defLine :: Int
   , defCharacter :: Int
   , defAtLeast :: Int
+  , defExpectedLine :: Maybe Int
+  , defExpectedCharacter :: Maybe Int
+  , defUriContains :: Maybe T.Text
   }
 
 -- | Decode definition query positions from JSON.
@@ -86,10 +89,16 @@ instance A.FromJSON DefinitionQuery where
     defLine <- obj A..: "line"
     defCharacter <- obj A..: "character"
     defAtLeast <- obj A..:? "atLeast" A..!= 1
+    defExpectedLine <- obj A..:? "expectedLine"
+    defExpectedCharacter <- obj A..:? "expectedCharacter"
+    defUriContains <- obj A..:? "uriContains"
     return DefinitionQuery
       { defLine = defLine
       , defCharacter = defCharacter
       , defAtLeast = defAtLeast
+      , defExpectedLine = defExpectedLine
+      , defExpectedCharacter = defExpectedCharacter
+      , defUriContains = defUriContains
       }
 
 -- | Hover/completion position for LSP requests.
@@ -417,13 +426,23 @@ completionHas needle =
 expectDefinition :: Handle -> Int -> T.Text -> DefinitionQuery -> IO ()
 expectDefinition h target expectedUri defQuery = do
   obj <- awaitResponseId h target
-  let (count, uris) = definitionUris obj
+  let (count, locations) = definitionLocations obj
   assertBool "definition result too small" (count >= defAtLeast defQuery)
-  assertBool "definition uri mismatch" (expectedUri `elem` uris)
+  let expectedUri' = case defUriContains defQuery of
+        Just needle -> Just needle
+        Nothing -> Just expectedUri
+  case expectedUri' of
+    Nothing -> return ()
+    Just uriNeedle ->
+      assertBool "definition uri mismatch" (any (uriMatches uriNeedle) locations)
+  case (defExpectedLine defQuery, defExpectedCharacter defQuery) of
+    (Nothing, Nothing) -> return ()
+    _ ->
+      assertBool "definition range mismatch" (any (locationMatches defQuery) locations)
 
 -- | Extract definition count and URIs from a response.
-definitionUris :: A.Object -> (Int, [T.Text])
-definitionUris obj =
+definitionLocations :: A.Object -> (Int, [LocationInfo])
+definitionLocations obj =
   case lookupKey "result" obj of
     Just A.Null -> (0, [])
     Just (A.Array items) -> foldLocations (toList items)
@@ -431,23 +450,72 @@ definitionUris obj =
     _ -> (0, [])
 
 -- | Fold location-like responses into counts and URIs.
-foldLocations :: [A.Value] -> (Int, [T.Text])
+data LocationInfo = LocationInfo
+  { locUri :: T.Text
+  , locLine :: Maybe Int
+  , locCharacter :: Maybe Int
+  }
+
+foldLocations :: [A.Value] -> (Int, [LocationInfo])
 foldLocations vals =
-  let uris = mapMaybe locationUri vals
-  in (length vals, uris)
+  let locations = mapMaybe locationInfo vals
+  in (length vals, locations)
 
 -- | Extract a URI from a Location/DefinitionLink value.
-locationUri :: A.Value -> Maybe T.Text
-locationUri =
+locationInfo :: A.Value -> Maybe LocationInfo
+locationInfo =
   \case
     A.Object obj ->
       case lookupKey "uri" obj of
-        Just (A.String uri) -> Just uri
+        Just (A.String uri) -> Just (LocationInfo uri (rangeLine obj) (rangeCharacter obj))
         _ ->
           case lookupKey "targetUri" obj of
-            Just (A.String uri) -> Just uri
+            Just (A.String uri) ->
+              case lookupKey "targetRange" obj of
+                Just (A.Object rangeObj) ->
+                  Just (LocationInfo uri (rangeLine rangeObj) (rangeCharacter rangeObj))
+                _ -> Just (LocationInfo uri Nothing Nothing)
             _ -> Nothing
     _ -> Nothing
+
+rangeLine :: A.Object -> Maybe Int
+rangeLine obj =
+  case lookupKey "range" obj of
+    Just (A.Object rangeObj) ->
+      case lookupKey "start" rangeObj of
+        Just (A.Object startObj) ->
+          case lookupKey "line" startObj of
+            Just (A.Number n) -> toBoundedInteger n
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+rangeCharacter :: A.Object -> Maybe Int
+rangeCharacter obj =
+  case lookupKey "range" obj of
+    Just (A.Object rangeObj) ->
+      case lookupKey "start" rangeObj of
+        Just (A.Object startObj) ->
+          case lookupKey "character" startObj of
+            Just (A.Number n) -> toBoundedInteger n
+            _ -> Nothing
+        _ -> Nothing
+    _ -> Nothing
+
+uriMatches :: T.Text -> LocationInfo -> Bool
+uriMatches needle loc = needle `T.isInfixOf` locUri loc
+
+locationMatches :: DefinitionQuery -> LocationInfo -> Bool
+locationMatches defQuery loc =
+  let lineOk =
+        case defExpectedLine defQuery of
+          Nothing -> True
+          Just line -> Just line == locLine loc
+      charOk =
+        case defExpectedCharacter defQuery of
+          Nothing -> True
+          Just ch -> Just ch == locCharacter loc
+  in lineOk && charOk
 
 -- | Resolve a position query, defaulting to (0, 0).
 positionOrDefault :: Maybe PositionQuery -> (Int, Int)

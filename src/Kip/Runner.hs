@@ -45,11 +45,12 @@ module Kip.Runner
 import Control.Monad (forM, when, unless, filterM)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
-import Data.List (intercalate, isPrefixOf, nub, tails, findIndex)
+import Data.List (intercalate, isPrefixOf, nub, tails, findIndex, foldl')
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
 import Data.Text.Encoding (encodeUtf8)
 import Data.Set (Set)
@@ -531,13 +532,17 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
             then return (pst, tcSt, evalSt, loaded')
             else do
               let pst' = fromCachedParserState fsm uCache dCache (cachedParser cached)
-                  tcSt' = tcSt
                   evalSt' = evalSt
                   stmts = cachedStmts cached
                   paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
                   source = ""
                   primRefs = collectNonGerundRefs stmts
-              foldM' (runStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) (pst', tcSt', evalSt', loaded') stmts
+              let defSpansRaw = defSpansFromStmts stmts (parserDefSpans pst')
+                  sigSpans = funcSigSpansFromStmts stmts (parserDefSpans pst')
+              tcStWithDefs <- liftIO $ runTCM (recordDefLocations absPath defSpansRaw >> recordFuncSigLocations absPath sigSpans) tcSt >>= \case
+                Left _ -> return tcSt
+                Right (_, tcStDefs) -> return tcStDefs
+              foldM' (runStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) (pst', tcStWithDefs, evalSt', loaded') stmts
         Nothing -> do
           input <- liftIO (TIO.readFile path)
           liftIO (parseFromFile pst input) >>= \case
@@ -554,7 +559,12 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                   msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons (parserTyMods pst'))
                   liftIO (die (T.unpack msg))
                 Right (_, tcStWithDecls) -> do
-                  let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded, [])
+                  let defSpansRaw = defSpansFromStmts stmts (parserDefSpans pst')
+                      sigSpans = funcSigSpansFromStmts stmts (parserDefSpans pst')
+                  tcStWithDefs <- liftIO $ runTCM (recordDefLocations absPath defSpansRaw >> recordFuncSigLocations absPath sigSpans) tcStWithDecls >>= \case
+                    Left _ -> return tcStWithDecls
+                    Right (_, tcStDefs) -> return tcStDefs
+                  let startState = (pst', tcStWithDefs, evalSt, Set.insert absPath loaded, [])
                   (pstFinal, tcSt', evalSt', loaded', typedStmts) <-
                     foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
                   let depStmts = [name | Load name <- stmts]
@@ -706,6 +716,47 @@ collectNonGerundRefs stmts =
         Let {varName, body} ->
           expRefs (varName : bound) body
         _ -> []
+
+-- | Filter parser definition spans to those introduced by the given statements.
+defSpansFromStmts :: [Stmt Ann] -> Map.Map Identifier [Span] -> Map.Map Identifier Span
+defSpansFromStmts stmts defSpans =
+  let allowed = Set.fromList (stmtNames stmts)
+  in Map.filterWithKey (\ident _ -> Set.member ident allowed) (latestDefSpans defSpans)
+  where
+    stmtNames stts = concatMap stmtNames' stts
+    stmtNames' stt =
+      case stt of
+        Defn name _ _ -> [name]
+        Function name _ _ _ _ -> [name]
+        PrimFunc name _ _ _ -> [name]
+        NewType name _ ctors -> name : map (fst . fst) ctors
+        PrimType name -> [name]
+        _ -> []
+
+latestDefSpans :: Map.Map Identifier [Span] -> Map.Map Identifier Span
+latestDefSpans =
+  Map.mapMaybe (\spans -> case reverse spans of
+    sp:_ -> Just sp
+    [] -> Nothing)
+
+-- | Build function signature spans from statements and definition spans.
+funcSigSpansFromStmts :: [Stmt Ann] -> Map.Map Identifier [Span] -> Map.Map (Identifier, [Ty Ann]) Span
+funcSigSpansFromStmts stmts defSpans =
+  fst (foldl' step (Map.empty, defSpans) stmts)
+  where
+    step (acc, spans) stmt =
+      case stmt of
+        Function name args _ _ _ ->
+          let (mSp, spans') = takeSpan name spans
+          in (maybe acc (\sp -> Map.insert (name, map snd args) sp acc) mSp, spans')
+        PrimFunc name args _ _ ->
+          let (mSp, spans') = takeSpan name spans
+          in (maybe acc (\sp -> Map.insert (name, map snd args) sp acc) mSp, spans')
+        _ -> (acc, spans)
+    takeSpan name spans =
+      case Map.lookup name spans of
+        Just (sp:rest) -> (Just sp, Map.insert name rest spans)
+        _ -> (Nothing, spans)
 
 -- | Resolve a module name to a file path.
 resolveModulePath :: [FilePath] -> Identifier -> RenderM FilePath
