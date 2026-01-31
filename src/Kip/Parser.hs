@@ -336,7 +336,7 @@ modifyP = lift . modify
 -- | Record a definition span for later lookup (prefers the first occurrence).
 recordDefSpan :: Identifier -> Span -> KipParser ()
 recordDefSpan ident sp =
-  modifyP (\ps -> ps { parserDefSpans = M.insertWith (\new old -> old <> new) ident [sp] (parserDefSpans ps) })
+  modifyP (\ps -> ps { parserDefSpans = M.insertWith (flip (<>)) ident [sp] (parserDefSpans ps) })
 
 -- | Parse an item and return it with a span.
 withSpan :: KipParser a -- ^ Parser to wrap.
@@ -1939,7 +1939,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               _ -> (init parts, last parts)
       when (length parts < 2) empty
       -- Parse type parameters with case detection
-      params <- mapM parseTypeParam (map fst paramIdents)
+      params <- mapM (parseTypeParam . fst) paramIdents
       rawName <- fst <$> resolveCandidatePreferNom (fst nameIdent)
       name <- normalizeTypeHead rawName
       return (name, snd nameIdent, params, [])
@@ -1958,7 +1958,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           -- Two or more identifiers: all but last are params, last is type name
           let paramIdents = first : init rest
               nameIdent = last rest
-          params <- mapM parseTypeParam (map fst paramIdents)
+          params <- mapM (parseTypeParam . fst) paramIdents
           rawName <- fst <$> resolveCandidatePreferNom (fst nameIdent)
           name <- normalizeTypeHead rawName
           return (name, snd nameIdent, params, [])

@@ -605,7 +605,7 @@ defSpansFromParserRaw base stmts pst =
           (latestDefSpans (parserDefSpans pst))
   in localDefs
   where
-    stmtNames stts = concatMap stmtNames' stts
+    stmtNames = concatMap stmtNames'
     stmtNames' stt =
       case stt of
         Defn name _ _ -> [name]
@@ -634,7 +634,7 @@ defSpanListsFromParser base stmts pst =
         Map.filterWithKey (\ident spans -> Set.member ident allowed && not (null spans)) localLists
   in filtered
   where
-    stmtNames stts = concatMap stmtNames' stts
+    stmtNames = concatMap stmtNames'
     stmtNames' stt =
       case stt of
         Defn name _ _ -> [name]

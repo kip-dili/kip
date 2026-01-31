@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 -- | Type checker and type inference for Kip.
 -- |
 -- | This module performs a single-pass, syntax-directed check over the AST while
@@ -128,11 +129,11 @@ recordResolvedSig sp ident tys =
 -- | Merge definition locations from a file (latest wins).
 recordDefLocations :: FilePath -> Map.Map Identifier Span -> TCM ()
 recordDefLocations path defs =
-  modify (\s -> s { tcDefLocations = Map.union (Map.map (\sp -> (path, sp)) defs) (tcDefLocations s) })
+  modify (\s -> s { tcDefLocations = Map.union (Map.map (path,) defs) (tcDefLocations s) })
 
 recordFuncSigLocations :: FilePath -> Map.Map (Identifier, [Ty Ann]) Span -> TCM ()
 recordFuncSigLocations path defs =
-  modify (\s -> s { tcFuncSigLocs = Map.union (Map.map (\sp -> (path, sp)) defs) (tcFuncSigLocs s) })
+  modify (\s -> s { tcFuncSigLocs = Map.union (Map.map (path,) defs) (tcFuncSigLocs s) })
 
 -- | Type checker state for names, signatures, and constructors.
 data TCState =

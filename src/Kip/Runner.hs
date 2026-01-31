@@ -723,7 +723,7 @@ defSpansFromStmts stmts defSpans =
   let allowed = Set.fromList (stmtNames stmts)
   in Map.filterWithKey (\ident _ -> Set.member ident allowed) (latestDefSpans defSpans)
   where
-    stmtNames stts = concatMap stmtNames' stts
+    stmtNames = concatMap stmtNames'
     stmtNames' stt =
       case stt of
         Defn name _ _ -> [name]
