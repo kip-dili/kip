@@ -63,6 +63,7 @@ data PrimitiveEvalOps m = PrimitiveEvalOps
   , peFlushStdout :: m ()
   , peReadLine :: m Text
   , peReadFirstPath :: [FilePath] -> m (Maybe Text)
+  , peGetCurrentFile :: m (Maybe FilePath)
   , peWriteFileText :: FilePath -> Text -> m Bool
   , peGetRandState :: m (Maybe Word32)
   , peSetRandState :: Word32 -> m ()
@@ -287,7 +288,7 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise -> Nothing
     ([], "oku")
       | [] <- args -> Just (primRead ops)
-      | [(_, TyString _)] <- args -> Just (primReadFile ops mPath)
+      | [(_, TyString _)] <- args -> Just (primReadFile ops)
       | otherwise -> Nothing
     ([], "uzunluk") -> Just (primStringLength "uzunluk")
     ([], "birleşim") -> Just (primStringConcat "birleşim")
@@ -414,10 +415,11 @@ primRead ops args =
     [] -> StrLit (mkAnn Nom NoSpan) <$> peReadLine ops
     _ -> pure (fallbackApp ([], "oku") args)
 
-primReadFile :: Monad m => PrimitiveEvalOps m -> Maybe FilePath -> [Exp Ann] -> m (Exp Ann)
-primReadFile ops mPath args =
+primReadFile :: Monad m => PrimitiveEvalOps m -> [Exp Ann] -> m (Exp Ann)
+primReadFile ops args =
   case args of
     [StrLit _ path] -> do
+      mPath <- peGetCurrentFile ops
       content <- peReadFirstPath ops (resolveReadCandidates mPath path)
       case content of
         Nothing -> pure noneExp

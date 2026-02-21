@@ -1419,6 +1419,7 @@ mkPrimitiveEvalOps =
     , Prim.peFlushStdout = liftIO (hFlush stdout)
     , Prim.peReadLine = liftIO TIO.getLine
     , Prim.peReadFirstPath = liftIO . readFirstPath
+    , Prim.peGetCurrentFile = gets evalCurrentFile
     , Prim.peWriteFileText = \path content -> do
         st <- get
         let resolved = resolvePath st (T.pack path)
