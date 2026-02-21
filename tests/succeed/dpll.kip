@@ -5,53 +5,53 @@ olabilir.
 (bu tam-sayının) işaret-tersi,
   0'la bunun farkıdır.
 
-(bu tam-sayı listesinin) (x tam-sayıyla) herhangisi,
+(bu tam-sayı listesinin) (x tam-sayısını) içermesi,
   bu boşsa,
     yanlış;
   ilkin devama ekiyse,
     (ilkle x'in eşitliği) doğruysa,
       doğru;
     değilse,
-      devamın x'le herhangisidir.
+      devamın x'i içermesidir.
 
-(bu tam-sayı listesinin) (x tam-sayıyla) farkı,
+(bu tam-sayı listesinden) (x tam-sayısının) ayıklanması,
   bu boşsa,
     boş;
   ilkin devama ekiyse,
     (ilkle x'in eşitliği) doğruysa,
-      devamın x'le farkıdır;
+      devamdan x'in ayıklanmasıdır;
     değilse,
-      ilkin (devamın x'le farkına) ekidir.
+      ilkin (devamdan x'in ayıklanmasına) ekidir.
 
-(bu cümlenin) (x tam-sayıyla) (filtre cümle olasılığı),
+(bu cümlenin) (x tam-sayısıyla) ayıklanmış-cümle-olasılığı,
   bu sayıların durumuysa,
-    (sayıların x'le herhangisi) doğruysa,
+    (sayıların x'i içermesi) doğruysa,
       yokluk;
     değilse,
-      (((sayıların (x'in işaret-tersiyle) farkının) durumu) varlığı).
+      ((sayıların (x'in işaret-tersinin) ayıklanmasının) durumu) varlığıdır.
 
-(bu cümle listesinin) (x tam-sayıyla) filtresi,
+(bu cümle listesinden) (x tam-sayısının) ayıklanması,
   bu boşsa,
     boş;
   ilkin devama ekiyse,
-    ((ilkin x'le filtresi)
+    (ilkin x'le ayıklanmış-cümle-olasılığı)
       yokluksa,
-        devamın x'le filtresidir;
+        devamdan x'in ayıklanmasıdır;
       kalan-cümlenin varlığıysa,
-        kalan-cümlenin (devamın x'le filtresine) ekidir).
+        kalan-cümlenin (devamdan x'in ayıklanmasına) ekidir.
 
-(bu cümle listesinin) liste-boş-cümle-varlığı,
+(bu cümle listesinin) boş-cümle-içermesi,
   bu boşsa,
     yanlış;
   ilk-cümlenin devama ekiyse,
-    ((ilk-cümle)
+    (ilk-cümle)
       sayılar durumuysa,
         sayılar boşsa,
           doğru;
         değilse,
-          devamın liste-boş-cümle-varlığı).
+          devamın boş-cümle-içermesidir.
 
-(bu cümlenin) cümle-birimi,
+(bu cümlenin) birimi,
   bu sayıların durumuysa,
     sayılar boşsa,
       yokluk;
@@ -60,52 +60,98 @@ olabilir.
     ilkin devama ekiyse,
       yokluktur.
 
-(bu cümle listesinin) liste-birimi,
+(bu cümle listesinin) birimi,
   bu boşsa,
     yokluk;
   ilkin devama ekiyse,
-    ((ilkin cümle-birimi)
+    (ilkin birimi)
       sayının varlığıysa,
         sayının varlığı;
       yokluksa,
-        devamın liste-birimidir).
+        devamın birimidir.
 
-(bu cümlenin) cümle-seçimi,
+(bu cümlenin) (x tam-sayısını) içermesi,
+  bu sayıların durumuysa,
+    sayıların x'i içermesidir.
+
+(bu cümle listesinin) (x tam-sayısını) içermesi,
+  bu boşsa,
+    yanlış;
+  ilkin devama ekiyse,
+    (ilkin x'i içermesi) doğruysa,
+      doğru;
+    değilse,
+      devamın x'i içermesidir.
+
+(bu cümle listesinde) (x tam-sayısının) karşıtının-yokluğu,
+  (bunun (x'in işaret-tersini) içermesi) doğruysa,
+    yanlış;
+  değilse,
+    doğrudur.
+
+(bu tam-sayı listesinin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi,
+  bu boşsa,
+    yokluk;
+  ilkin devama ekiyse,
+    ((bütün-cümlelerde ilkin karşıtının-yokluğu) doğruysa,
+      ilkin varlığı;
+    değilse,
+      devamın bütün-cümlelerle karşıtı-yokluğu-seçimidir).
+
+(bu cümlenin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi,
+  bu sayıların durumuysa,
+    sayıların bütün-cümlelerle karşıtı-yokluğu-seçimidir.
+
+(bu cümle listesinin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi,
+  bu boşsa,
+    yokluk;
+  ilkin devama ekiyse,
+    (ilkin bütün-cümlelerle karşıtı-yokluğu-seçimi)
+      sayının varlığıysa,
+        sayının varlığı;
+      yokluksa,
+        devamın bütün-cümlelerle karşıtı-yokluğu-seçimidir.
+
+(bu cümleden) seçim,
   bu sayıların durumuysa,
     sayılar boşsa,
       yokluk;
     ilk devama ekiyse,
-      ilkin varlığı.
+      ilkin varlığıdır.
 
-(bu cümle listesinin) liste-seçimi,
+(bu cümle listesinden) seçim,
   bu boşsa,
     yokluk;
-  ilkin devama ekiyse,
-    ((ilkin cümle-seçimi)
+  ilk-cümlenin devama ekiyse,
+    (ilk-cümleden seçim)
       sayının varlığıysa,
         sayının varlığı;
       yokluksa,
-        devamın liste-seçimidir).
+        devamdan seçimdir.
 
 (bu cümle listesinin) (karar doğruluğu),
   bu boşsa,
     doğru;
   değilse,
-    (bunun liste-boş-cümle-varlığı) doğruysa,
+    (bunun boş-cümle-içermesi) doğruysa,
       yanlış;
     değilse,
-      ((bunun liste-birimi)
+      (bunun birimi)
         x'in varlığıysa,
-          ((bunun x'le filtresinin) kararı);
+          (bundan x'in ayıklanmasının) kararı;
         yokluksa,
-          ((bunun liste-seçimi)
+          (bunun bununla karşıtı-yokluğu-seçimi)
             x'in varlığıysa,
-              (((bunun x'le filtresinin) kararı) doğruysa,
-                doğru;
-              değilse,
-                ((bunun (x'in işaret-tersiyle) filtresinin) kararı));
+              (bundan x'in ayıklanmasının) kararı;
             yokluksa,
-              doğru)).
+              (bundan seçim)
+                x'in varlığıysa,
+                  (((bundan x'in ayıklanmasının) kararı) doğruysa,
+                    doğru;
+                  değilse,
+                    ((bundan (x'in işaret-tersinin) ayıklanmasının) kararı));
+                yokluksa,
+                  doğru.
 
 (bu doğruluğun) metni,
   bu doğruysa,
