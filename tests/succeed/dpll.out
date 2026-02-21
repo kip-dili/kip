@@ -1,14 +1,20 @@
 cümle tipi tanımlandı.
 (bu tam-sayının) işaret-tersi tanımlandı.
-(bu tam-sayı listesinin) (x tam-sayısıyla) herhangisi tanımlandı.
-(bu tam-sayı listesinin) (x tam-sayısıyla) farkı tanımlandı.
-(bu cümlenin) (x tam-sayısıyla) filtresi yüklendi.
-(bu cümle listesinin) (x tam-sayısıyla) filtresi tanımlandı.
-(bu cümle listesinin) liste-boş-cümle-varlığı tanımlandı.
-(bu cümlenin) cümle-birimi tanımlandı.
-(bu cümle listesinin) liste-birimi tanımlandı.
-(bu cümlenin) cümle-seçimi tanımlandı.
-(bu cümle listesinin) liste-seçimi tanımlandı.
+(bu tam-sayı listesinin) (x tam-sayısını) içermesi tanımlandı.
+(bu tam-sayı listesinden) (x tam-sayısının) ayıklanması tanımlandı.
+(bu cümlenin) (x tam-sayısıyla) ayıklanmış-cümle-olasılığı tanımlandı.
+(bu cümle listesinden) (x tam-sayısının) ayıklanması tanımlandı.
+(bu cümle listesinin) boş-cümle-içermesi tanımlandı.
+(bu cümlenin) birimi tanımlandı.
+(bu cümle listesinin) birimi tanımlandı.
+(bu cümlenin) (x tam-sayısını) içermesi tanımlandı.
+(bu cümle listesinin) (x tam-sayısını) içermesi tanımlandı.
+(bu cümle listesinin) (x tam-sayısının) karşıtının-yokluğu tanımlandı.
+(bu tam-sayı listesinin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi tanımlandı.
+(bu cümlenin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi tanımlandı.
+(bu cümle listesinin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi tanımlandı.
+(bu cümleden) seçimi tanımlandı.
+(bu cümle listesinden) seçimi tanımlandı.
 (bu cümle listesinin) kararı yüklendi.
 (bu doğruluğun) metni tanımlandı.
 basit-birinci-cümle tanımlandı.
