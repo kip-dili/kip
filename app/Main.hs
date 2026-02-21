@@ -1132,9 +1132,21 @@ main = do
               lift (outputStrLn path)
             loop rs
       | input == ":functions" = do
-          let names = nub (map snd (Map.keys (tcFuncSigs (replTCState rs))))
-          forM_ (sort names) $ \name ->
-            lift (outputStrLn (T.unpack name))
+          ctx <- ask
+          (cache, fsm) <- runApp requireCacheFsm
+          let paramTyCons = [name | (name, arity) <- replTyCons rs, arity > 0]
+              tcSt = replTCState rs
+              allSigs = nubBy (\(n1, a1) (n2, a2) -> n1 == n2 && a1 == a2)
+                        [ (name, args)
+                        | (name, argsList) <- Map.toList (tcFuncSigs tcSt)
+                        , args <- argsList
+                        ]
+          rendered <- forM allSigs $ \(name, args) -> do
+            let isInf = Set.member name (tcInfinitives tcSt)
+                mRet = Map.lookup (name, map snd args) (tcFuncSigRets tcSt)
+            liftIO (renderReplSig ctx cache fsm paramTyCons (replTyMods rs) isInf name args mRet)
+          forM_ (sort rendered) $ \line ->
+            lift (outputStrLn (T.unpack line))
           loop rs
       | input == ":types" = do
           let names = nub [name | ((_, name), _arity) <- replTyCons rs]
@@ -1190,7 +1202,7 @@ main = do
                           sigs'' = nubBy (\(n1, a1) (n2, a2) -> n1 == n2 && a1 == a2) sigs'
                       forM_ sigs'' $ \(name, args) -> do
                         let mRet = Map.lookup (name, map snd args) (tcFuncSigRets (replTCState rs))
-                        line <- liftIO (renderReplSig ctx cache fsm paramTyCons (replTyMods rs) isInfinitive varName name args mRet)
+                        line <- liftIO (renderReplSig ctx cache fsm paramTyCons (replTyMods rs) isInfinitive name args mRet)
                         lift (outputStrLn (T.unpack line))
                       loop rs
                 _ -> inferExprType ctx paramTyCons parsed expr
@@ -1369,12 +1381,11 @@ main = do
                       -> [Identifier] -- ^ Type parameters for rendering.
                       -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
                       -> Bool -- ^ Whether the function is an infinitive.
-                      -> Identifier -- ^ Input name (raw).
                       -> Identifier -- ^ Canonical function name.
                       -> [Arg Ann] -- ^ Argument types.
                       -> Maybe (Ty Ann) -- ^ Optional return type.
                       -> IO Text -- ^ Rendered signature.
-        renderReplSig ctx cache fsm paramTyCons tyMods isInfinitive inputName name args mRet = do
+        renderReplSig ctx cache fsm paramTyCons tyMods isInfinitive name args mRet = do
           argParts <- mapM (renderArgParts cache fsm paramTyCons tyMods) args
           let argStrs =
                 [ T.concat ["(", T.pack argName, " ", colorizeTyParts (rcUseColor ctx) tyParts, ")"]
@@ -1382,7 +1393,7 @@ main = do
                 ]
           nameStr <-
             if isInfinitive
-              then return (prettyIdent inputName)
+              then renderInfinitiveName cache fsm name
               else renderIdentWithCase cache fsm name Nom
           retPart <-
             case mRet of
