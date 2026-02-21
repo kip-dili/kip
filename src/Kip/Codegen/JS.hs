@@ -14,7 +14,7 @@ operations (read/write/random) in a uniform async style.
 
 'codegenProgram' always emits:
 
-1. A primitive prelude ('jsPrimitives').
+1. A primitive prelude ('Prim.primitiveJsPrelude').
 2. An async runner function containing user code.
 3. User statements in source order (with function declarations emitted first).
 
@@ -53,6 +53,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
 import Kip.AST
+import qualified Kip.Primitive as Prim
 
 data CodegenCtx = MkCodegenCtx
   { sectionableFns :: Set.Set Identifier
@@ -354,7 +355,7 @@ pruneJsPrimitives programText =
   let initialUsed =
         Set.fromList
           [ name
-          | (name, _, _) <- runtimePrunableSpecs
+          | (name, _, _) <- Prim.primitiveJsPrunableSpecs
           , textMentionsIdent programText name
           ]
       used = closeRuntimeDeps initialUsed
@@ -363,14 +364,14 @@ pruneJsPrimitives programText =
           if name `Set.member` used
             then acc
             else T.replace snippet "" acc)
-       jsPrimitives
-       runtimePrunableSpecs
+       Prim.primitiveJsPrelude
+       Prim.primitiveJsPrunableSpecs
 
 -- | Close runtime symbol usage through inter-primitive dependencies.
 closeRuntimeDeps :: Set.Set Text -> Set.Set Text
 closeRuntimeDeps roots = go roots (Set.toList roots)
   where
-    depMap = Map.fromList [(name, deps) | (name, deps, _) <- runtimePrunableSpecs]
+    depMap = Map.fromList [(name, deps) | (name, deps, _) <- Prim.primitiveJsPrunableSpecs]
 
     go seen [] = seen
     go seen (name:rest) =
@@ -594,7 +595,7 @@ runtimeExportNames =
 -- | Emit the standalone runtime ESM module.
 codegenRuntime :: Text
 codegenRuntime =
-  jsPrimitives
+  Prim.primitiveJsPrelude
     <> "\n"
     <> "export { " <> T.intercalate ", " runtimeExportNames <> " };\n"
 
@@ -686,353 +687,6 @@ mergeCompatibleFunctions ctx stmts = snd (foldl step (Map.empty, []) stmts)
 -- uzunluk, toplam, fark, oku, yaz) are available as explicit __kip_prim_*
 -- helpers and selected at call sites via typechecker-resolved signatures.
 -- The code is async-capable to support interactive browser I/O.
--- When KIP_RANDOM_SEED is set, the RNG mirrors the runtime LCG.
-jsPrimitives :: Text
-jsPrimitives = T.unlines
-  [ "// Kip → JavaScript (async/await for interactive browser support)"
-  , ""
-  , "// Node.js modules for I/O (lazy loaded)"
-  , "var __kip_fs = null;"
-  , "var __kip_readline = null;"
-  , "var __kip_stdin_queue = [];"
-  , "var __kip_stdin_waiters = [];"
-  , "var __kip_stdin_closed = false;"
-  , "var __kip_stdin_mode = null;"
-  , "var __kip_is_browser = (typeof window !== 'undefined');"
-  , "var __kip_require = null;"
-  , "var __kip_random_seed = null;"
-  , "if (!__kip_is_browser && typeof process !== 'undefined' && process.versions && process.versions.node) {"
-  , "  const { createRequire } = await import('module');"
-  , "  __kip_require = createRequire(import.meta.url);"
-  , "}"
-  , "if (__kip_is_browser) {"
-  , "  if (typeof window.__kip_write !== 'function') {"
-  , "    window.__kip_write = (x) => console.log(x);"
-  , "  }"
-  , "  if (typeof window.__kip_read_line !== 'function') {"
-  , "    window.__kip_read_line = async () => {"
-  , "      var v = prompt('Input:');"
-  , "      return v === null ? '' : v;"
-  , "    };"
-  , "  }"
-  , "}"
-  , "if (!__kip_is_browser && typeof process !== 'undefined' && process.env && process.env.KIP_RANDOM_SEED) {"
-  , "  const seed = Number(process.env.KIP_RANDOM_SEED);"
-  , "  if (!Number.isNaN(seed)) {"
-  , "    __kip_random_seed = seed >>> 0;"
-  , "  }"
-  , "}"
-  , "if (__kip_is_browser && typeof window.__kip_random_seed === 'number') {"
-  , "  __kip_random_seed = window.__kip_random_seed >>> 0;"
-  , "}"
-  , "var __kip_rand = () => {"
-  , "  if (__kip_random_seed === null) return Math.floor(Math.random() * 4294967296);"
-  , "  __kip_random_seed = (Math.imul(__kip_random_seed, 1664525) + 1013904223) >>> 0;"
-  , "  return __kip_random_seed;"
-  , "};"
-  , ""
-  , "// Initialize stdin buffer for line-by-line reading (Node.js only)"
-  , "var __kip_init_stdin = () => {"
-  , "  if (typeof process === 'undefined' || !process.stdin) return;"
-  , "  if (__kip_stdin_mode !== null) return;"
-  , "  if (!__kip_require) return;"
-  , "  if (process.stdin.isTTY === false) {"
-  , "    __kip_stdin_mode = 'pipe';"
-  , "    __kip_fs = __kip_fs || __kip_require('fs');"
-  , "    try {"
-  , "      __kip_stdin_queue = __kip_fs.readFileSync(0, 'utf8').split('\\n');"
-  , "    } catch (e) {"
-  , "      __kip_stdin_queue = [];"
-  , "    }"
-  , "    __kip_stdin_closed = true;"
-  , "    return;"
-  , "  }"
-  , "  __kip_stdin_mode = 'tty';"
-  , "  if (__kip_readline === null) {"
-  , "    var readline = __kip_require('readline');"
-  , "    __kip_readline = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });"
-  , "    __kip_readline.on('line', (line) => {"
-  , "      if (__kip_stdin_waiters.length > 0) {"
-  , "        __kip_stdin_waiters.shift()(line);"
-  , "      } else {"
-  , "        __kip_stdin_queue.push(line);"
-  , "      }"
-  , "    });"
-  , "    __kip_readline.on('close', () => {"
-  , "      __kip_stdin_closed = true;"
-  , "      while (__kip_stdin_waiters.length > 0) {"
-  , "        __kip_stdin_waiters.shift()('');"
-  , "      }"
-  , "    });"
-  , "  }"
-  , "};"
-  , "var __kip_close_stdin = () => {"
-  , "  if (__kip_readline && __kip_stdin_mode === 'tty') {"
-  , "    __kip_readline.close();"
-  , "    __kip_readline = null;"
-  , "  }"
-  , "};"
-  , ""
-  , "// Helper to create a tagged value (works whether constructor is function or object)"
-  , "var __kip_bool = (tag) => typeof window !== 'undefined' && typeof window[tag] === 'function' ? window[tag]() : { tag, args: [] };"
-  , "var __kip_true = () => typeof doğru === 'function' ? doğru() : doğru;"
-  , "var __kip_false = () => typeof yanlış === 'function' ? yanlış() : yanlış;"
-  , "var __kip_some = (x) => typeof varlık === 'function' ? varlık(x) : { tag: 'varlık', args: [x] };"
-  , "var __kip_none = () => typeof yokluk === 'function' ? yokluk() : { tag: 'yokluk', args: [] };"
-  , "var __kip_float = (x) => ({ __kip_float: true, value: x });"
-  , "var __kip_is_float = (x) => typeof x === 'object' && x && x.__kip_float === true;"
-  , "var __kip_num = (x) => __kip_is_float(x) ? x.value : x;"
-  , ""
-  , "// Primitive boolean constructors (will be overridden by library)"
-  , "var doğru = { tag: \"doğru\", args: [] };"
-  , "var yanlış = { tag: \"yanlış\", args: [] };"
-  , ""
-  , "// Option type constructors (will be overridden by library if defined)"
-  , "var varlık = (...args) => ({ tag: \"varlık\", args });"
-  , "var yokluk = (...args) => ({ tag: \"yokluk\", args });"
-  , ""
-  , "// Unit type (will be overridden by library if defined)"
-  , "var bitimlik = (...args) => ({ tag: \"bitimlik\", args });"
-  , ""
-  , "// Primitive functions for strings/numbers (may be overloaded by library for other types)"
-  , "var __kip_prim_ters = (s) => s.split('').reverse().join('');"
-  , "var __kip_prim_birleşim = (a, b) => __kip_num(a) + __kip_num(b);"
-  , "var __kip_prim_uzunluk = (s) => s.length;"
-  , "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));"
-  , "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));"
-  , ""
-  , "// I/O primitives - async to support browser interactivity"
-  , "var __kip_prim_oku_stdin = async () => {"
-  , "  // Check for browser runtime at call time"
-  , "  if (__kip_is_browser && typeof window.__kip_read_line === 'function') {"
-  , "    return await window.__kip_read_line();"
-  , "  }"
-  , "  // Node.js fallback"
-  , "  __kip_init_stdin();"
-  , "  if (__kip_stdin_queue.length > 0) {"
-  , "    return __kip_stdin_queue.shift();"
-  , "  }"
-  , "  if (__kip_stdin_closed) {"
-  , "    return '';"
-  , "  }"
-  , "  return await new Promise((resolve) => {"
-  , "    __kip_stdin_waiters.push(resolve);"
-  , "  });"
-  , "};"
-  , "var __kip_prim_oku_dosya = (path) => {"
-  , "  if (!__kip_require) return __kip_none();"
-  , "  __kip_fs = __kip_fs || __kip_require('fs');"
-  , "  try {"
-  , "    return __kip_some(__kip_fs.readFileSync(path, 'utf8'));"
-  , "  } catch (e) {"
-  , "    return __kip_none();"
-  , "  }"
-  , "};"
-  , "var __kip_prim_yaz_dosya = (path, content) => {"
-  , "  if (!__kip_require) return __kip_false();"
-  , "  __kip_fs = __kip_fs || __kip_require('fs');"
-  , "  try {"
-  , "    __kip_fs.writeFileSync(path, content);"
-  , "    return __kip_true();"
-  , "  } catch (e) {"
-  , "    return __kip_false();"
-  , "  }"
-  , "};"
-  , ""
-  , "// Primitive functions (can be overridden)"
-  , "var yaz = (x) => {"
-  , "  var val = __kip_is_float(x) ? x.value : x;"
-  , "  var output = __kip_is_float(x) && Number.isInteger(val) ? String(val) + '.0' : val;"
-  , "  if (__kip_is_browser && typeof window.__kip_write === 'function') {"
-  , "    window.__kip_write(output);"
-  , "  } else {"
-  , "    console.log(output);"
-  , "  }"
-  , "  return typeof bitimlik === 'function' ? bitimlik() : bitimlik;"
-  , "};"
-  , "var çarpım = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) * __kip_num(b)) : (__kip_num(a) * __kip_num(b));"
-  , "var fark = __kip_prim_fark;"
-  , "var bölüm = (a, b) => {"
-  , "  var av = __kip_num(a);"
-  , "  var bv = __kip_num(b);"
-  , "  if (bv === 0) return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(0) : 0;"
-  , "  return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(av / bv) : Math.trunc(av / bv);"
-  , "};"
-  , "var kalan = (a, b) => {"
-  , "  var av = __kip_num(a);"
-  , "  var bv = __kip_num(b);"
-  , "  if (bv === 0) return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(0) : 0;"
-  , "  return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(av % bv) : (av % bv);"
-  , "};"
-  , "var karekök = (a) => __kip_float(Math.sqrt(__kip_num(a)) * 1.0);"
-  , "var radyan = (a) => __kip_float(__kip_num(a) * Math.PI / 180);"
-  , "var derece = (a) => __kip_float(__kip_num(a) * 180 / Math.PI);"
-  , "var pi_sayısı = () => __kip_float(Math.PI);"
-  , "var taban = (a) => Math.floor(__kip_num(a));"
-  , "var tavan = (a) => Math.ceil(__kip_num(a));"
-  , "var tam_sayı_ondalık_sayı_hali = (a) => __kip_float(a * 1.0);"
-  , "var sayı_çek = (a, b) => {"
-  , "  var lo = Math.min(a, b);"
-  , "  var hi = Math.max(a, b);"
-  , "  var range = hi - lo + 1;"
-  , "  return lo + (__kip_rand() % range);"
-  , "};"
-  , "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();"
-  , "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();"
-  , "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();"
-  , "var büyüklük = (a, b) => __kip_num(a) > __kip_num(b) ? __kip_true() : __kip_false();"
-  , "var büyük_eşitlik = (a, b) => __kip_num(a) >= __kip_num(b) ? __kip_true() : __kip_false();"
-  , "var dizge_hal = (n) => String(__kip_num(n));"
-  , "var tam_sayı_hal = (s) => { const n = parseInt(s, 10); return isNaN(n) ? __kip_none() : __kip_some(n); };"
-  , "var ondalık_sayı_hal = (s) => { if (typeof s === 'number') return __kip_float(s * 1.0); const n = parseFloat(s); return isNaN(n) ? __kip_none() : __kip_some(__kip_float(n)); };"
-  , "var __kip_call = async (fn, args) => {"
-  , "  if (typeof fn !== 'function') {"
-  , "    throw new TypeError('Attempted to call a non-function');"
-  , "  }"
-  , "  if (args.length === 0) return await fn();"
-  , "  if (fn.length > 0 && args.length < fn.length) {"
-  , "    return (...rest) => __kip_call(fn, args.concat(rest));"
-  , "  }"
-  , "  if (fn.length > 0 && args.length > fn.length) {"
-  , "    const head = args.slice(0, fn.length);"
-  , "    const tail = args.slice(fn.length);"
-  , "    const out = await fn(...head);"
-  , "    return await __kip_call(out, tail);"
-  , "  }"
-  , "  return await fn(...args);"
-  , "};"
-  ]
-
--- | Runtime bindings that can be removed when not referenced by generated code.
---
--- Each triple is: binding name, dependency names, exact snippet text in
--- 'jsPrimitives'. Dependencies are traversed transitively.
-runtimePrunableSpecs :: [(Text, [Text], Text)]
-runtimePrunableSpecs =
-  [ ("doğru", [], "var doğru = { tag: \"doğru\", args: [] };\n")
-  , ("yanlış", [], "var yanlış = { tag: \"yanlış\", args: [] };\n")
-  , ("varlık", [], "var varlık = (...args) => ({ tag: \"varlık\", args });\n")
-  , ("yokluk", [], "var yokluk = (...args) => ({ tag: \"yokluk\", args });\n")
-  , ("bitimlik", [], "var bitimlik = (...args) => ({ tag: \"bitimlik\", args });\n")
-  , ("__kip_prim_ters", [], "var __kip_prim_ters = (s) => s.split('').reverse().join('');\n")
-  , ("__kip_prim_birleşim", [], "var __kip_prim_birleşim = (a, b) => __kip_num(a) + __kip_num(b);\n")
-  , ("__kip_prim_uzunluk", [], "var __kip_prim_uzunluk = (s) => s.length;\n")
-  , ("__kip_prim_toplam", [], "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));\n")
-  , ("__kip_prim_fark", [], "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));\n")
-  , ("__kip_prim_oku_stdin", [], T.unlines
-      [ "var __kip_prim_oku_stdin = async () => {"
-      , "  // Check for browser runtime at call time"
-      , "  if (__kip_is_browser && typeof window.__kip_read_line === 'function') {"
-      , "    return await window.__kip_read_line();"
-      , "  }"
-      , "  // Node.js fallback"
-      , "  __kip_init_stdin();"
-      , "  if (__kip_stdin_queue.length > 0) {"
-      , "    return __kip_stdin_queue.shift();"
-      , "  }"
-      , "  if (__kip_stdin_closed) {"
-      , "    return '';"
-      , "  }"
-      , "  return await new Promise((resolve) => {"
-      , "    __kip_stdin_waiters.push(resolve);"
-      , "  });"
-      , "};"
-      ])
-  , ("__kip_prim_oku_dosya", ["varlık", "yokluk"], T.unlines
-      [ "var __kip_prim_oku_dosya = (path) => {"
-      , "  if (!__kip_require) return __kip_none();"
-      , "  __kip_fs = __kip_fs || __kip_require('fs');"
-      , "  try {"
-      , "    return __kip_some(__kip_fs.readFileSync(path, 'utf8'));"
-      , "  } catch (e) {"
-      , "    return __kip_none();"
-      , "  }"
-      , "};"
-      ])
-  , ("__kip_prim_yaz_dosya", ["doğru", "yanlış"], T.unlines
-      [ "var __kip_prim_yaz_dosya = (path, content) => {"
-      , "  if (!__kip_require) return __kip_false();"
-      , "  __kip_fs = __kip_fs || __kip_require('fs');"
-      , "  try {"
-      , "    __kip_fs.writeFileSync(path, content);"
-      , "    return __kip_true();"
-      , "  } catch (e) {"
-      , "    return __kip_false();"
-      , "  }"
-      , "};"
-      ])
-  , ("yaz", ["bitimlik"], T.unlines
-      [ "var yaz = (x) => {"
-      , "  var val = __kip_is_float(x) ? x.value : x;"
-      , "  var output = __kip_is_float(x) && Number.isInteger(val) ? String(val) + '.0' : val;"
-      , "  if (__kip_is_browser && typeof window.__kip_write === 'function') {"
-      , "    window.__kip_write(output);"
-      , "  } else {"
-      , "    console.log(output);"
-      , "  }"
-      , "  return typeof bitimlik === 'function' ? bitimlik() : bitimlik;"
-      , "};"
-      ])
-  , ("çarpım", [], "var çarpım = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) * __kip_num(b)) : (__kip_num(a) * __kip_num(b));\n")
-  , ("fark", ["__kip_prim_fark"], "var fark = __kip_prim_fark;\n")
-  , ("bölüm", [], T.unlines
-      [ "var bölüm = (a, b) => {"
-      , "  var av = __kip_num(a);"
-      , "  var bv = __kip_num(b);"
-      , "  if (bv === 0) return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(0) : 0;"
-      , "  return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(av / bv) : Math.trunc(av / bv);"
-      , "};"
-      ])
-  , ("kalan", [], T.unlines
-      [ "var kalan = (a, b) => {"
-      , "  var av = __kip_num(a);"
-      , "  var bv = __kip_num(b);"
-      , "  if (bv === 0) return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(0) : 0;"
-      , "  return __kip_is_float(a) || __kip_is_float(b) ? __kip_float(av % bv) : (av % bv);"
-      , "};"
-      ])
-  , ("karekök", [], "var karekök = (a) => __kip_float(Math.sqrt(__kip_num(a)) * 1.0);\n")
-  , ("radyan", [], "var radyan = (a) => __kip_float(__kip_num(a) * Math.PI / 180);\n")
-  , ("derece", [], "var derece = (a) => __kip_float(__kip_num(a) * 180 / Math.PI);\n")
-  , ("pi_sayısı", [], "var pi_sayısı = () => __kip_float(Math.PI);\n")
-  , ("taban", [], "var taban = (a) => Math.floor(__kip_num(a));\n")
-  , ("tavan", [], "var tavan = (a) => Math.ceil(__kip_num(a));\n")
-  , ("tam_sayı_ondalık_sayı_hali", [], "var tam_sayı_ondalık_sayı_hali = (a) => __kip_float(a * 1.0);\n")
-  , ("sayı_çek", [], T.unlines
-      [ "var sayı_çek = (a, b) => {"
-      , "  var lo = Math.min(a, b);"
-      , "  var hi = Math.max(a, b);"
-      , "  var range = hi - lo + 1;"
-      , "  return lo + (__kip_rand() % range);"
-      , "};"
-      ])
-  , ("eşitlik", ["doğru", "yanlış"], "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();\n")
-  , ("küçüklük", ["doğru", "yanlış"], "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();\n")
-  , ("küçük_eşitlik", ["doğru", "yanlış"], "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();\n")
-  , ("büyüklük", ["doğru", "yanlış"], "var büyüklük = (a, b) => __kip_num(a) > __kip_num(b) ? __kip_true() : __kip_false();\n")
-  , ("büyük_eşitlik", ["doğru", "yanlış"], "var büyük_eşitlik = (a, b) => __kip_num(a) >= __kip_num(b) ? __kip_true() : __kip_false();\n")
-  , ("dizge_hal", [], "var dizge_hal = (n) => String(__kip_num(n));\n")
-  , ("tam_sayı_hal", ["varlık", "yokluk"], "var tam_sayı_hal = (s) => { const n = parseInt(s, 10); return isNaN(n) ? __kip_none() : __kip_some(n); };\n")
-  , ("ondalık_sayı_hal", ["varlık", "yokluk"], "var ondalık_sayı_hal = (s) => { if (typeof s === 'number') return __kip_float(s * 1.0); const n = parseFloat(s); return isNaN(n) ? __kip_none() : __kip_some(__kip_float(n)); };\n")
-  , ("__kip_call", [], T.unlines
-      [ "var __kip_call = async (fn, args) => {"
-      , "  if (typeof fn !== 'function') {"
-      , "    throw new TypeError('Attempted to call a non-function');"
-      , "  }"
-      , "  if (args.length === 0) return await fn();"
-      , "  if (fn.length > 0 && args.length < fn.length) {"
-      , "    return (...rest) => __kip_call(fn, args.concat(rest));"
-      , "  }"
-      , "  if (fn.length > 0 && args.length > fn.length) {"
-      , "    const head = args.slice(0, fn.length);"
-      , "    const tail = args.slice(fn.length);"
-      , "    const out = await fn(...head);"
-      , "    return await __kip_call(out, tail);"
-      , "  }"
-      , "  return await fn(...args);"
-      , "};"
-      ])
-  ]
 
 -- | Generate JavaScript for a list of statements without the runtime prelude.
 --
