@@ -237,29 +237,43 @@ renderParseError = renderParseErrorFor ParseErrorForCli
 -- | Render a parse error bundle for a concrete output target.
 renderParseErrorFor :: ParseErrorRenderTarget -> Lang -> ParseErrorBundle Text ParserError -> Text
 renderParseErrorFor target lang err =
-  case findUnrecognizedWordError err of
-    Just (wordTxt, sp, suggestions, source) ->
+  case findPatternBinderRepeatedError err of
+    Just (ident, sp, source) ->
       let header =
             case lang of
               LangTr -> "Sözdizim hatası:\n"
               LangEn -> "Syntax error:\n"
           msg =
             case lang of
-              LangTr -> renderParserErrorTr (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
-              LangEn -> renderParserErrorEn (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
+              LangTr -> renderParserErrorTr (ErrPatternBinderRepeated ident sp)
+              LangEn -> renderParserErrorEn (ErrPatternBinderRepeated ident sp)
       in case target of
            ParseErrorForCli -> header <> renderSpanSnippet source sp <> "\n" <> msg
            ParseErrorForLsp -> header <> msg
     Nothing ->
-      case lang of
-        LangTr ->
-          let trBundle = mapParseErrorBundle ParserErrorTr err
-              pretty = T.pack (turkifyParseError (errorBundlePretty trBundle))
-          in "Sözdizim hatası:\n" <> compactPretty target pretty
-        LangEn ->
-          let enBundle = mapParseErrorBundle ParserErrorEn err
-              pretty = T.pack (errorBundlePretty enBundle)
-          in "Syntax error:\n" <> compactPretty target pretty
+      case findUnrecognizedWordError err of
+        Just (wordTxt, sp, suggestions, source) ->
+          let header =
+                case lang of
+                  LangTr -> "Sözdizim hatası:\n"
+                  LangEn -> "Syntax error:\n"
+              msg =
+                case lang of
+                  LangTr -> renderParserErrorTr (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
+                  LangEn -> renderParserErrorEn (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
+          in case target of
+               ParseErrorForCli -> header <> renderSpanSnippet source sp <> "\n" <> msg
+               ParseErrorForLsp -> header <> msg
+        Nothing ->
+          case lang of
+            LangTr ->
+              let trBundle = mapParseErrorBundle ParserErrorTr err
+                  pretty = T.pack (turkifyParseError (errorBundlePretty trBundle))
+              in "Sözdizim hatası:\n" <> compactPretty target pretty
+            LangEn ->
+              let enBundle = mapParseErrorBundle ParserErrorEn err
+                  pretty = T.pack (errorBundlePretty enBundle)
+              in "Syntax error:\n" <> compactPretty target pretty
 
 -- | Remove location/snippet gutter emitted by Megaparsec pretty printer.
 compactPretty :: ParseErrorRenderTarget -> Text -> Text
@@ -291,6 +305,21 @@ compactPretty target txt =
         (_, rhs) ->
           let marker = T.strip (T.drop 1 rhs)
           in not (T.null marker) && T.all (== '^') marker
+
+-- | Find the custom repeated-pattern-binder parser error, if present.
+findPatternBinderRepeatedError :: ParseErrorBundle Text ParserError -> Maybe (Identifier, Span, Text)
+findPatternBinderRepeatedError (ParseErrorBundle errs posState) = do
+  (ident, sp) <- listToMaybe (concatMap extract (NE.toList errs))
+  return (ident, sp, pstateInput posState)
+  where
+    extract :: ParseError Text ParserError -> [(Identifier, Span)]
+    extract parseErr =
+      case parseErr of
+        FancyError _ xs ->
+          [ (ident, sp)
+          | ErrorCustom (ErrPatternBinderRepeated ident sp) <- Set.toList xs
+          ]
+        _ -> []
 
 -- | Find the custom unrecognized-word parser error, if present.
 findUnrecognizedWordError :: ParseErrorBundle Text ParserError -> Maybe (Text, Span, [Text], Text)

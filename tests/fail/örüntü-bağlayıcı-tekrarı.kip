@@ -1,0 +1,3 @@
+(bu tam-sayı listesinin) ilk-öğesi,
+  x'in x'e ekiyse, x'dir;
+  değilse, 0'dır.

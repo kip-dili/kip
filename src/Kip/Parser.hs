@@ -79,6 +79,7 @@ Given: @(bu tam-sayının) faktöriyeli@
 module Kip.Parser where
 
 import Data.List
+import qualified Data.List.NonEmpty as NE
 import Data.Maybe (maybeToList, mapMaybe, listToMaybe, isJust, isNothing, fromMaybe)
 import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
@@ -121,6 +122,7 @@ data ParserError
   | ErrPatternAmbiguousName
   | ErrPatternOnlyNames
   | ErrPatternArgNameRepeated
+  | ErrPatternBinderRepeated Identifier Span
   | ErrYaDaInvalid
   | ErrInternal Text
   deriving (Eq, Ord, Show)
@@ -148,6 +150,8 @@ renderParserErrorTr err =
     ErrPatternAmbiguousName -> "Örüntüde belirsiz isim kullanılamaz."
     ErrPatternOnlyNames -> "Örüntüde sadece isimler kullanılabilir."
     ErrPatternArgNameRepeated -> "Örüntüde argüman adı tekrar edilemez."
+    ErrPatternBinderRepeated ident _ ->
+      "Örüntüde aynı bağlayıcı isim tekrar edilemez: " <> identText ident
     ErrYaDaInvalid -> "\"ya da\" yalnızca çok yapkılı tiplerin son yapkısında kullanılabilir."
     ErrInternal msg -> msg
 
@@ -174,6 +178,8 @@ renderParserErrorEn err =
     ErrPatternAmbiguousName -> "Ambiguous names are not allowed in patterns."
     ErrPatternOnlyNames -> "Only identifiers are allowed in patterns."
     ErrPatternArgNameRepeated -> "Pattern argument names cannot be repeated."
+    ErrPatternBinderRepeated ident _ ->
+      "The same binder name cannot be repeated in a pattern: " <> identText ident
     ErrYaDaInvalid -> "\"ya da\" can only appear before the last constructor."
     ErrInternal msg -> msg
 
@@ -3040,6 +3046,20 @@ extractPatVars pat =
     PCharLit _ _ -> []
     PListLit pats -> concatMap extractPatVars pats
 
+-- | Extract bound variable names with source spans from a pattern.
+extractPatVarsWithSpans :: Pat Ann -- ^ Pattern.
+                        -> [(Identifier, Span)] -- ^ Bound variable names and spans.
+extractPatVarsWithSpans pat =
+  case pat of
+    PWildcard _ -> []
+    PVar n ann -> [(n, annSpan ann)]
+    PCtor _ pats -> concatMap extractPatVarsWithSpans pats
+    PIntLit _ _ -> []
+    PFloatLit _ _ -> []
+    PStrLit _ _ -> []
+    PCharLit _ _ -> []
+    PListLit pats -> concatMap extractPatVarsWithSpans pats
+
 -- | Parse a match expression with optional context filtering.
 parseMatchExpr :: Bool -- ^ Whether to use context when resolving names.
                -> KipParser (Exp Ann) -- ^ Parsed match expression.
@@ -3757,19 +3777,34 @@ parseFromFile st input = do
   let stripped = removeComments input
   (res, st') <- runStateT (runParserT p "Kip" stripped) st
   case res of
-    Right stmts -> return (Right (stmts, st'))
+    Right stmts ->
+      case findRepeatedPatternBinderText (parserFilePath st) stripped of
+        Just (ident, sp) ->
+          case runParser (customFailure (ErrPatternBinderRepeated ident sp)) "Kip" stripped of
+            Left err' -> return (Left err')
+            Right _ -> return (Right (stmts, st'))
+        Nothing -> return (Right (stmts, st'))
     Left err ->
       -- When a repeated-arg pattern slips into a branch that produces a
       -- generic syntax error, we prefer a targeted custom error so tests
       -- (and users) see the intended diagnostic.
-      if hasRepeatedArgPatternText stripped
-        then
-          -- We re-run a tiny parser that always fails with the custom error
-          -- so Megaparsec constructs a bundle at the correct location.
-          case runParser (customFailure ErrPatternArgNameRepeated) "Kip" stripped of
-            Left err' -> return (Left err')
-            Right _ -> return (Left err)
-        else return (Left err)
+      if hasCustomParserError err
+        then return (Left err)
+        else
+          case findRepeatedPatternBinderText (parserFilePath st) stripped of
+            Just (ident, sp) ->
+              case runParser (customFailure (ErrPatternBinderRepeated ident sp)) "Kip" stripped of
+                Left err' -> return (Left err')
+                Right _ -> return (Left err)
+            Nothing ->
+              if hasRepeatedArgPatternText stripped
+                then
+                  -- We re-run a tiny parser that always fails with the custom error
+                  -- so Megaparsec constructs a bundle at the correct location.
+                  case runParser (customFailure ErrPatternArgNameRepeated) "Kip" stripped of
+                    Left err' -> return (Left err')
+                    Right _ -> return (Left err)
+                else return (Left err)
   where
     -- | Parser entry for file contents.
     p :: KipParser [Stmt Ann] -- ^ Parsed statements.
@@ -3778,6 +3813,16 @@ parseFromFile st input = do
       stmts <- many (parseStmt <* ws)
       eof
       return stmts
+    hasCustomParserError :: ParseErrorBundle Text ParserError -> Bool
+    hasCustomParserError (ParseErrorBundle errs _) = any isCustom (NE.toList errs)
+    isCustom parseErr =
+      case parseErr of
+        FancyError _ xs -> any isErrorCustom (Set.toList xs)
+        _ -> False
+    isErrorCustom fancy =
+      case fancy of
+        ErrorCustom _ -> True
+        _ -> False
 
 -- | Detect repeated argument names in function clause heads from raw text.
 -- This is a coarse, line-oriented heuristic used only as a fallback
@@ -3826,3 +3871,66 @@ hasRepeatedArgPatternText src =
         | T.isSuffixOf (T.pack ".") (T.strip l) = scan rest []
         | otherwise = scan rest args
   in scan ls []
+
+-- | Find repeated binders in the same pattern surface (heuristic fallback).
+--
+-- This catches surface forms such as @x'in x'e ekiyse@ and points to the
+-- later repeated binder occurrence.
+findRepeatedPatternBinderText :: Maybe FilePath -- ^ Optional source path.
+                              -> Text -- ^ Source text.
+                              -> Maybe (Identifier, Span) -- ^ Repeated binder and span.
+findRepeatedPatternBinderText mPath src =
+  listToMaybe (mapMaybe lineRepeat (zip [1 :: Int ..] (T.lines src)))
+  where
+    suffixes =
+      [ "nın", "nin", "nun", "nün"
+      , "ın", "in", "un", "ün"
+      , "dan", "den", "tan", "ten"
+      , "da", "de", "ta", "te"
+      , "yla", "yle", "la", "le"
+      , "yı", "yi", "yu", "yü"
+      , "ı", "i", "u", "ü"
+      , "ya", "ye", "a", "e"
+      ]
+    normalize :: Text -> Text
+    normalize = stripCaseSuffix . stripApostropheSuffix . T.toLower
+    stripApostropheSuffix txt =
+      case T.breakOn "'" txt of
+        (base, rest)
+          | T.null rest -> txt
+          | otherwise -> base
+    stripCaseSuffix txt =
+      fromMaybe txt
+        (find (not . T.null) (mapMaybe (`T.stripSuffix` txt) suffixes))
+    isWordChar c = isLetter c || c == '\'' || c == '-'
+    wordsWithCols :: Text -> [(Text, Int)]
+    wordsWithCols line = go 0 (T.unpack line)
+      where
+        go _ [] = []
+        go col (c:cs)
+          | isWordChar c =
+              let w = c : takeWhile isWordChar cs
+                  rest = dropWhile isWordChar cs
+                  wLen = length w
+              in (T.pack w, col + 1) : go (col + wLen) rest
+          | otherwise = go (col + 1) cs
+    isCondWord w = any (`T.isSuffixOf` T.toLower w) ["ekiyse", "ikilisiyse"]
+    mkSpan :: Int -> Int -> Text -> Span
+    mkSpan lineNo col txt =
+      let mkP l c = SourcePos "Kip" (mkPos l) (mkPos c)
+          start = mkP lineNo col
+          end = mkP lineNo (col + max 0 (T.length txt - 1))
+      in Span start end mPath
+    lineRepeat (lineNo, lineText) =
+      let ws = wordsWithCols lineText
+          triples = zip3 ws (drop 1 ws) (drop 2 ws)
+      in listToMaybe
+           [ (([], bNorm), mkSpan lineNo bCol bWord)
+           | ((aWord, _), (bWord, bCol), (cWord, _)) <- triples
+           , isCondWord cWord
+           , ("'" `T.isInfixOf` aWord) || ("'" `T.isInfixOf` bWord)
+           , let aNorm = normalize aWord
+           , let bNorm = normalize bWord
+           , not (T.null aNorm)
+           , aNorm == bNorm
+           ]
