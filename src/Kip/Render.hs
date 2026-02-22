@@ -437,6 +437,8 @@ renderTy cache fsm paramTyCons tyMods ty =
       renderIdentWithCase cache fsm ([T.pack "ondalık"], T.pack "sayı") (annCase ann)
     TyString ann ->
       renderIdentWithCase cache fsm ([], T.pack "dizge") (annCase ann)
+    TyChar ann ->
+      renderIdentWithCase cache fsm ([], T.pack "karakter") (annCase ann)
     Arr ann d i -> do
       let d' = setTyCase Gen d
           i' = setTyCase Nom i
@@ -477,6 +479,8 @@ renderTyNom cache fsm paramTyCons tyMods ty =
       renderIdentWithCase cache fsm ([T.pack "ondalık"], T.pack "sayı") Nom
     TyString _ ->
       renderIdentWithCase cache fsm ([], T.pack "dizge") Nom
+    TyChar _ ->
+      renderIdentWithCase cache fsm ([], T.pack "karakter") Nom
     Arr {} ->
       return "işlev"
 
@@ -490,6 +494,7 @@ setTyCase cas ty =
     TyInt ann -> TyInt (setAnnCase ann cas)
     TyFloat ann -> TyFloat (setAnnCase ann cas)
     TyString ann -> TyString (setAnnCase ann cas)
+    TyChar ann -> TyChar (setAnnCase ann cas)
     TyApp ann ctor args -> TyApp (setAnnCase ann cas) (setTyCase cas ctor) (map (setTyCase cas) args)
     Arr ann d i -> Arr (setAnnCase ann cas) (setTyCase cas d) (setTyCase cas i)
 
@@ -535,6 +540,9 @@ renderTyParts cache fsm paramTyCons tyMods ty =
       return [(s, False)]
     TyString ann -> do
       s <- renderIdentWithCase cache fsm ([], T.pack "dizge") (annCase ann)
+      return [(s, False)]
+    TyChar ann -> do
+      s <- renderIdentWithCase cache fsm ([], T.pack "karakter") (annCase ann)
       return [(s, False)]
     Arr ann d i -> do
       let d' = setTyCase Gen d
@@ -635,6 +643,8 @@ renderTyPossessive cache fsm paramTyCons tyMods ty =
       renderIdentWithCases cache fsm ([T.pack "ondalık"], T.pack "sayı") (possessiveCases (annCase ann))
     TyString ann ->
       renderIdentWithCases cache fsm ([], T.pack "dizge") (possessiveCases (annCase ann))
+    TyChar ann ->
+      renderIdentWithCases cache fsm ([], T.pack "karakter") (possessiveCases (annCase ann))
     Arr ann d i -> do
       let d' = setTyCase Gen d
           i' = setTyCase Nom i
@@ -699,6 +709,9 @@ renderTyPartsPossessive cache fsm paramTyCons tyMods ty =
       return [(s, False)]
     TyString ann -> do
       s <- renderIdentWithCases cache fsm ([], T.pack "dizge") (possessiveCases (annCase ann))
+      return [(s, False)]
+    TyChar ann -> do
+      s <- renderIdentWithCases cache fsm ([], T.pack "karakter") (possessiveCases (annCase ann))
       return [(s, False)]
     Arr ann d i -> do
       let d' = setTyCase Gen d
@@ -795,6 +808,7 @@ normalizeSigArgs args =
         TyInt ann -> annCase ann == Loc
         TyFloat ann -> annCase ann == Loc
         TyString ann -> annCase ann == Loc
+        TyChar ann -> annCase ann == Loc
         Arr ann _ _ -> annCase ann == Loc
     forceGen :: Ty Ann -- ^ Type to rewrite.
              -> Ty Ann -- ^ Genitive-normalized type.
@@ -806,6 +820,7 @@ normalizeSigArgs args =
         TyInt ann -> TyInt (setAnnCase ann Gen)
         TyFloat ann -> TyFloat (setAnnCase ann Gen)
         TyString ann -> TyString (setAnnCase ann Gen)
+        TyChar ann -> TyChar (setAnnCase ann Gen)
         Arr ann d i -> Arr (setAnnCase ann Gen) (forceGen d) (forceGen i)
         TyApp ann ctor args -> TyApp (setAnnCase ann Gen) ctor args
 
@@ -909,6 +924,8 @@ renderExpPreservingCase cache fsm evalSt expr =
       renderFloatWithCase cache fsm (annCase annExp) floatVal
     StrLit {annExp, lit} ->
       renderStrLitWithCase cache fsm (annCase annExp) lit
+    CharLit {annExp, charVal} ->
+      renderCharLitWithCase cache fsm (annCase annExp) charVal
     Var {annExp, varName, varCandidates} ->
       renderVarWithCase cache fsm varName annExp varCandidates (annCase annExp)
     App {annExp, fn, args} ->
@@ -1215,6 +1232,7 @@ renderClausePC cache fsm evalSt matchCase scrutStr (Clause pat body) = do
           IntLit {} -> body
           FloatLit {} -> body
           StrLit {} -> body
+          CharLit {} -> body
           _ -> body { annExp = setAnnCase (annExp body) matchCase }
   bodyStr <- renderExpPreservingCase cache fsm evalSt bodyForRender
   return (patStr ++ ", " ++ bodyStr)
@@ -1227,6 +1245,7 @@ selectMatchingClause scrut clauses =
     IntLit {} -> findMatchingClauseBody scrut clauses
     FloatLit {} -> findMatchingClauseBody scrut clauses
     StrLit {} -> findMatchingClauseBody scrut clauses
+    CharLit {} -> findMatchingClauseBody scrut clauses
     _ -> Nothing
   where
     findMatchingClauseBody :: Exp Ann -> [Clause Ann] -> Maybe (Exp Ann)
@@ -1242,6 +1261,7 @@ selectMatchingClause scrut clauses =
     matchesPattern (IntLit _ n1) (PIntLit n2 _) = n1 == n2
     matchesPattern (FloatLit _ n1) (PFloatLit n2 _) = n1 == n2
     matchesPattern (StrLit _ s1) (PStrLit s2 _) = s1 == s2
+    matchesPattern (CharLit _ c1) (PCharLit c2 _) = c1 == c2
     matchesPattern (Var _ _ cands) (PCtor (ctorName, _) pats) =
       any (\(ident, _) -> ident == ctorName) cands && null pats
     matchesPattern (App _ (Var _ _ cands) args) (PCtor (ctorName, _) pats) =
@@ -1263,6 +1283,7 @@ renderPatPC cache fsm scrutStr pat =
     PIntLit n ann -> renderIntWithCase cache fsm (annCase ann) n
     PFloatLit n ann -> renderFloatWithCase cache fsm (annCase ann) n
     PStrLit s _ -> return ("\"" ++ T.unpack s ++ "\"")
+    PCharLit c _ -> return ("'" ++ [c] ++ "'")
     PListLit pats -> do
       patStrs <- mapM (renderPatPC cache fsm "") pats
       return ("[" ++ intercalate ", " patStrs ++ "]")
@@ -1280,6 +1301,8 @@ renderExpWithCase cache fsm evalSt cas exp =
       renderIntWithCase cache fsm cas intVal
     FloatLit {floatVal} ->
       renderFloatWithCase cache fsm cas floatVal
+    CharLit {charVal} ->
+      renderCharLitWithCase cache fsm cas charVal
     Var {annExp, varName, varCandidates} ->
       renderVarWithCase cache fsm varName annExp varCandidates cas
     App {fn = Var {varCandidates}, args} ->
@@ -1358,6 +1381,8 @@ renderFallback cache fsm evalSt exp =
       renderVarWithCase cache fsm varName annExp varCandidates Nom
     StrLit {lit} ->
       return ("\"" ++ T.unpack lit ++ "\"")
+    CharLit {charVal} ->
+      return ("'" ++ [charVal] ++ "'")
     IntLit {intVal} ->
       renderIntWithCase cache fsm Nom intVal
     FloatLit {floatVal} ->
@@ -1468,6 +1493,21 @@ renderStrLitWithCase cache fsm cas litText = do
     else do
       inflected <- renderIdentWithCases cache fsm ([], litText) [cas]
       let suffix = maybe "'i" quoteSuffix (stripPrefix bare inflected)
+      return (quoted ++ suffix)
+  where
+    quoteSuffix "" = ""
+    quoteSuffix s@('\'':_) = s
+    quoteSuffix s = '\'' : s
+
+-- | Render a character literal with a case suffix (if any).
+renderCharLitWithCase :: RenderCache -> FSM -> Case -> Char -> IO String
+renderCharLitWithCase cache fsm cas c = do
+  let quoted = "'" ++ [c] ++ "'"
+  if cas == Nom
+    then return quoted
+    else do
+      inflected <- renderIdentWithCases cache fsm ([], T.singleton c) [cas]
+      let suffix = maybe "'i" quoteSuffix (stripPrefix [c] inflected)
       return (quoted ++ suffix)
   where
     quoteSuffix "" = ""

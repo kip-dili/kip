@@ -1,0 +1,39 @@
+temeli yükle.
+
+(* Karakter fonksiyonları. *)
+
+(* 
+Bir karakterin tam sayı halini verir. 
+ASCII tablosundaki karakterler için ASCII değerini döndürür.
+*)
+(bu karakterin) (tam-sayı-hal tam-sayısı),
+  yerleşiktir.
+
+(* 
+Bir tam sayının karakter halini verir. 
+ASCII tablosundaki sayılar için ASCII karakterini döndürür.
+*)
+(bu tam-sayının) (karakter-hal karakterin olasılığı),
+  yerleşiktir.
+
+(* Bir karakterin büyük harf halini verir. *)
+(bu karakterin) (büyük karakteri),
+  yerleşiktir.
+
+(* Bir karakterin küçük harf halini verir. *)
+(bu karakterin) (küçük karakteri),
+  yerleşiktir.
+
+(*
+İki karakterin eşit olup olmadığını doğruluk olarak döndürür.
+Örnek kullanım: ('a'yla 'b'nin eşitliği)
+*)
+(bu karakterle) (şu karakterin) (eşitlik doğruluğu),
+  yerleşiktir.
+
+(*
+Bir karakteri tek karakterli bir dizgeye çevirir.
+Örnek kullanım: ('a'nın dizge-hali)
+*)
+(bu karakterin) (dizge-hal dizgesi),
+  yerleşiktir.

@@ -614,6 +614,7 @@ isTraceValue :: Exp Ann -> Bool
 isTraceValue (IntLit _ _)   = True
 isTraceValue (FloatLit _ _) = True
 isTraceValue (StrLit _ _)   = True
+isTraceValue (CharLit _ _)  = True
 isTraceValue Var {}          = True
 isTraceValue _              = False
 
@@ -1127,6 +1128,7 @@ eqTraceExp a b =
     (IntLit _ n1, IntLit _ n2) -> n1 == n2
     (FloatLit _ n1, FloatLit _ n2) -> n1 == n2
     (StrLit _ s1, StrLit _ s2) -> s1 == s2
+    (CharLit _ c1, CharLit _ c2) -> c1 == c2
     (Bind _ n1 _ e1, Bind _ n2 _ e2) -> n1 == n2 && eqTraceExp e1 e2
     (Seq _ f1 s1, Seq _ f2 s2) -> eqTraceExp f1 f2 && eqTraceExp s1 s2
     (Match _ sc1 cl1, Match _ sc2 cl2) ->
@@ -1155,6 +1157,7 @@ setTopCaseNom e = case e of
   IntLit ann n      -> IntLit (setAnnCase ann Nom) n
   FloatLit ann n    -> FloatLit (setAnnCase ann Nom) n
   StrLit ann s      -> StrLit (setAnnCase ann Nom) s
+  CharLit ann c     -> CharLit (setAnnCase ann Nom) c
   Bind ann n na e'  -> Bind (setAnnCase ann Nom) n na e'
   Seq ann f s       -> Seq (setAnnCase ann Nom) f s
   Match ann sc cl   -> Match (setAnnCase ann Nom) sc cl
@@ -1172,6 +1175,7 @@ copyCase from to =
     IntLit ann n      -> IntLit (setAnnCase ann cas) n
     FloatLit ann n    -> FloatLit (setAnnCase ann cas) n
     StrLit ann s      -> StrLit (setAnnCase ann cas) s
+    CharLit ann c     -> CharLit (setAnnCase ann cas) c
     Bind ann n na e'  -> Bind (setAnnCase ann cas) n na e'
     Seq ann f s       -> Seq (setAnnCase ann cas) f s
     Match ann sc cl   -> Match (setAnnCase ann cas) sc cl

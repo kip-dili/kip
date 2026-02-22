@@ -1,0 +1,9 @@
+('a'yla 'a'nın eşitliği) doğruysa,
+  "eşit"i yaz;
+değilse,
+  "eşit değil"i yaz.
+
+('a'yla 'b'nin eşitliği) doğruysa,
+  "eşit"i yaz;
+değilse,
+  "eşit değil"i yaz.

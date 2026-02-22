@@ -23,6 +23,7 @@ module Kip.Primitive
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Bifunctor as B
+import Data.Char (chr, ord, toLower, toUpper)
 import Data.Fixed (mod')
 import Data.List (foldl')
 import Data.Maybe (isJust)
@@ -106,6 +107,15 @@ isStringTy _ = False
 isStringIdent :: Identifier -> Bool
 isStringIdent (mods, name) = null mods && name == T.pack "dizge"
 
+-- | Check if a type is a character
+isCharTy :: Ty Ann -> Bool
+isCharTy (TyChar _) = True
+isCharTy _ = False
+
+-- | Check for the character type identifier.
+isCharIdent :: Identifier -> Bool
+isCharIdent (mods, name) = null mods && name == T.pack "karakter"
+
 -- | Normalize primitive aliases to canonical primitive constructors.
 normalizePrimTy :: Ty Ann -> Ty Ann
 normalizePrimTy ty =
@@ -114,11 +124,13 @@ normalizePrimTy ty =
       | isIntIdent name -> TyInt ann
       | isFloatIdent name -> TyFloat ann
       | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
       | otherwise -> TyInd ann name
     TyVar ann name
       | isIntIdent name -> TyInt ann
       | isFloatIdent name -> TyFloat ann
       | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
       | otherwise -> TyVar ann name
     TyApp ann ctor args ->
       TyApp ann (normalizePrimTy ctor) (map normalizePrimTy args)
@@ -141,7 +153,7 @@ containsTyVar ty =
 allPrimitives :: [PrimitiveDef]
 allPrimitives =
   [ PrimitiveDef ([], "yaz")
-      [ withTypes 1 (\case [t] -> isIntTy t || isFloatTy t || isStringTy t; _ -> False)
+      [ withTypes 1 (\case [t] -> isIntTy t || isFloatTy t || isStringTy t || isCharTy t; _ -> False)
       , anyTypes 2  -- File write
       ]
       ["etki.kip"]
@@ -161,8 +173,10 @@ allPrimitives =
       ["dizge.kip"]
 
   , PrimitiveDef (["tam", "sayı"], "hal")
-      [ anyTypes 1 ]
-      ["dizge.kip"]
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False)
+      , withTypes 1 (\case [t] -> isCharTy t; _ -> False)
+      ]
+      ["dizge.kip", "karakter.kip"]
 
   , PrimitiveDef (["ondalık", "sayı"], "hal")
       [ withTypes 1 (\case [t] -> isStringTy t; _ -> False)
@@ -170,11 +184,23 @@ allPrimitives =
       ]
       ["dizge.kip", "tam-sayı.kip"]
 
+  , PrimitiveDef (["karakter"], "hal")
+      [ withTypes 1 (\case [t] -> isIntTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef ([], "büyük")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef ([], "küçük")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
   , PrimitiveDef ([], "ters")
       [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
       ["dizge.kip"]
 
-  , PrimitiveDef ([], "karakter")
+  , PrimitiveDef ([], "öğe")
       [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
       ["dizge.kip"]
 
@@ -217,14 +243,15 @@ allPrimitives =
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef (["dizge"], "hal")
-      [ withTypes 1 (\case [t] -> isFloatTy t || isIntTy t; _ -> False) ]
-      ["tam-sayı.kip", "ondalık-sayı.kip"]
+      [ withTypes 1 (\case [t] -> isFloatTy t || isIntTy t || isCharTy t; _ -> False) ]
+      ["tam-sayı.kip", "ondalık-sayı.kip", "karakter.kip"]
 
   , PrimitiveDef ([], "eşitlik")
       [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False)
       , withTypes 2 (\case [t1, t2] -> isStringTy t1 && isStringTy t2; _ -> False)
+      , withTypes 2 (\case [t1, t2] -> isCharTy t1 && isCharTy t2; _ -> False)
       ]
-      ["tam-sayı.kip", "ondalık-sayı.kip", "dizge.kip"]
+      ["tam-sayı.kip", "ondalık-sayı.kip", "dizge.kip", "karakter.kip"]
 
   , PrimitiveDef ([], "küçüklük")
       [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
@@ -298,6 +325,7 @@ primitiveEvalImpl ops mPath ident args = do
       | [(_, TyInt _)] <- args -> Just (primWrite ops)
       | [(_, TyFloat _)] <- args -> Just (primWrite ops)
       | [(_, TyString _)] <- args -> Just (primWrite ops)
+      | [(_, TyChar _)] <- args -> Just (primWrite ops)
       | [_, _] <- args -> Just (primWriteFile ops)
       | otherwise -> Nothing
     ([], "oku")
@@ -306,16 +334,28 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise -> Nothing
     ([], "uzunluk") -> Just (primStringLength "uzunluk")
     ([], "birleşim") -> Just (primStringConcat "birleşim")
-    (["tam", "sayı"], "hal") -> Just (primStringToInt "tam-sayı-hali")
+    (["tam", "sayı"], "hal")
+      | [(_, TyString _)] <- args -> Just (primStringToInt "tam-sayı-hali")
+      | [(_, TyChar _)] <- args -> Just (primCharToInt "tam-sayı-hal")
+      | otherwise -> Nothing
     (["ondalık", "sayı"], "hal")
       | [(_, TyString _)] <- args -> Just (primStringToFloat "ondalık-sayı-hali")
       | [(_, TyInt _)] <- args -> Just (primIntToFloat "tam-sayı-ondalık-sayı-hali")
       | otherwise -> Nothing
+    (["karakter"], "hal")
+      | [(_, TyInt _)] <- args -> Just (primIntToChar "karakter-hal")
+      | otherwise -> Nothing
+    ([], "büyük")
+      | [(_, TyChar _)] <- args -> Just (primCharUpper "büyük")
+      | otherwise -> Nothing
+    ([], "küçük")
+      | [(_, TyChar _)] <- args -> Just (primCharLower "küçük")
+      | otherwise -> Nothing
     ([], "ters")
       | [(_, TyString _)] <- args -> Just (primStringReverse "ters")
       | otherwise -> Nothing
-    ([], "karakter")
-      | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringCharAt "karakter")
+    ([], "öğe")
+      | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringCharAt "öğe")
       | otherwise -> Nothing
     ([], "alış")
       | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringTake "alış")
@@ -363,6 +403,8 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primFloatToString "dizge-hal")
       | [(_, TyInt _)] <- args ->
           Just (primIntToString "dizge-hal")
+      | [(_, TyChar _)] <- args ->
+          Just (primCharToString "dizge-hal")
       | otherwise ->
           Nothing
     ([], "eşitlik")
@@ -372,6 +414,8 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primIntCmp "eşitlik" (==))
       | [(_, TyString _), (_, TyString _)] <- args ->
           Just (primStringEq "eşitlik")
+      | [(_, TyChar _), (_, TyChar _)] <- args ->
+          Just (primCharEq "eşitlik")
       | otherwise ->
           Nothing
     ([], "küçüklük")
@@ -432,6 +476,7 @@ primWrite ops args =
     [StrLit _ s] -> peWriteText ops s >> peFlushStdout ops >> pure unitExp
     [IntLit _ n] -> peWriteInteger ops n >> peFlushStdout ops >> pure unitExp
     [FloatLit _ n] -> peWriteDouble ops n >> peFlushStdout ops >> pure unitExp
+    [CharLit _ c] -> peWriteText ops (T.singleton c) >> peFlushStdout ops >> pure unitExp
     _ -> pure (fallbackApp ([], "yaz") args)
 
 primRead :: Monad m => PrimitiveEvalOps m -> [Exp Ann] -> m (Exp Ann)
@@ -482,7 +527,7 @@ primStringCharAt fname args =
   case args of
     [StrLit ann s, IntLit _ n]
       | n >= 0 && n < fromIntegral (T.length s) ->
-          pure (someExp (StrLit ann (T.singleton (T.index s (fromIntegral n)))))
+          pure (someExp (CharLit ann (T.index s (fromIntegral n))))
       | otherwise -> pure noneExp
     _ -> pure (fallbackApp ([], fname) args)
 
@@ -600,6 +645,46 @@ primStringEq :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
 primStringEq fname args =
   case args of
     [StrLit _ a, StrLit _ b] -> pure (boolExp (a == b))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primCharEq :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharEq fname args =
+  case args of
+    [CharLit _ a, CharLit _ b] -> pure (boolExp (a == b))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primCharToString :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharToString fname args =
+  case args of
+    [CharLit ann c] -> pure (StrLit ann (T.singleton c))
+    _ -> pure (fallbackApp (["dizge"], fname) args)
+
+primCharToInt :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharToInt fname args =
+  case args of
+    [CharLit ann c] -> pure (IntLit ann (toInteger (ord c)))
+    _ -> pure (fallbackApp (["tam", "sayı"], fname) args)
+
+primIntToChar :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primIntToChar fname args =
+  case args of
+    [IntLit ann n]
+      | n >= 0 && n <= 0x10FFFF ->
+          pure (someExp (CharLit ann (chr (fromInteger n))))
+      | otherwise ->
+          pure noneExp
+    _ -> pure (fallbackApp (["karakter"], "hal") args)
+
+primCharUpper :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharUpper fname args =
+  case args of
+    [CharLit ann c] -> pure (CharLit ann (toUpper c))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primCharLower :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharLower fname args =
+  case args of
+    [CharLit ann c] -> pure (CharLit ann (toLower c))
     _ -> pure (fallbackApp ([], fname) args)
 
 primIntToString :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
@@ -780,7 +865,7 @@ primitiveJsPrelude = T.unlines
   , "var __kip_prim_ters = (s) => s.split('').reverse().join('');"
   , "var __kip_prim_birleşim = (a, b) => __kip_num(a) + __kip_num(b);"
   , "var __kip_prim_uzunluk = (s) => s.length;"
-  , "var __kip_prim_karakter = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();"
+  , "var __kip_prim_öğe = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();"
   , "var __kip_prim_alış = (s, n) => s.slice(0, Math.max(0, n));"
   , "var __kip_prim_bırakış = (s, n) => s.slice(Math.max(0, n));"
   , "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));"
@@ -863,6 +948,8 @@ primitiveJsPrelude = T.unlines
   , "  return lo + (__kip_rand() % range);"
   , "};"
   , "var __kip_prim_dizge_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_dizge_hal = (c) => c;"
   , "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();"
   , "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();"
   , "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();"
@@ -903,7 +990,7 @@ primitiveJsPrunableSpecs =
   , ("__kip_prim_ters", [], "var __kip_prim_ters = (s) => s.split('').reverse().join('');\n")
   , ("__kip_prim_birleşim", [], "var __kip_prim_birleşim = (a, b) => __kip_num(a) + __kip_num(b);\n")
   , ("__kip_prim_uzunluk", [], "var __kip_prim_uzunluk = (s) => s.length;\n")
-  , ("__kip_prim_karakter", ["varlık", "yokluk"], "var __kip_prim_karakter = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();\n")
+  , ("__kip_prim_öğe", ["varlık", "yokluk"], "var __kip_prim_öğe = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();\n")
   , ("__kip_prim_alış", [], "var __kip_prim_alış = (s, n) => s.slice(0, Math.max(0, n));\n")
   , ("__kip_prim_bırakış", [], "var __kip_prim_bırakış = (s, n) => s.slice(Math.max(0, n));\n")
   , ("__kip_prim_toplam", [], "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));\n")
@@ -996,6 +1083,8 @@ primitiveJsPrunableSpecs =
       , "};"
       ])
   , ("__kip_prim_dizge_eşitlik", ["doğru", "yanlış"], "var __kip_prim_dizge_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_eşitlik", ["doğru", "yanlış"], "var __kip_prim_karakter_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_dizge_hal", [], "var __kip_prim_karakter_dizge_hal = (c) => c;\n")
   , ("eşitlik", ["doğru", "yanlış"], "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();\n")
   , ("küçüklük", ["doğru", "yanlış"], "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();\n")
   , ("küçük_eşitlik", ["doğru", "yanlış"], "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();\n")

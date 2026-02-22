@@ -1,0 +1,5 @@
+("abc"nin 0'da öğesi) c'nin varlığıysa, c'yi yaz; yokluksa, dur.
+("abc"nin 1'de öğesi) c'nin varlığıysa, c'yi yaz; yokluksa, dur.
+("abc"nin 2'de öğesi) c'nin varlığıysa, c'yi yaz; yokluksa, dur.
+("abc"nin 3'te öğesi) c'nin varlığıysa, "yok"u yaz; yokluksa, "yok"u yaz.
+("abc"nin -1'de öğesi) c'nin varlığıysa, "yok"u yaz; yokluksa, "yok"u yaz.

@@ -231,7 +231,7 @@ filterByArgHints targets args =
        [] -> targets
        _ -> filter (\(sig, _) -> all (uncurry (sigMatchesHint sig)) hints) targets
 
-data SimpleTy = SimpleInt | SimpleFloat | SimpleString
+data SimpleTy = SimpleInt | SimpleFloat | SimpleString | SimpleChar
 
 -- | Infer a coarse type from syntax-only expression forms.
 inferSimpleTy :: Exp Ann -> Maybe SimpleTy
@@ -240,6 +240,7 @@ inferSimpleTy exp' =
     IntLit {} -> Just SimpleInt
     FloatLit {} -> Just SimpleFloat
     StrLit {} -> Just SimpleString
+    CharLit {} -> Just SimpleChar
     _ -> Nothing
 
 -- | Check whether a signature position matches an inferred coarse type.
@@ -251,6 +252,7 @@ sigMatchesHint sig idx hint
         (TyInt {}, SimpleInt) -> True
         (TyFloat {}, SimpleFloat) -> True
         (TyString {}, SimpleString) -> True
+        (TyChar {}, SimpleChar) -> True
         _ -> False
 
 -- | Deduplicate target pairs while preserving order.
@@ -284,10 +286,12 @@ lookupPrimJsName name argTys =
     (([], "uzunluk"), [_]) -> "__kip_prim_uzunluk"
     (([], "toplam"), [_, _]) -> "__kip_prim_toplam"
     (([], "fark"), [_, _]) -> "__kip_prim_fark"
-    (([], "karakter"), [TyString {}, TyInt {}]) -> "__kip_prim_karakter"
+    (([], "öğe"), [TyString {}, TyInt {}]) -> "__kip_prim_öğe"
     (([], "alış"), [TyString {}, TyInt {}]) -> "__kip_prim_alış"
     (([], "bırakış"), [TyString {}, TyInt {}]) -> "__kip_prim_bırakış"
     (([], "eşitlik"), [TyString {}, TyString {}]) -> "__kip_prim_dizge_eşitlik"
+    (([], "eşitlik"), [TyChar {}, TyChar {}]) -> "__kip_prim_karakter_eşitlik"
+    ((["dizge"], "hal"), [TyChar {}]) -> "__kip_prim_karakter_dizge_hal"
     (([], "oku"), []) -> "__kip_prim_oku_stdin"
     (([], "oku"), [_]) -> "__kip_prim_oku_dosya"
     (([], "yaz"), [_, _]) -> "__kip_prim_yaz_dosya"
@@ -300,6 +304,7 @@ tyToSuffix ty =
     TyInt {} -> "tam_sayı"
     TyFloat {} -> "ondalık_sayı"
     TyString {} -> "dizge"
+    TyChar {} -> "karakter"
     TyInd {indName} -> toJsIdent indName
     TyApp {tyCtor, tyArgs} ->
       tyToSuffix tyCtor <> "$" <> T.intercalate "$" (map tyToSuffix tyArgs)
@@ -318,6 +323,7 @@ normalizeTyForLookup ty =
     TyInt {} -> TyInt (mkAnn Nom NoSpan)
     TyFloat {} -> TyFloat (mkAnn Nom NoSpan)
     TyString {} -> TyString (mkAnn Nom NoSpan)
+    TyChar {} -> TyChar (mkAnn Nom NoSpan)
     TyInd {indName} -> TyInd (mkAnn Nom NoSpan) indName
     TyVar {} -> TyVar (mkAnn Nom NoSpan) ([], "__any")
     TySkolem {} -> TyVar (mkAnn Nom NoSpan) ([], "__any")
@@ -576,6 +582,7 @@ expRefs resolvMap exp' =
     StrLit {} -> []
     IntLit {} -> []
     FloatLit {} -> []
+    CharLit {} -> []
     App {fn, args} -> expRefs resolvMap fn ++ concatMap (expRefs resolvMap) args
     Bind {bindExp} -> expRefs resolvMap bindExp
     Seq {first, second} -> expRefs resolvMap first ++ expRefs resolvMap second
@@ -588,9 +595,10 @@ expRefs resolvMap exp' =
 runtimeExportNames :: [Text]
 runtimeExportNames =
   [ "__kip_close_stdin", "__kip_call", "__kip_float", "__kip_is_float", "__kip_num"
-  , "__kip_prim_ters", "__kip_prim_birleşim", "__kip_prim_uzunluk", "__kip_prim_karakter"
+  , "__kip_prim_ters", "__kip_prim_birleşim", "__kip_prim_uzunluk", "__kip_prim_öğe"
   , "__kip_prim_alış", "__kip_prim_bırakış", "__kip_prim_toplam"
-  , "__kip_prim_fark", "__kip_prim_dizge_eşitlik", "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_yaz_dosya"
+  , "__kip_prim_fark", "__kip_prim_dizge_eşitlik", "__kip_prim_karakter_eşitlik", "__kip_prim_karakter_dizge_hal"
+  , "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_yaz_dosya"
   , "doğru", "yanlış", "varlık", "yokluk", "bitimlik", "yaz", "çarpım", "fark"
   , "bölüm", "kalan", "karekök", "radyan", "derece", "pi_sayısı", "taban", "tavan"
   , "tam_sayı_ondalık_sayı_hali", "sayı_çek", "eşitlik", "küçüklük", "küçük_eşitlik"
@@ -766,6 +774,8 @@ codegenExpWith ctx exp' =
       T.pack (show intVal)
     FloatLit {floatVal} ->
       "__kip_float(" <> T.pack (show floatVal) <> ")"
+    CharLit {charVal} ->
+      renderString (T.singleton charVal)
     App {fn, args} ->
       renderCall ctx fn args
     Bind {bindName, bindExp}
@@ -898,6 +908,7 @@ renderPatternBindings scrutinee pats startIdx =
         PIntLit _ _ -> ([], idx + 1, seen)
         PFloatLit _ _ -> ([], idx + 1, seen)
         PStrLit _ _ -> ([], idx + 1, seen)
+        PCharLit _ _ -> ([], idx + 1, seen)
         PListLit _ -> ([], idx + 1, seen)
 
     renderPatternBindingsWithSeen scrut pats idx seen =
@@ -944,6 +955,7 @@ renderPatMatchCond ctx scrutinee pat =
     PIntLit _ _ -> (renderPatCond ctx scrutinee pat, [])
     PFloatLit _ _ -> (renderPatCond ctx scrutinee pat, [])
     PStrLit _ _ -> (renderPatCond ctx scrutinee pat, [])
+    PCharLit _ _ -> (renderPatCond ctx scrutinee pat, [])
     PListLit _ -> (renderPatCond ctx scrutinee pat, [])
 
 -- | Render a JavaScript boolean condition for a pattern.
@@ -978,6 +990,8 @@ renderPatCond ctx scrutinee pat =
       "__kip_num(" <> scrutinee <> ") === " <> T.pack (show n)
     PStrLit s _ ->
       scrutinee <> " === " <> renderString s
+    PCharLit c _ ->
+      scrutinee <> " === " <> renderString (T.singleton c)
     PListLit pats ->
       renderListPatCond ctx scrutinee pats
 
@@ -1152,6 +1166,7 @@ expMentionsJs jsName expr =
     StrLit {} -> False
     IntLit {} -> False
     FloatLit {} -> False
+    CharLit {} -> False
 
 -- | Render an expression in statement position.
 --

@@ -446,6 +446,7 @@ renderHoverSignature fnName args retTy isInfinitive infinitives cache fsm paramT
         TyInt {} -> True
         TyFloat {} -> True
         TyString {} -> True
+        TyChar {} -> True
         TyApp _ (TyInd _ name) _ -> name `notElem` paramTyCons
         TyApp {} -> True
         Arr {} -> True
@@ -775,6 +776,7 @@ normalizeTyForRender ty =
     TyString {} -> TyString ann
     TyInt {} -> TyInt ann
     TyFloat {} -> TyFloat ann
+    TyChar {} -> TyChar ann
     Arr _ domTy imgTy -> Arr ann (normalizeTyForRender domTy) (normalizeTyForRender imgTy)
     TyInd _ name -> TyInd ann name
     TyVar _ name -> TyVar ann name
@@ -1046,6 +1048,7 @@ onHover req respond = do
                                 PIntLit _ ann -> Just (annSpan ann)
                                 PFloatLit _ ann -> Just (annSpan ann)
                                 PStrLit _ ann -> Just (annSpan ann)
+                                PCharLit _ ann -> Just (annSpan ann)
                                 PListLit _ -> Nothing
                             patArgType pat =
                               case patSpan pat of
@@ -1920,6 +1923,7 @@ docSpanSet = foldl' Set.union Set.empty . map stmtSpans
         PIntLit _ ann -> Set.singleton (annSpan ann)
         PFloatLit _ ann -> Set.singleton (annSpan ann)
         PStrLit _ ann -> Set.singleton (annSpan ann)
+        PCharLit _ ann -> Set.singleton (annSpan ann)
         PListLit pats -> foldl' Set.union Set.empty (map patSpans pats)
 
 -- | Keep only resolved entries that belong to the current document.
@@ -2032,6 +2036,7 @@ patRootSpan pat =
     PIntLit _ ann -> annSpan ann
     PFloatLit _ ann -> annSpan ann
     PStrLit _ ann -> annSpan ann
+    PCharLit _ ann -> annSpan ann
     PListLit pats -> mergeSpanAll (map patRootSpan pats)
 
 -- | Determine scrutinee type for a match clause when possible.
@@ -2182,6 +2187,7 @@ findBindExpAt pos mWord doc =
         PIntLit _ _ -> []
         PFloatLit _ _ -> []
         PStrLit _ _ -> []
+        PCharLit _ _ -> []
         PListLit pats -> concatMap collectPat pats
     collectExp e =
       let nested =
@@ -2222,6 +2228,7 @@ posInPat p pat =
     PIntLit _ ann -> posInSpan p (annSpan ann)
     PFloatLit _ ann -> posInSpan p (annSpan ann)
     PStrLit _ ann -> posInSpan p (annSpan ann)
+    PCharLit _ ann -> posInSpan p (annSpan ann)
     PListLit pats -> any (posInPat p) pats
 
 -- | Hover handler for the special clause-argument keyword \"bu\".
@@ -2595,6 +2602,7 @@ typeConstructorsFromTy =
         TyFloat _ ->
           [([T.pack "ondalık"], T.pack "sayı")]
         TyString _ -> [([], T.pack "dizge")]
+        TyChar _ -> [([], T.pack "karakter")]
         TyVar _ _ -> []
         TySkolem _ _ -> []
         TyInd _ ident -> [ident]
@@ -3005,6 +3013,7 @@ collectBinderSpans = concatMap stmtBinders
         PIntLit _ _ -> []
         PFloatLit _ _ -> []
         PStrLit _ _ -> []
+        PCharLit _ _ -> []
         PListLit pats -> concatMap (patBinders scope) pats
 
     expBinders scope e =

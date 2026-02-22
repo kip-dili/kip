@@ -1165,7 +1165,7 @@ resolveTypeCandidateLoose ident = do
   MkParserState{parserTyCons, parserTyParams, parserPrimTypes} <- getP
   let tyNames = map fst parserTyCons ++ parserTyParams ++ parserPrimTypes
       -- Check if identifier matches a primitive type pattern
-      isPrimType base = isIntType base || isFloatType base || isStringType base
+      isPrimType base = isIntType base || isFloatType base || isStringType base || isCharType base
   -- First try morphology analysis to extract case if present
   mCandidates <- optional (try (estimateCandidates False ident))
   case mCandidates of
@@ -1447,6 +1447,11 @@ parseExpWithCtx' useCtx allowMatch =
         else
           let val = parseNumberValue token
           in return (IntLit (mkAnn cas sp) val)
+    -- | Parse a character literal with case.
+    charLiteral :: KipParser (Exp Ann) -- ^ Parsed character literal.
+    charLiteral = do
+      ((c, cas), sp) <- withSpan parseCharToken
+      return (CharLit (mkAnn cas sp) c)
     -- | Parse a string literal with case.
     stringLiteral :: KipParser (Exp Ann) -- ^ Parsed string literal.
     stringLiteral = do
@@ -1472,6 +1477,7 @@ parseExpWithCtx' useCtx allowMatch =
     atom =
       (if allowMatch then try matchExpr else empty)
       <|> try listLiteral
+      <|> try charLiteral
       <|> try stringLiteral
       <|> try numberLiteral
       <|> try var
@@ -1584,6 +1590,7 @@ parseExpWithCtx' useCtx allowMatch =
               | isPrim ident && isIntType ident -> return (TyInt ann'')
               | isPrim ident && isFloatType ident -> return (TyFloat ann'')
               | isPrim ident && isStringType ident -> return (TyString ann'')
+              | isPrim ident && isCharType ident -> return (TyChar ann'')
               | ident `elem` tyNames -> return (TyInd ann'' ident)
               | otherwise -> return (TyInd ann'' ident)
     -- | Parse a let expression with "dersek".
@@ -1642,6 +1649,7 @@ parseExpWithCtx' useCtx allowMatch =
               | isPrim ident && isIntType ident -> return (TyInt ann')
               | isPrim ident && isFloatType ident -> return (TyFloat ann')
               | isPrim ident && isStringType ident -> return (TyString ann')
+              | isPrim ident && isCharType ident -> return (TyChar ann')
               | ident `elem` tyNames -> return (TyInd ann' ident)
               | otherwise -> return (TyInd ann' ident)
     -- | Parse comma-separated sequence expressions.
@@ -2321,6 +2329,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           | ident `elem` parserPrimTypes && isFloatType ident -> return (TyFloat ann)
         (ident, _):_
           | ident `elem` parserPrimTypes && isStringType ident -> return (TyString ann)
+        (ident, _):_
+          | ident `elem` parserPrimTypes && isCharType ident -> return (TyChar ann)
         _ -> do
           -- If not a known type, try extracting base form with TRmorph for P3s support
           let tryAsTyName name = name `elem` tyNames || name `elem` parserPrimTypes
@@ -2487,7 +2497,9 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           then return (TyFloat ann)
           else if name `elem` parserPrimTypes && isStringType name
             then return (TyString ann)
-            else return (TyVar ann name)
+            else if name `elem` parserPrimTypes && isCharType name
+              then return (TyChar ann)
+              else return (TyVar ann name)
     -- | Parse a function body without explicit clauses.
     parseBodyOnly :: [Identifier] -- ^ Function argument names.
                   -> KipParser [Clause Ann] -- ^ Parsed clauses.
@@ -2849,6 +2861,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                         | name `elem` primNames && isIntType name = TyInt (mkAnn cas NoSpan)
                         | name `elem` primNames && isFloatType name = TyFloat (mkAnn cas NoSpan)
                         | name `elem` primNames && isStringType name = TyString (mkAnn cas NoSpan)
+                        | name `elem` primNames && isCharType name = TyChar (mkAnn cas NoSpan)
                         | name `elem` primNames = TyInd (mkAnn cas NoSpan) name  -- Other primitives like boolean
                         | name `elem` tyNames = TyInd (mkAnn cas NoSpan) name
                         | name `elem` parserTyParams = TyVar (mkAnn cas NoSpan) name
@@ -2910,6 +2923,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                   then return (TyFloat ann)
                 else if name `elem` primNames && isStringType name
                     then return (TyString ann)
+                else if name `elem` primNames && isCharType name
+                    then return (TyChar ann)
                     else do
                       argTys <- mapM argTy collected
                       return (TyApp ann (TyInd (mkAnn Nom NoSpan) name) argTys)
@@ -2940,9 +2955,11 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                         then return (TyFloat (mkAnn cas'' sp))
                         else if name `elem` primNames && isStringType name
                           then return (TyString (mkAnn cas'' sp))
-                          else if name `elem` parserTyParams
-                            then return (TyVar (mkAnn cas'' sp) name)
-                            else return (TyInd (mkAnn cas'' sp) name)
+                          else if name `elem` primNames && isCharType name
+                            then return (TyChar (mkAnn cas'' sp))
+                            else if name `elem` parserTyParams
+                              then return (TyVar (mkAnn cas'' sp) name)
+                              else return (TyInd (mkAnn cas'' sp) name)
               _ -> do
                 (name, cas) <- resolveTypeCandidatePreferCtx rawIdent
                 requireInCtx name
@@ -2953,9 +2970,11 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                     then return (TyFloat (mkAnn cas' sp))
                     else if name `elem` primNames && isStringType name
                       then return (TyString (mkAnn cas' sp))
-                      else if name `elem` parserTyParams
-                        then return (TyVar (mkAnn cas' sp) name)
-                        else return (TyInd (mkAnn cas' sp) name)
+                      else if name `elem` primNames && isCharType name
+                        then return (TyChar (mkAnn cas' sp))
+                        else if name `elem` parserTyParams
+                          then return (TyVar (mkAnn cas' sp) name)
+                          else return (TyInd (mkAnn cas' sp) name)
     -- | Parse a type name with a modifier prefix.
     parseModifiedType :: KipParser (Ty Ann) -- ^ Parsed type.
     parseModifiedType = do
@@ -3018,6 +3037,7 @@ extractPatVars pat =
     PIntLit _ _ -> []
     PFloatLit _ _ -> []
     PStrLit _ _ -> []
+    PCharLit _ _ -> []
     PListLit pats -> concatMap extractPatVars pats
 
 -- | Parse a match expression with optional context filtering.
@@ -3174,6 +3194,39 @@ parseStringToken = do
   let cas = maybe Nom stringCaseFromSuffix mSuffix
   return (txt, cas)
 
+-- | Parse a non-escaped character in a character literal.
+nonEscapeChar :: KipParser Char -- ^ Parsed character.
+nonEscapeChar = satisfy (\c -> c /= '\\' && c /= '\'' && c /= '\0' && c /= '\n' && c /= '\r')
+
+-- | Parse an escape sequence in a character literal.
+escapeChar :: KipParser Char -- ^ Parsed escaped character.
+escapeChar = do
+  _ <- char '\\'
+  c <- satisfy (`elem` ("\\\\'0nrvtbf" :: String))
+  return $ case c of
+    '\\' -> '\\'
+    '\'' -> '\''
+    '0' -> '\0'
+    'n' -> '\n'
+    'r' -> '\r'
+    'v' -> '\v'
+    't' -> '\t'
+    'b' -> '\b'
+    'f' -> '\f'
+    _ -> c
+
+-- | Parse a character literal token with optional case suffix.
+parseCharToken :: KipParser (Char, Case) -- ^ Parsed character and case.
+parseCharToken = do
+  _ <- char '\''
+  c <- escapeChar <|> nonEscapeChar
+  _ <- char '\''
+  mSuffix <- optional $ do
+    _ <- optional (char '\'')
+    takeWhile1P (Just "ek") isLetter
+  let cas = maybe Nom stringCaseFromSuffix mSuffix
+  return (c, cas)
+
 -- | Map a case suffix to a grammatical case.
 stringCaseFromSuffix :: Text -- ^ Suffix string.
                      -> Case -- ^ Case enum.
@@ -3258,6 +3311,11 @@ isStringType :: Identifier -- ^ Identifier to inspect.
              -> Bool -- ^ True when identifier names the string type.
 isStringType (xs, x) = null xs && x == T.pack "dizge"
 
+-- | Check whether an identifier names the character type.
+isCharType :: Identifier -- ^ Identifier to inspect.
+           -> Bool -- ^ True when identifier names the character type.
+isCharType (xs, x) = null xs && x == T.pack "karakter"
+
 -- | Convert an expression into a pattern.
 expToPat :: Bool -- ^ Whether to allow scrutinee expressions.
          -> [Identifier] -- ^ Bound pattern names.
@@ -3298,6 +3356,7 @@ expToPat allowScrutinee argNames e = do
         IntLit ann n -> return (PIntLit n ann)
         FloatLit ann n -> return (PFloatLit n ann)
         StrLit ann s -> return (PStrLit s ann)
+        CharLit ann c -> return (PCharLit c ann)
         _ -> do
           -- Try to parse as list literal pattern
           mListPat <- tryParseListPattern e
@@ -3334,6 +3393,10 @@ expToPat allowScrutinee argNames e = do
         StrLit ann s ->
           if annCase ann == Cond
             then return (Just (PStrLit s ann))
+            else return Nothing
+        CharLit ann c ->
+          if annCase ann == Cond
+            then return (Just (PCharLit c ann))
             else return Nothing
         _ -> do
           -- Try to parse as list literal pattern
@@ -3470,6 +3533,7 @@ expToPatArg e = do
     IntLit ann n -> return (PIntLit n ann)
     FloatLit ann n -> return (PFloatLit n ann)
     StrLit ann s -> return (PStrLit s ann)
+    CharLit ann c -> return (PCharLit c ann)
     _ -> do
       -- Try to parse as list literal pattern
       mListPat <- tryParseListPatternArg e

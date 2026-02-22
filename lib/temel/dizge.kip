@@ -47,14 +47,14 @@ Dizgenin karakter sırasını tersine çevirir.
   yerleşiktir.
 
 (* 
-Girdi dizgenin n-inci karakterini (varlığını) verir. 
-n saymaya 0'dan başlar.
+Girdi dizgenin n-inci karakterini verir. 
+n'yi saymaya 0'dan başlarız.
 n negatif veya dizge uzunluğundan büyük eşitse yokluk döndürür.
-`"abc"nin 0'da karakteri` "a"nın varlığını döndürür.
-`"abc"nin 1'de karakteri` "b"nin varlığını döndürür.
-`"abc"nin -1'de karakteri` yokluğu döndürür.
+`"abc"nin 0'da öğesi` 'a'nın varlığını döndürür.
+`"abc"nin 1'de öğesi` 'b'nin varlığını döndürür.
+`"abc"nin -1'de öğesi` yokluğu döndürür.
 *)
-(bu dizgenin) (n tam-sayısında) (karakter dizgenin olasılığı),
+(bu dizgenin) (i tam-sayısında) (öğe karakterin olasılığı),
   yerleşiktir.
 
 (*

@@ -483,6 +483,9 @@ tcExp1With allowEffect e =
     FloatLit {annExp, floatVal} -> do
       recordResolvedType (annSpan annExp) (TyFloat (mkAnn Nom (annSpan annExp)))
       return (FloatLit annExp floatVal)
+    CharLit {annExp, charVal} -> do
+      recordResolvedType (annSpan annExp) (TyChar (mkAnn Nom (annSpan annExp)))
+      return (CharLit annExp charVal)
     Bind {annExp = annBind, bindName, bindNameAnn, bindExp} -> do
       -- Enforce the dative case requirement for "dersek" bindings.
       -- The parser marks such binds by setting the binder annotation case to Dat.
@@ -578,6 +581,8 @@ applyTypeCase cas exp =
       IntLit (setAnnCase ann cas) n
     FloatLit ann n ->
       FloatLit (setAnnCase ann cas) n
+    CharLit ann c ->
+      CharLit (setAnnCase ann cas) c
     _ -> exp
 
 -- | Match provided argument cases to expected signature cases for partial application.
@@ -720,11 +725,13 @@ normalizePrimTy ty =
       | isIntIdent name -> TyInt ann
       | isFloatIdent name -> TyFloat ann
       | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
       | otherwise -> TyInd ann name
     TyVar ann name
       | isIntIdent name -> TyInt ann
       | isFloatIdent name -> TyFloat ann
       | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
       | otherwise -> TyVar ann name  -- Keep TyVar for polymorphic types
     TyApp ann ctor args ->
       TyApp ann (normalizePrimTy ctor) (map normalizePrimTy args)
@@ -869,6 +876,7 @@ skolemizeTy ty =
     TyInt {} -> ty
     TyFloat {} -> ty
     TyString {} -> ty
+    TyChar {} -> ty
     TySkolem {} -> ty
 
 -- | Reorder values to match expected grammatical cases.
@@ -919,6 +927,7 @@ patIdentifiers pat =
     PIntLit _ _ -> []
     PFloatLit _ _ -> []
     PStrLit _ _ -> []
+    PCharLit _ _ -> []
     PListLit pats -> concatMap patIdentifiers pats
 
 -- | Lookup a binding by candidate identifiers.
@@ -1009,6 +1018,7 @@ inferType e =
     IntLit {} -> return (Just (TyInt (mkAnn Nom NoSpan)))
     FloatLit {} -> return (Just (TyFloat (mkAnn Nom NoSpan)))
     StrLit {} -> return (Just (TyString (mkAnn Nom NoSpan)))
+    CharLit {} -> return (Just (TyChar (mkAnn Nom NoSpan)))
     Bind {bindExp} -> inferType bindExp
     Seq {second} -> inferType second
     Var {varCandidates} -> do
@@ -1195,6 +1205,7 @@ inferPatTypes pat args =
     (PIntLit _ _, _) -> return []
     (PFloatLit _ _, _) -> return []
     (PStrLit _ _, _) -> return []
+    (PCharLit _ _, _) -> return []
     (PListLit pats, (_, scrutTy):_) -> do
       MkTCState{tcTyCons} <- get
       -- For list patterns, infer the element type from the scrutinee type
@@ -1245,6 +1256,7 @@ inferPatTypesWithSpans pat args =
     (PIntLit _ _, _) -> return []
     (PFloatLit _ _, _) -> return []
     (PStrLit _ _, _) -> return []
+    (PCharLit _ _, _) -> return []
     (PListLit pats, (_, scrutTy):_) -> do
       MkTCState{tcTyCons} <- get
       let elemTy = extractListElemTypeMap tcTyCons scrutTy
@@ -1281,6 +1293,7 @@ stripTyCaseForMatch ty =
     TyString ann -> TyString (setAnnCase ann Nom)
     TyInt ann -> TyInt (setAnnCase ann Nom)
     TyFloat ann -> TyFloat (setAnnCase ann Nom)
+    TyChar ann -> TyChar (setAnnCase ann Nom)
     TyInd ann name -> TyInd (setAnnCase ann Nom) name
     TyVar ann name -> TyVar (setAnnCase ann Nom) name
     TySkolem ann name -> TySkolem (setAnnCase ann Nom) name
@@ -1716,6 +1729,7 @@ tyMatchesRigid tyCons inferred declared =
     (TyString _, TyString _) -> True
     (TyInt _, TyInt _) -> True
     (TyFloat _, TyFloat _) -> True
+    (TyChar _, TyChar _) -> True
     (Arr _ d1 i1, Arr _ d2 i2) -> tyMatchesRigid tyCons d1 d2 && tyMatchesRigid tyCons i1 i2
     (TyInd _ n1', TyInd _ n2')
       | isDefinedType n2' -> identMatches n1' n2'  -- Both are defined types, check if they match
@@ -1772,6 +1786,7 @@ canonicalizeTypeVars tyCons ty =
         TyInt{} -> (t, env, n)
         TyFloat{} -> (t, env, n)
         TyString{} -> (t, env, n)
+        TyChar{} -> (t, env, n)
 
     goList env n [] = ([], env, n)
     goList env n (x:xs) =
@@ -1798,6 +1813,7 @@ tyEq tyCons t1 t2 =
     (TyString _, TyString _) -> True
     (TyInt _, TyInt _) -> True
     (TyFloat _, TyFloat _) -> True
+    (TyChar _, TyChar _) -> True
     (Arr _ d1 i1, Arr _ d2 i2) -> tyEq tyCons d1 d2 && tyEq tyCons i1 i2
     (TyInd _ n1', TyInd _ n2') -> identMatches n1' n2'
     (TySkolem _ n1', TySkolem _ n2') -> n1' == n2'
@@ -1823,6 +1839,7 @@ normalizeTy tyCons ty =
       | isIntIdent name -> TyInt ann
       | isFloatIdent name -> TyFloat ann
       | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
       | otherwise -> TyInd ann name
     TySkolem ann name ->
       TySkolem ann name
@@ -1847,6 +1864,7 @@ normalizeTyMap tyCons ty =
       | isIntIdent name -> TyInt ann
       | isFloatIdent name -> TyFloat ann
       | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
       | otherwise -> TyInd ann name
     TySkolem ann name ->
       TySkolem ann name
@@ -1882,6 +1900,11 @@ isFloatIdent (mods, name) = mods == [T.pack "ondalık"] && name == T.pack "sayı
 isStringIdent :: Identifier -- ^ Identifier to inspect.
               -> Bool -- ^ True when identifier matches string type.
 isStringIdent (mods, name) = null mods && name == T.pack "dizge"
+
+-- | Check for the character type identifier.
+isCharIdent :: Identifier -- ^ Identifier to inspect.
+            -> Bool -- ^ True when identifier matches character type.
+isCharIdent (mods, name) = null mods && name == T.pack "karakter"
 
 -- | Unify expected and actual types to produce substitutions.
 unifyTypes :: [(Identifier, Int)] -- ^ Type constructor arities.
@@ -1937,6 +1960,10 @@ unifyTypes tyCons expected actual =
           case a of
             TyString _ -> Just subst
             _ -> Nothing
+        TyChar _ ->
+          case a of
+            TyChar _ -> Just subst
+            _ -> Nothing
         Arr _ d1 i1 ->
           case a of
             Arr _ d2 i2 -> do
@@ -1966,6 +1993,7 @@ applySubst subst ty =
     TyFloat {} -> ty
     TyInd {} -> ty
     TyString {} -> ty
+    TyChar {} -> ty
     Arr ann d i -> Arr ann (applySubst subst d) (applySubst subst i)
     TyApp ann ctor args ->
       TyApp ann (applySubst subst ctor) (map (applySubst subst) args)

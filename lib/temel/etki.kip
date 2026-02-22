@@ -35,6 +35,13 @@ Kullanıcıya mesaj göstermek için en temel yazma işlemdir.
   yerleşiktir.
 
 (*
+Verilen karakteri standart çıktıya yazar.
+Örnek kullanım: 'a'yı yazmak
+*)
+(bu karakteri) (yazmak bitimi),
+  yerleşiktir.
+
+(*
 Standart girdiden bir satır okur ve dizge döndürür.
 Etkili bağlamda genellikle "okuyup" yapısıyla kullanılır.
 Örnek kullanım: okuyup

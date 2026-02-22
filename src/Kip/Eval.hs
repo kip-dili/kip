@@ -254,6 +254,7 @@ sameExp :: Exp Ann -> Exp Ann -> Bool
 sameExp (IntLit _ a) (IntLit _ b) = a == b
 sameExp (FloatLit _ a) (FloatLit _ b) = a == b
 sameExp (StrLit _ a) (StrLit _ b) = a == b
+sameExp (CharLit _ a) (CharLit _ b) = a == b
 sameExp (Var _ n1 _) (Var _ n2 _) = n1 == n2
 sameExp _ _ = False
 
@@ -265,6 +266,7 @@ eqIgnoringAnn (App _ f1 a1) (App _ f2 a2) =
 eqIgnoringAnn (IntLit _ n1) (IntLit _ n2) = n1 == n2
 eqIgnoringAnn (FloatLit _ n1) (FloatLit _ n2) = n1 == n2
 eqIgnoringAnn (StrLit _ s1) (StrLit _ s2) = s1 == s2
+eqIgnoringAnn (CharLit _ c1) (CharLit _ c2) = c1 == c2
 eqIgnoringAnn (Bind _ n1 na1 e1) (Bind _ n2 na2 e2) =
   n1 == n2 && na1 == na2 && eqIgnoringAnn e1 e2
 eqIgnoringAnn (Seq _ f1 s1) (Seq _ f2 s2) =
@@ -434,6 +436,8 @@ evalStepWith subEval localEnv e =
       return (Done (IntLit annExp intVal))
     FloatLit {annExp, floatVal} ->
       return (Done (FloatLit annExp floatVal))
+    CharLit {annExp, charVal} ->
+      return (Done (CharLit annExp charVal))
     Bind {annExp, bindName, bindNameAnn, bindExp} -> do
       -- Non-tail: evaluate the binding expression, but the bind itself is a value.
       v <- subEval localEnv bindExp
@@ -546,6 +550,10 @@ matchPat pat mval =
     PStrLit s _ ->
       case mval of
         Just (StrLit _ s') | s == s' -> Just []
+        _ -> Nothing
+    PCharLit c _ ->
+      case mval of
+        Just (CharLit _ c') | c == c' -> Just []
         _ -> Nothing
     PListLit pats ->
       case mval of
@@ -1139,6 +1147,7 @@ inferType e =
     IntLit {} -> return (Just (TyInt (mkAnn Nom NoSpan)))
     FloatLit {} -> return (Just (TyFloat (mkAnn Nom NoSpan)))
     StrLit {} -> return (Just (TyString (mkAnn Nom NoSpan)))
+    CharLit {} -> return (Just (TyChar (mkAnn Nom NoSpan)))
     Bind {bindExp} -> inferType bindExp
     Seq {second} -> inferType second
     Var {varCandidates} -> do
@@ -1183,6 +1192,8 @@ applyTypeCase cas exp =
       IntLit (setAnnCase ann cas) n
     FloatLit ann n ->
       FloatLit (setAnnCase ann cas) n
+    CharLit ann c ->
+      CharLit (setAnnCase ann cas) c
     _ -> exp
 
 -- | Check whether an inferred type matches an expected type.
@@ -1215,6 +1226,7 @@ tyEq tyCons t1 t2 =
     (TyString _, TyString _) -> True
     (TyInt _, TyInt _) -> True
     (TyFloat _, TyFloat _) -> True
+    (TyChar _, TyChar _) -> True
     (Arr _ d1 i1, Arr _ d2 i2) -> tyEq tyCons d1 d2 && tyEq tyCons i1 i2
     (TyInd _ n1', TyInd _ n2') -> identMatches n1' n2'
     (TySkolem _ n1', TySkolem _ n2') -> n1' == n2'
@@ -1312,6 +1324,10 @@ unifyTypes tyCons expected actual =
           case a of
             TyString _ -> Just subst
             _ -> Nothing
+        TyChar _ ->
+          case a of
+            TyChar _ -> Just subst
+            _ -> Nothing
         Arr _ d1 i1 ->
           case a of
             Arr _ d2 i2 -> do
@@ -1341,6 +1357,7 @@ applySubst subst ty =
     TyFloat {} -> ty
     TyInd {} -> ty
     TyString {} -> ty
+    TyChar {} -> ty
     Arr ann d i -> Arr ann (applySubst subst d) (applySubst subst i)
     TyApp ann ctor args ->
       TyApp ann (applySubst subst ctor) (map (applySubst subst) args)

@@ -116,6 +116,7 @@ data Ty a =
     TyString { annTy :: a } -- ^ String type.
   | TyInt    { annTy :: a } -- ^ Integer type.
   | TyFloat  { annTy :: a } -- ^ Floating-point type.
+  | TyChar   { annTy :: a } -- ^ Character type.
   | Arr      { annTy :: a , dom :: Ty a, img :: Ty a } -- ^ Function type.
   | TyInd    { annTy :: a , indName :: Identifier } -- ^ Named type.
   | TyVar    { annTy :: a , tyVarName :: Identifier } -- ^ Type variable.
@@ -130,6 +131,7 @@ data Exp a =
   | StrLit { annExp :: a , lit :: !Text } -- ^ String literal.
   | IntLit { annExp :: a , intVal :: !Integer } -- ^ Integer literal.
   | FloatLit { annExp :: a , floatVal :: !Double } -- ^ Floating-point literal.
+  | CharLit { annExp :: a , charVal :: !Char } -- ^ Character literal.
   | Bind   { annExp :: a , bindName :: Identifier , bindNameAnn :: a , bindExp :: Exp a } -- ^ Binding expression.
   | Seq    { annExp :: a , first :: Exp a , second :: Exp a } -- ^ Sequential composition.
   | Match  { annExp :: a , scrutinee :: Exp a , clauses :: [Clause a] } -- ^ Pattern match.
@@ -214,6 +216,7 @@ data Pat ann =
   | PIntLit Integer ann -- ^ Integer literal pattern.
   | PFloatLit Double ann -- ^ Float literal pattern.
   | PStrLit Text ann -- ^ String literal pattern.
+  | PCharLit Char ann -- ^ Character literal pattern.
   | PListLit [Pat ann] -- ^ List literal pattern.
   deriving (Show, Eq, Ord, Generic)
 
@@ -225,6 +228,7 @@ instance Functor Pat where
   fmap f (PIntLit n ann) = PIntLit n (f ann)
   fmap f (PFloatLit n ann) = PFloatLit n (f ann)
   fmap f (PStrLit s ann) = PStrLit s (f ann)
+  fmap f (PCharLit c ann) = PCharLit c (f ann)
   fmap f (PListLit pats) = PListLit (map (fmap f) pats)
 
 -- | Binary instance for pattern annotations.
@@ -252,6 +256,10 @@ instance (Binary ann) => Binary (Pat ann) where
     put (5 :: Word8)
     put s
     put ann
+  put (PCharLit c ann) = do
+    put (7 :: Word8)
+    put c
+    put ann
   put (PListLit pats) = do
     put (6 :: Word8)
     put pats
@@ -265,6 +273,7 @@ instance (Binary ann) => Binary (Pat ann) where
       4 -> PFloatLit <$> get <*> get
       5 -> PStrLit <$> get <*> get
       6 -> PListLit <$> get
+      7 -> PCharLit <$> get <*> get
       _ -> fail "Invalid Pat tag"
 
 -- | Match clause of a pattern and expression.
@@ -371,6 +380,7 @@ prettyExp (Var _ name _) = T.unpack (T.intercalate "-" (fst name ++ [snd name]))
 prettyExp (StrLit _ s) = show (T.unpack s)
 prettyExp (IntLit _ n) = show n
 prettyExp (FloatLit _ n) = show n
+prettyExp (CharLit _ c) = show c
 prettyExp (Bind _ name _ e) =
   T.unpack (T.intercalate "-" (fst name ++ [snd name])) ++ " için " ++ prettyExp e
 prettyExp (Seq _ a b) =
@@ -409,6 +419,7 @@ prettyExp (Ascribe _ ty e) =
     prettyTySimple (TyString _) = "dizge"
     prettyTySimple (TyInt _) = "tam-sayı"
     prettyTySimple (TyFloat _) = "ondalık-sayı"
+    prettyTySimple (TyChar _) = "karakter"
     prettyTySimple (TyInd _ name) = T.unpack (T.intercalate "-" (fst name ++ [snd name]))
     prettyTySimple (TyVar _ name) = T.unpack (T.intercalate "-" (fst name ++ [snd name]))
     prettyTySimple _ = "..."
@@ -420,6 +431,7 @@ ppExp n e = indent n ++ case e of
   StrLit _ s -> "StrLit " ++ show s
   IntLit _ i -> "IntLit " ++ show i
   FloatLit _ f -> "FloatLit " ++ show f
+  CharLit _ c -> "CharLit " ++ show c
   App _ f args ->
     "App\n" ++ ppExp (n+2) f ++ "\n" ++
     indent (n+2) ++ "args:" ++
@@ -453,6 +465,7 @@ ppPat (PCtor (name, _) pats) =
 ppPat (PIntLit i _) = show i
 ppPat (PFloatLit f _) = show f
 ppPat (PStrLit s _) = show s
+ppPat (PCharLit c _) = show c
 ppPat (PListLit pats) = "[" ++ intercalate ", " (map ppPat pats) ++ "]"
 
 -- | Pretty-print an identifier.
@@ -464,6 +477,7 @@ ppTy :: Ty a -> String
 ppTy (TyString _) = "dizge"
 ppTy (TyInt _) = "tam-sayı"
 ppTy (TyFloat _) = "ondalık-sayı"
+ppTy (TyChar _) = "karakter"
 ppTy (TyInd _ name) = ppIdent name
 ppTy (TyVar _ name) = ppIdent name
 ppTy (TySkolem _ name) = "'" ++ ppIdent name

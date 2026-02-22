@@ -19,6 +19,7 @@ data-files:
     lib/temel.kip
     lib/giriş.kip
     lib/temel/doğruluk.kip
+    lib/temel/karakter.kip
     lib/temel/dizge.kip
     lib/temel/etki.kip
     lib/temel/liste.kip
