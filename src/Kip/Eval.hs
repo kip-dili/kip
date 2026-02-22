@@ -1156,7 +1156,8 @@ inferType e =
         Just v -> inferType v
         Nothing ->
           case lookupCtorByCandidates evalCtors varCandidates of
-            Just ([], ty) -> return (Just ty)
+            Just (argTys, ty) ->
+              return (Just (foldr (Arr (mkAnn Nom NoSpan)) ty argTys))
             _ -> return Nothing
     App {fn, args} -> do
       fn' <- evalExpWith [] fn
