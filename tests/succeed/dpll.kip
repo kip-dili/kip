@@ -159,92 +159,59 @@ olabilir.
   yanlışsa,
     "UNSAT"tır.
 
-basit-birinci-cümle, [-1, 3]'űn durumudur.
-basit-ikinci-cümle, [2, 3, -1]'in durumudur.
-basit-problem, [ 
-                basit-birinci-cümle 
-              , basit-ikinci-cümle
-              ]'dir.
+basit-problem,
+  durumuyla [
+              [-1, 3]
+            , [2, 3, -1]
+            ]'in eşlemidir.
 ("basit-problem: "le ((basit-problem'in kararının) metninin) birleşimini) yaz.
 
-quinn-birinci-cümle, [1, 2]'nin durumudur.
-quinn-ikinci-cümle, [-2, -4]'ün durumudur.
-quinn-üçüncü-cümle, [3, 4]'ün durumudur.
-quinn-dördüncü-cümle, [-4, -5]'in durumudur.
-quinn-beşinci-cümle, [5, -6]'nın durumudur.
-quinn-altıncı-cümle, [6, -7]'nin durumudur.
-quinn-yedinci-cümle, [6, 7]'nin durumudur.
-quinn-sekizinci-cümle, [7, -16]'nın durumudur.
-quinn-dokuzuncu-cümle, [8, -9]'un durumudur.
-quinn-onuncu-cümle, [-8, -14]'ün durumudur.
-quinn-onbirinci-cümle, [9, 10]'un durumudur.
-quinn-onikinci-cümle, [9, -10]'un durumudur.
-quinn-onüçüncü-cümle, [-10, -11]'in durumudur.
-quinn-ondördüncü-cümle, [10, 12]'nin durumudur.
-quinn-onbeşinci-cümle, [11, 12]'nin durumudur.
-quinn-onaltıncı-cümle, [13, 14]'ün durumudur.
-quinn-onyedinci-cümle, [14, -15]'in durumudur.
-quinn-onsekizinci-cümle, [15, 16]'nın durumudur.
-quinn-problem, [
-                quinn-birinci-cümle
-              , quinn-ikinci-cümle
-              , quinn-üçüncü-cümle
-              , quinn-dördüncü-cümle
-              , quinn-beşinci-cümle
-              , quinn-altıncı-cümle
-              , quinn-yedinci-cümle
-              , quinn-sekizinci-cümle
-              , quinn-dokuzuncu-cümle
-              , quinn-onuncu-cümle
-              , quinn-onbirinci-cümle
-              , quinn-onikinci-cümle
-              , quinn-onüçüncü-cümle
-              , quinn-ondördüncü-cümle
-              , quinn-onbeşinci-cümle
-              , quinn-onaltıncı-cümle
-              , quinn-onyedinci-cümle
-              , quinn-onsekizinci-cümle
-              ]'dir.
+quinn-problem,
+  durumuyla [
+              [1, 2]
+            , [-2, -4]
+            , [3, 4]
+            , [-4, -5]
+            , [5, -6]
+            , [6, -7]
+            , [6, 7]
+            , [7, -16]
+            , [8, -9]
+            , [-8, -14]
+            , [9, 10]
+            , [9, -10]
+            , [-10, -11]
+            , [10, 12]
+            , [11, 12]
+            , [13, 14]
+            , [14, -15]
+            , [15, 16]
+            ]'in eşlemidir.
 ("quinn-problem: "le ((quinn-problem'in kararının) metninin) birleşimini) yaz.
 
-güvercin-yuvası-birinci-cümle, [1, 2]'nin durumudur.
-güvercin-yuvası-ikinci-cümle, [3, 4]'ün durumudur.
-güvercin-yuvası-üçüncü-cümle, [5, 6]'nın durumudur.
-güvercin-yuvası-dördüncü-cümle, [-1, -3]'ün durumudur.
-güvercin-yuvası-beşinci-cümle, [-1, -5]'in durumudur.
-güvercin-yuvası-altıncı-cümle, [-3, -5]'in durumudur.
-güvercin-yuvası-yedinci-cümle, [-2, -4]'ün durumudur.
-güvercin-yuvası-sekizinci-cümle, [-2, -6]'nın durumudur.
-güvercin-yuvası-dokuzuncu-cümle, [-4, -6]'nın durumudur.
-güvercin-yuvası-problemi, [
-                güvercin-yuvası-birinci-cümle
-              , güvercin-yuvası-ikinci-cümle
-              , güvercin-yuvası-üçüncü-cümle
-              , güvercin-yuvası-dördüncü-cümle
-              , güvercin-yuvası-beşinci-cümle
-              , güvercin-yuvası-altıncı-cümle
-              , güvercin-yuvası-yedinci-cümle
-              , güvercin-yuvası-sekizinci-cümle
-              , güvercin-yuvası-dokuzuncu-cümle
-              ]'dir.
+güvercin-yuvası-problemi,
+  durumuyla [
+              [1, 2]
+            , [3, 4]
+            , [5, 6]
+            , [-1, -3]
+            , [-1, -5]
+            , [-3, -5]
+            , [-2, -4]
+            , [-2, -6]
+            , [-4, -6]
+            ]'in eşlemidir.
 ("güvercin-yuvası-problemi: "yle ((güvercin-yuvası-problemi'nin kararının) metninin) birleşimini) yaz.
 
-üç-tüm-kombinasyonlar-birinci-cümle, [1, 2, 3]'ün durumudur.
-üç-tüm-kombinasyonlar-ikinci-cümle, [1, -2, -3]'ün durumudur.
-üç-tüm-kombinasyonlar-üçüncü-cümle, [-1, 2, -3]'ün durumudur.
-üç-tüm-kombinasyonlar-dördüncü-cümle, [-1, -2, 3]'ün durumudur.
-üç-tüm-kombinasyonlar-beşinci-cümle, [-1, -2, -3]'ün durumudur.
-üç-tüm-kombinasyonlar-altıncı-cümle, [-1, 2, 3]'ün durumudur.
-üç-tüm-kombinasyonlar-yedinci-cümle, [1, -2, 3]'ün durumudur.
-üç-tüm-kombinasyonlar-sekizinci-cümle, [1, 2, -3]'ün durumudur.
-üç-tüm-kombinasyonlar-problemi, [
-                üç-tüm-kombinasyonlar-birinci-cümle
-              , üç-tüm-kombinasyonlar-ikinci-cümle
-              , üç-tüm-kombinasyonlar-üçüncü-cümle
-              , üç-tüm-kombinasyonlar-dördüncü-cümle
-              , üç-tüm-kombinasyonlar-beşinci-cümle
-              , üç-tüm-kombinasyonlar-altıncı-cümle
-              , üç-tüm-kombinasyonlar-yedinci-cümle
-              , üç-tüm-kombinasyonlar-sekizinci-cümle
-              ]'dir.
+üç-tüm-kombinasyonlar-problemi,
+  durumuyla [
+              [1, 2, 3]
+            , [1, -2, -3]
+            , [-1, 2, -3]
+            , [-1, -2, 3]
+            , [-1, -2, -3]
+            , [-1, 2, 3]
+            , [1, -2, 3]
+            , [1, 2, -3]
+            ]'in eşlemidir.
 ("üç-tüm-kombinasyonlar-problemi: "yle ((üç-tüm-kombinasyonlar-problemi'nin kararının) metninin) birleşimini) yaz.

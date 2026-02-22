@@ -1,0 +1,10 @@
+Bir cümle
+ya bir tam-sayı listesinin durumu
+olabilir.
+
+basit-problem, durumuyla [
+               [-1, 3]
+             , [2, 3, -1]
+             ]'in eşlemidir.
+
+(basit-problem'in uzunluğunu) yaz.
