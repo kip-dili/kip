@@ -414,6 +414,17 @@ renderTCError paramTyCons tyMods tcErr = do
           return (T.intercalate "\n" [header, missing])
         UnimplementedPrimitive name _ sp ->
           return ("Tip hatası: " <> T.pack (prettyIdent name) <> " için yerleşik fonksiyon uygulanmamış." <> renderSpan (rcLang ctx) sp)
+        InvalidReturnCase cas sp ->
+          let caseTr = case cas of
+                Acc  -> "belirtme"
+                Dat  -> "yönelme"
+                Loc  -> "bulunma"
+                Abl  -> "ayrılma"
+                Gen  -> "tamlayan"
+                Ins  -> "vasıta"
+                Cond -> "şart"
+                _    -> T.pack (show cas)
+          in return ("Tip hatası: dönüş tipi yalın ya da iyelik halinde olmalı. " <> caseTr <> " hali geçersiz." <> renderSpan (rcLang ctx) sp)
     LangEn ->
       case tcErr of
         TC.Unknown ->
@@ -461,6 +472,17 @@ renderTCError paramTyCons tyMods tcErr = do
           return (T.intercalate "\n" [header, missing])
         UnimplementedPrimitive name _ sp ->
           return ("Type error: unimplemented primitive function for " <> T.pack (prettyIdent name) <> "." <> renderSpan (rcLang ctx) sp)
+        InvalidReturnCase cas sp ->
+          let caseEn = case cas of
+                Acc  -> "accusative"
+                Dat  -> "dative"
+                Loc  -> "locative"
+                Abl  -> "ablative"
+                Gen  -> "genitive"
+                Ins  -> "instrumental"
+                Cond -> "conditional"
+                _    -> T.pack (show cas)
+          in return ("Type error: return type must be nominative or possessive. Found " <> caseEn <> "." <> renderSpan (rcLang ctx) sp)
 
 -- | Render a type checker error with a source snippet.
 renderTCErrorWithSource :: [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
@@ -484,6 +506,7 @@ tcErrSpan tcErr =
     PatternTypeMismatch _ _ _ sp -> Just sp
     NonExhaustivePattern _ sp -> Just sp
     UnimplementedPrimitive _ _ sp -> Just sp
+    InvalidReturnCase _ sp -> Just sp
     TC.Unknown -> Nothing
 
 -- | Render missing patterns for error messages.

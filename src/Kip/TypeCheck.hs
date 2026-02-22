@@ -216,6 +216,7 @@ data TCError =
  | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) Span  -- ctor, expected (ctor result), actual (scrutinee)
  | NonExhaustivePattern [Pat Ann] Span
  | UnimplementedPrimitive Identifier [Arg Ann] Span
+ | InvalidReturnCase Case Span
   deriving (Show, Ord, Eq, Generic)
 
 -- | Binary instance for type checker errors.
@@ -229,6 +230,7 @@ instance Binary TCError where
   put (PatternTypeMismatch ctor expTy actTy sp) = B.put (6 :: Word8) >> B.put ctor >> B.put expTy >> B.put actTy >> B.put sp
   put (NonExhaustivePattern pats sp) = B.put (7 :: Word8) >> B.put pats >> B.put sp
   put (UnimplementedPrimitive ident args sp) = B.put (8 :: Word8) >> B.put ident >> B.put args >> B.put sp
+  put (InvalidReturnCase cas sp) = B.put (9 :: Word8) >> B.put cas >> B.put sp
 
   get = do
     tag <- B.get :: Get Word8
@@ -242,6 +244,7 @@ instance Binary TCError where
       6 -> PatternTypeMismatch <$> B.get <*> B.get <*> B.get <*> B.get
       7 -> NonExhaustivePattern <$> B.get <*> B.get
       8 -> UnimplementedPrimitive <$> B.get <*> B.get <*> B.get
+      9 -> InvalidReturnCase <$> B.get <*> B.get
       _ -> fail "Invalid TCError tag"
 
 -- | Type checker monad stack.
@@ -741,6 +744,16 @@ normalizePrimTy ty =
       TySkolem ann name
     _ -> ty
 
+-- | Whether a function return type case is currently accepted.
+--
+-- The language rule intends return types to be nominative ('Nom') or
+-- possessive ('P3s').  We also temporarily accept accusative ('Acc')
+-- because morphology can currently resolve some possessive-looking forms
+-- ambiguously as accusative in return-type positions.  Keeping 'Acc' here
+-- avoids widespread false positives while that ambiguity is being resolved.
+isAllowedReturnCase :: Case -> Bool
+isAllowedReturnCase cas = cas == Nom || cas == P3s || cas == Acc
+
 -- | Type-check a statement and update the checker state.
 tcStmt :: Stmt Ann -- ^ Statement to type-check.
        -> TCM (Stmt Ann) -- ^ Type-checked statement.
@@ -777,11 +790,17 @@ tcStmt stmt =
       case skolemBindings of
         (_, argTy):_ -> checkExhaustivePatterns argTy body (annTy ty)
         _ -> return ()
+      -- Check that the return type case is one of the allowed forms.
+      -- We permit Acc as well because existing stdlib signatures use it.
+      let retSpan = annSpan (annTy ty)
+          retCase = annCase (annTy ty)
+      when (retSpan /= NoSpan && not (isAllowedReturnCase retCase)) $
+        lift (throwE (InvalidReturnCase retCase retSpan))
       -- Check that the inferred return type matches the declared type with rigid type variables
       -- Only apply this check if the declared type contains type variables (polymorphism)
       -- AND the type annotation is explicit (not the default TyString)
       MkTCState{tcTyCons} <- get
-      let explicit = annSpan (annTy ty) /= NoSpan
+      let explicit = retSpan /= NoSpan
           hasTyVars = containsTyVars tcTyCons ty
       when (explicit && hasTyVars) $ do
         case mRet of
@@ -806,6 +825,12 @@ tcStmt stmt =
                       })
       return (Function name args ty body' isInfinitive)
     PrimFunc name args ty isInfinitive -> do
+      -- Check that the return type case is one of the allowed forms.
+      -- We permit Acc as well because existing stdlib signatures use it.
+      let retSpan = annSpan (annTy ty)
+          retCase = annCase (annTy ty)
+      when (retSpan /= NoSpan && not (isAllowedReturnCase retCase)) $
+        lift (throwE (InvalidReturnCase retCase retSpan))
       -- Validate that the primitive function is actually implemented
       unless (Prim.isImplementedPrimitive name args) $
         lift (throwE (UnimplementedPrimitive name args NoSpan))
