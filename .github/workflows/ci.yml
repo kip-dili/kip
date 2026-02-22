@@ -39,7 +39,7 @@ jobs:
         with:
           path: |
             /tmp/.stack-root
-          key: ${{ runner.os }}-stack-lts-21_25-${{ hashFiles('stack.yaml', 'stack.yaml.lock', '*.cabal') }}
+          key: ${{ runner.os }}-stack-lts-21_25-${{ hashFiles('stack.yaml.lock') }}
           restore-keys: |
             ${{ runner.os }}-stack-lts-21_25-
 
