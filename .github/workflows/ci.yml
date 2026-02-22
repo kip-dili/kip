@@ -4,8 +4,27 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup HLint
+        uses: haskell-actions/hlint-setup@v2
+
+      - name: Run HLint
+        uses: haskell-actions/hlint-run@v2
+        with:
+          path: '["app","src","tests"]'
+          fail-on: warning
+
+  test:
     runs-on: ubuntu-latest
     container:
       image: fpco/stack-build:lts-21.25
@@ -20,35 +39,19 @@ jobs:
         with:
           path: |
             /tmp/.stack-root
-          key: ${{ runner.os }}-stack-lts-21_25-v1
+          key: ${{ runner.os }}-stack-lts-21_25-${{ hashFiles('stack.yaml', 'stack.yaml.lock', '*.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-stack-
+            ${{ runner.os }}-stack-lts-21_25-
 
       - name: Install Foma
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl gnupg foma libfoma-dev
 
-      - name: Install Node.js 20
-        run: |
-          mkdir -p /etc/apt/keyrings
-          curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-          apt-get update
-          apt-get install -y --no-install-recommends nodejs
-          node --version
-
-      - name: Build Haskell dependencies
-        run: stack --allow-different-user build --test --no-run-tests --only-dependencies
-
-      - name: Setup HLint
-        uses: haskell-actions/hlint-setup@v2
-
-      - name: Run HLint
-        uses: haskell-actions/hlint-run@v2
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          path: '["app","src","tests"]'
-          fail-on: warning
+          node-version: 20
 
       - name: Stack test
         run: stack --allow-different-user test
