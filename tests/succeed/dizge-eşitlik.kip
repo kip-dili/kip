@@ -1,0 +1,23 @@
+(* Eşit dizgeler *)
+("abc"yle "abc"nin eşitliği) doğruysa,
+  "eşit"i yaz;
+değilse,
+  "eşit değil"i yaz.
+
+(* Eşit olmayan dizgeler *)
+("abc"yle "xyz"nin eşitliği) doğruysa,
+  "eşit"i yaz;
+değilse,
+  "eşit değil"i yaz.
+
+(* Boş dizgeler *)
+(""yle ""nin eşitliği) doğruysa,
+  "eşit"i yaz;
+değilse,
+  "eşit değil"i yaz.
+
+(* Boş ve dolu dizge *)
+(""yle "a"nın eşitliği) doğruysa,
+  "eşit"i yaz;
+değilse,
+  "eşit değil"i yaz.

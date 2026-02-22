@@ -221,8 +221,10 @@ allPrimitives =
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "eşitlik")
-      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
-      ["tam-sayı.kip", "ondalık-sayı.kip"]
+      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False)
+      , withTypes 2 (\case [t1, t2] -> isStringTy t1 && isStringTy t2; _ -> False)
+      ]
+      ["tam-sayı.kip", "ondalık-sayı.kip", "dizge.kip"]
 
   , PrimitiveDef ([], "küçüklük")
       [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
@@ -368,6 +370,8 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primFloatCmp "eşitlik" (==))
       | [(_, TyInt _), (_, TyInt _)] <- args ->
           Just (primIntCmp "eşitlik" (==))
+      | [(_, TyString _), (_, TyString _)] <- args ->
+          Just (primStringEq "eşitlik")
       | otherwise ->
           Nothing
     ([], "küçüklük")
@@ -590,6 +594,12 @@ primFloatCmp :: Monad m => Text -> (Double -> Double -> Bool) -> [Exp Ann] -> m 
 primFloatCmp fname op args =
   case args of
     [FloatLit _ a, FloatLit _ b] -> pure (boolExp (op a b))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringEq :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringEq fname args =
+  case args of
+    [StrLit _ a, StrLit _ b] -> pure (boolExp (a == b))
     _ -> pure (fallbackApp ([], fname) args)
 
 primIntToString :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
@@ -852,6 +862,7 @@ primitiveJsPrelude = T.unlines
   , "  var range = hi - lo + 1;"
   , "  return lo + (__kip_rand() % range);"
   , "};"
+  , "var __kip_prim_dizge_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();"
   , "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();"
   , "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();"
   , "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();"
@@ -984,6 +995,7 @@ primitiveJsPrunableSpecs =
       , "  return lo + (__kip_rand() % range);"
       , "};"
       ])
+  , ("__kip_prim_dizge_eşitlik", ["doğru", "yanlış"], "var __kip_prim_dizge_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();\n")
   , ("eşitlik", ["doğru", "yanlış"], "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();\n")
   , ("küçüklük", ["doğru", "yanlış"], "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();\n")
   , ("küçük_eşitlik", ["doğru", "yanlış"], "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();\n")

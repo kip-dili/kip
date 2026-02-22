@@ -74,3 +74,10 @@ Dizgenin başından n karakteri atıp kalan kısmı döndürür.
 *)
 (bu dizgeden) (n tam-sayı) (bırakış dizgesi),
   yerleşiktir.
+
+(*
+İki dizgenin eşit olup olmadığını doğruluk olarak döndürür.
+Örnek kullanım: ("abc"yle "abc"nin eşitliği)
+*)
+(bu dizgeyle) (şu dizgenin) (eşitlik doğruluğu),
+  yerleşiktir.
