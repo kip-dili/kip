@@ -1,0 +1,50 @@
+(""nin boşluğu) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+("kip"in boşluğu) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+("kip"in başı) c'nin varlığıysa,
+  c'yi yaz;
+yokluksa,
+  "yok"'u yaz.
+
+("kip"in sonu) c'nin varlığıysa,
+  c'yi yaz;
+yokluksa,
+  "yok"'u yaz.
+
+(""nin başı) c'nin varlığıysa,
+  c'yi yaz;
+yokluksa,
+  "yok"'u yaz.
+
+(""nin sonu) c'nin varlığıysa,
+  c'yi yaz;
+yokluksa,
+  "yok"'u yaz.
+
+("kip123!"in büyük-halini) yaz.
+("KIP123!"in küçük-halini) yaz.
+
+("ilk\nikinci\n"nin satırları) bunun (şunun boşa ekine) ekiyse,
+  bunu yazıp,
+  şunu yaz;
+değilse,
+  "hata"'yı yaz.
+
+(""nin satırları) boşsa,
+  "son"'u yaz;
+değilse,
+  "hata"'yı yaz.
+
+("  kip   dili\tguzel "in kelimeleri) bunun (şunun (onun boşa ekine) ekine) ekiyse,
+  bunu yazıp,
+  şunu yazıp,
+  onu yaz;
+değilse,
+  "hata"'yı yaz.

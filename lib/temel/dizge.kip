@@ -81,3 +81,31 @@ Dizgenin başından n karakteri atıp kalan kısmı döndürür.
 *)
 (bu dizgeyle) (şu dizgenin) (eşitlik doğruluğu),
   yerleşiktir.
+
+(* Dizgenin boş olup olmadığını döndürür. *)
+(bu dizgenin) (boşluk doğruluğu),
+  yerleşiktir.
+
+(* Dizgenin ilk karakterini, varsa döndürür. *)
+(bu dizgenin) (baş karakteri olasılığı),
+  bunun 0'da öğesidir.
+
+(* Dizgenin son karakterini, varsa döndürür. *)
+(bu dizgenin) (son karakteri olasılığı),
+  yerleşiktir.
+
+(* Dizgeyi satır sonlarına göre dizge listesine böler. *)
+(bu dizgenin) (satırlar dizge listesi),
+  yerleşiktir.
+
+(* Dizgeyi boşluklara göre kelimelere ayırır. *)
+(bu dizgenin) (kelimeler dizge listesi),
+  yerleşiktir.
+
+(* Dizgedeki tüm harfleri büyük harfe çevirir. *)
+(bu dizgenin) (büyük-hal dizgesi),
+  yerleşiktir.
+
+(* Dizgedeki tüm harfleri küçük harfe çevirir. *)
+(bu dizgenin) (küçük-hal dizgesi),
+  yerleşiktir.
