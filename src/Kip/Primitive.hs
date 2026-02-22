@@ -174,6 +174,18 @@ allPrimitives =
       [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
       ["dizge.kip"]
 
+  , PrimitiveDef ([], "karakter")
+      [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef ([], "alış")
+      [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef ([], "bırakış")
+      [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      ["dizge.kip"]
+
   , PrimitiveDef ([], "toplam")
       [ withTypes 2 (\case [t1, t2] -> isFloatTy t1 || isFloatTy t2; _ -> False)
       , withTypes 2 (\case [t1, t2] -> isIntTy t1 && isIntTy t2; _ -> False)
@@ -299,6 +311,15 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise -> Nothing
     ([], "ters")
       | [(_, TyString _)] <- args -> Just (primStringReverse "ters")
+      | otherwise -> Nothing
+    ([], "karakter")
+      | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringCharAt "karakter")
+      | otherwise -> Nothing
+    ([], "alış")
+      | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringTake "alış")
+      | otherwise -> Nothing
+    ([], "bırakış")
+      | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringDrop "bırakış")
       | otherwise -> Nothing
     ([], "toplam")
       | [(_, TyFloat _), (_, TyFloat _)] <- args ->
@@ -450,6 +471,29 @@ primStringReverse :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
 primStringReverse fname args =
   case args of
     [StrLit ann s] -> pure (StrLit ann (T.reverse s))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringCharAt :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringCharAt fname args =
+  case args of
+    [StrLit ann s, IntLit _ n]
+      | n >= 0 && n < fromIntegral (T.length s) ->
+          pure (someExp (StrLit ann (T.singleton (T.index s (fromIntegral n)))))
+      | otherwise -> pure noneExp
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringTake :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringTake fname args =
+  case args of
+    [StrLit ann s, IntLit _ n] ->
+      pure (StrLit ann (T.take (fromIntegral (max 0 n)) s))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringDrop :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringDrop fname args =
+  case args of
+    [StrLit ann s, IntLit _ n] ->
+      pure (StrLit ann (T.drop (fromIntegral (max 0 n)) s))
     _ -> pure (fallbackApp ([], fname) args)
 
 primStringToInt :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
@@ -726,6 +770,9 @@ primitiveJsPrelude = T.unlines
   , "var __kip_prim_ters = (s) => s.split('').reverse().join('');"
   , "var __kip_prim_birleşim = (a, b) => __kip_num(a) + __kip_num(b);"
   , "var __kip_prim_uzunluk = (s) => s.length;"
+  , "var __kip_prim_karakter = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();"
+  , "var __kip_prim_alış = (s, n) => s.slice(0, Math.max(0, n));"
+  , "var __kip_prim_bırakış = (s, n) => s.slice(Math.max(0, n));"
   , "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));"
   , "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));"
   , ""
@@ -845,6 +892,9 @@ primitiveJsPrunableSpecs =
   , ("__kip_prim_ters", [], "var __kip_prim_ters = (s) => s.split('').reverse().join('');\n")
   , ("__kip_prim_birleşim", [], "var __kip_prim_birleşim = (a, b) => __kip_num(a) + __kip_num(b);\n")
   , ("__kip_prim_uzunluk", [], "var __kip_prim_uzunluk = (s) => s.length;\n")
+  , ("__kip_prim_karakter", ["varlık", "yokluk"], "var __kip_prim_karakter = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();\n")
+  , ("__kip_prim_alış", [], "var __kip_prim_alış = (s, n) => s.slice(0, Math.max(0, n));\n")
+  , ("__kip_prim_bırakış", [], "var __kip_prim_bırakış = (s, n) => s.slice(Math.max(0, n));\n")
   , ("__kip_prim_toplam", [], "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));\n")
   , ("__kip_prim_fark", [], "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));\n")
   , ("__kip_prim_oku_stdin", [], T.unlines

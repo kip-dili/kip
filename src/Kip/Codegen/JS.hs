@@ -284,6 +284,9 @@ lookupPrimJsName name argTys =
     (([], "uzunluk"), [_]) -> "__kip_prim_uzunluk"
     (([], "toplam"), [_, _]) -> "__kip_prim_toplam"
     (([], "fark"), [_, _]) -> "__kip_prim_fark"
+    (([], "karakter"), [TyString {}, TyInt {}]) -> "__kip_prim_karakter"
+    (([], "alış"), [TyString {}, TyInt {}]) -> "__kip_prim_alış"
+    (([], "bırakış"), [TyString {}, TyInt {}]) -> "__kip_prim_bırakış"
     (([], "oku"), []) -> "__kip_prim_oku_stdin"
     (([], "oku"), [_]) -> "__kip_prim_oku_dosya"
     (([], "yaz"), [_, _]) -> "__kip_prim_yaz_dosya"
@@ -584,7 +587,8 @@ expRefs resolvMap exp' =
 runtimeExportNames :: [Text]
 runtimeExportNames =
   [ "__kip_close_stdin", "__kip_call", "__kip_float", "__kip_is_float", "__kip_num"
-  , "__kip_prim_ters", "__kip_prim_birleşim", "__kip_prim_uzunluk", "__kip_prim_toplam"
+  , "__kip_prim_ters", "__kip_prim_birleşim", "__kip_prim_uzunluk", "__kip_prim_karakter"
+  , "__kip_prim_alış", "__kip_prim_bırakış", "__kip_prim_toplam"
   , "__kip_prim_fark", "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_yaz_dosya"
   , "doğru", "yanlış", "varlık", "yokluk", "bitimlik", "yaz", "çarpım", "fark"
   , "bölüm", "kalan", "karekök", "radyan", "derece", "pi_sayısı", "taban", "tavan"
