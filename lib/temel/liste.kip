@@ -69,6 +69,32 @@ Sıra korunur; yalnızca koşulu sağlayanlar sonuç listesinde kalır.
       devamın testle filtresidir.
 
 (*
+Listenin başından, test doğru kaldığı sürece öğe alır.
+İlk başarısızlıkta durur.
+Örnek kullanım: ([2, 4, 1]'in (2'ye bölünürlüğüyle) sürece-alışı)
+*)
+(bu a listesinin) (test a'nın doğruluğuyla) (sürece-alış a listesi),
+  bu boşsa, boş;
+  ilkin devama ekiyse,
+    (ilkin testi) doğruysa,
+      ilkin (devamın testle sürece-alışına) ekidir;
+    değilse,
+      boş.
+
+(*
+Listenin başından, test doğru kaldığı sürece öğeleri atar.
+İlk başarısızlıktan itibaren kalan kısmı döndürür.
+Örnek kullanım: ([2, 4, 1]'in (2'ye bölünürlüğüyle) sürece-bırakışı)
+*)
+(bu a listesinin) (test a'nın doğruluğuyla) (sürece-bırakış a listesi),
+  bu boşsa, boş;
+  ilkin devama ekiyse,
+    (ilkin testi) doğruysa,
+      devamın testle sürece-bırakışıdır;
+    değilse,
+      bu.
+
+(*
 Listenin başından en fazla n öğe alır.
 - n <= 0 ise boş liste döner.
 - n, uzunluktan büyükse listenin tamamı döner.

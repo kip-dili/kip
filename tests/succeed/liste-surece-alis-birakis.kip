@@ -1,0 +1,11 @@
+liste, [2, 4, 6, 7, 8]'dir.
+((listenin (2'ye bölünürlüğüyle) sürece-alışının) toplamını) yaz.
+((listenin (2'ye bölünürlüğüyle) sürece-bırakışının) toplamını) yaz.
+
+kelime-liste, "a a b c"in kelimeleridir.
+((kelime-listenin ("a"yla eşitliğiyle) sürece-alışının) uzunluğunu) yaz.
+((kelime-listenin ("a"yla eşitliğiyle) sürece-bırakışının) uzunluğunu) yaz.
+
+satir-liste, "ilk\nilk\nson"un satırlarıdır.
+((satir-listenin ("ilk"le eşitliğiyle) sürece-alışının) uzunluğunu) yaz.
+((satir-listenin ("ilk"le eşitliğiyle) sürece-bırakışının) uzunluğunu) yaz.

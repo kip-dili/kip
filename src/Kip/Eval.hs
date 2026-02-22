@@ -392,43 +392,45 @@ evalStepWith subEval localEnv e =
         Var {varName, varCandidates} -> do
           -- Pull state once for all resolution steps.
           MkEvalState{evalFuncs, evalPrimFuncs, evalSelectors, evalTyCons} <- get
-          case allArgs of
-            [arg] | any (\(ident, _) -> Map.member ident evalTyCons) varCandidates ->
-              return (Done (applyTypeCase (annCase (annExp fnResolved)) arg))
-            _ -> do
-              let fnCandidates = map fst varCandidates
-                  matches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalFuncs]
-                  primMatches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalPrimFuncs]
-                  selectorMatches = [idx | n <- fnCandidates, idx <- Map.findWithDefault [] n evalSelectors]
-              -- Optimization: if there are no function/primitive candidates, we can
-              -- decide selector/random/constructor outcomes without type inference.
-              if null matches && null primMatches
-                then
-                  case (selectorMatches, allArgs) of
-                    -- Fast-path selectors when the only possible resolution is a selector.
-                    (idx:_, [arg]) ->
-                      Done <$> applySelector idx arg (App annApp fnResolved allArgs)
-                    _ ->
-                      return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call.
-                else do
-                  let partialCall = not (null preAppliedArgs)
-                      callArgs = reorderSectionArgs preAppliedArgs allArgs
-                      pickPrim = if partialCall then pickPrimByTypesPartial else pickPrimByTypes
-                      pickFn = if partialCall then pickFunctionByTypesPartial else pickFunctionByTypes
-                  -- Infer argument types once and share across all pick functions.
-                  -- See pickFunctionByTypes Haddock for details.
-                  argTys <- mapM inferType callArgs
-                  pickPrim primMatches callArgs argTys >>= \case
-                    Just (primImpl, primArgs) -> Done <$> primImpl primArgs
+          let fnCandidates = map fst varCandidates
+              matches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalFuncs]
+              primMatches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalPrimFuncs]
+              selectorMatches = [idx | n <- fnCandidates, idx <- Map.findWithDefault [] n evalSelectors]
+              hasTyConCandidate = any (\(ident, _) -> Map.member ident evalTyCons) varCandidates
+          -- Optimization: if there are no function/primitive candidates, we can
+          -- decide selector/random/constructor outcomes without type inference.
+          if null matches && null primMatches
+            then
+              case allArgs of
+                -- Type-case application is a fallback when no callable definition exists.
+                [arg] | hasTyConCandidate ->
+                  return (Done (applyTypeCase (annCase (annExp fnResolved)) arg))
+                -- Fast-path selectors when the only possible resolution is a selector.
+                [arg] ->
+                  case selectorMatches of
+                    idx:_ -> Done <$> applySelector idx arg (App annApp fnResolved allArgs)
+                    [] -> return (Done (App annApp fnResolved allArgs))
+                _ ->
+                  return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call.
+            else do
+              let partialCall = not (null preAppliedArgs)
+                  callArgs = reorderSectionArgs preAppliedArgs allArgs
+                  pickPrim = if partialCall then pickPrimByTypesPartial else pickPrimByTypes
+                  pickFn = if partialCall then pickFunctionByTypesPartial else pickFunctionByTypes
+              -- Infer argument types once and share across all pick functions.
+              -- See pickFunctionByTypes Haddock for details.
+              argTys <- mapM inferType callArgs
+              pickPrim primMatches callArgs argTys >>= \case
+                Just (primImpl, primArgs) -> Done <$> primImpl primArgs
+                Nothing ->
+                  pickFn matches callArgs argTys >>= \case
+                    Just (def, fnArgs) -> applyFunctionStep fnResolved localEnv def fnArgs
                     Nothing ->
-                      pickFn matches callArgs argTys >>= \case
-                        Just (def, fnArgs) -> applyFunctionStep fnResolved localEnv def fnArgs
-                        Nothing ->
-                          case (selectorMatches, allArgs) of
-                            (idx:_, [arg]) ->
-                              Done <$> applySelector idx arg (App annApp fnResolved allArgs)
-                            _ ->
-                              return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call
+                      case (selectorMatches, allArgs) of
+                        (idx:_, [arg]) ->
+                          Done <$> applySelector idx arg (App annApp fnResolved allArgs)
+                        _ ->
+                          return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call
         _ -> return (Done (App annApp fnResolved allArgs))
     StrLit {annExp, lit} ->
       return (Done (StrLit annExp lit))

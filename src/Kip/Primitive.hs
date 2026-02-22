@@ -23,7 +23,7 @@ module Kip.Primitive
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Bifunctor as B
-import Data.Char (chr, ord, toLower, toUpper)
+import Data.Char (chr, ord, toLower, toUpper, isAlpha, isAlphaNum, isDigit, isLower, isSpace, isUpper)
 import Data.Fixed (mod')
 import Data.List (foldl')
 import Data.Maybe (isJust)
@@ -196,6 +196,30 @@ allPrimitives =
       [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
       ["karakter.kip"]
 
+  , PrimitiveDef ([], "harflik")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef ([], "rakamlık")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef (["harf"], "rakamlık")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef (["büyük"], "harflik")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef (["küçük"], "harflik")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
+  , PrimitiveDef ([], "boşlukluk")
+      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      ["karakter.kip"]
+
   , PrimitiveDef ([], "ters")
       [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
       ["dizge.kip"]
@@ -210,6 +234,30 @@ allPrimitives =
 
   , PrimitiveDef ([], "bırakış")
       [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef ([], "son")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef ([], "boşluk")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef ([], "satırlar")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef ([], "kelimeler")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef (["büyük"], "hal")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      ["dizge.kip"]
+
+  , PrimitiveDef (["küçük"], "hal")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
       ["dizge.kip"]
 
   , PrimitiveDef ([], "toplam")
@@ -351,6 +399,24 @@ primitiveEvalImpl ops mPath ident args = do
     ([], "küçük")
       | [(_, TyChar _)] <- args -> Just (primCharLower "küçük")
       | otherwise -> Nothing
+    ([], "harflik")
+      | [(_, TyChar _)] <- args -> Just (primCharIsAlpha "harflik")
+      | otherwise -> Nothing
+    ([], "rakamlık")
+      | [(_, TyChar _)] <- args -> Just (primCharIsDigit "rakamlık")
+      | otherwise -> Nothing
+    (["harf"], "rakamlık")
+      | [(_, TyChar _)] <- args -> Just (primCharIsAlphaNum "harf-rakamlık")
+      | otherwise -> Nothing
+    (["büyük"], "harflik")
+      | [(_, TyChar _)] <- args -> Just (primCharIsUpper "büyük-harflik")
+      | otherwise -> Nothing
+    (["küçük"], "harflik")
+      | [(_, TyChar _)] <- args -> Just (primCharIsLower "küçük-harflik")
+      | otherwise -> Nothing
+    ([], "boşlukluk")
+      | [(_, TyChar _)] <- args -> Just (primCharIsSpace "boşlukluk")
+      | otherwise -> Nothing
     ([], "ters")
       | [(_, TyString _)] <- args -> Just (primStringReverse "ters")
       | otherwise -> Nothing
@@ -362,6 +428,24 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise -> Nothing
     ([], "bırakış")
       | [(_, TyString _), (_, TyInt _)] <- args -> Just (primStringDrop "bırakış")
+      | otherwise -> Nothing
+    ([], "son")
+      | [(_, TyString _)] <- args -> Just (primStringLastChar "son")
+      | otherwise -> Nothing
+    ([], "boşluk")
+      | [(_, TyString _)] <- args -> Just (primStringIsEmpty "boşluk")
+      | otherwise -> Nothing
+    ([], "satırlar")
+      | [(_, TyString _)] <- args -> Just (primStringLines "satırlar")
+      | otherwise -> Nothing
+    ([], "kelimeler")
+      | [(_, TyString _)] <- args -> Just (primStringWords "kelimeler")
+      | otherwise -> Nothing
+    (["büyük"], "hal")
+      | [(_, TyString _)] <- args -> Just (primStringUpper "büyük-hal")
+      | otherwise -> Nothing
+    (["küçük"], "hal")
+      | [(_, TyString _)] <- args -> Just (primStringLower "küçük-hal")
       | otherwise -> Nothing
     ([], "toplam")
       | [(_, TyFloat _), (_, TyFloat _)] <- args ->
@@ -545,6 +629,44 @@ primStringDrop fname args =
       pure (StrLit ann (T.drop (fromIntegral (max 0 n)) s))
     _ -> pure (fallbackApp ([], fname) args)
 
+primStringLastChar :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringLastChar fname args =
+  case args of
+    [StrLit ann s]
+      | T.null s -> pure noneExp
+      | otherwise -> pure (someExp (CharLit ann (T.last s)))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringIsEmpty :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringIsEmpty fname args =
+  case args of
+    [StrLit _ s] -> pure (boolExp (T.null s))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringLines :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringLines fname args =
+  case args of
+    [StrLit ann s] -> pure (textListExp ann (T.lines s))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringWords :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringWords fname args =
+  case args of
+    [StrLit ann s] -> pure (textListExp ann (T.words s))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primStringUpper :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringUpper _fname args =
+  case args of
+    [StrLit ann s] -> pure (StrLit ann (T.toUpper s))
+    _ -> pure (fallbackApp (["büyük"], "hal") args)
+
+primStringLower :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primStringLower _fname args =
+  case args of
+    [StrLit ann s] -> pure (StrLit ann (T.toLower s))
+    _ -> pure (fallbackApp (["küçük"], "hal") args)
+
 primStringToInt :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
 primStringToInt fname args =
   case args of
@@ -687,6 +809,42 @@ primCharLower fname args =
     [CharLit ann c] -> pure (CharLit ann (toLower c))
     _ -> pure (fallbackApp ([], fname) args)
 
+primCharIsAlpha :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharIsAlpha fname args =
+  case args of
+    [CharLit _ c] -> pure (boolExp (isAlpha c))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primCharIsDigit :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharIsDigit fname args =
+  case args of
+    [CharLit _ c] -> pure (boolExp (isDigit c))
+    _ -> pure (fallbackApp ([], fname) args)
+
+primCharIsAlphaNum :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharIsAlphaNum _fname args =
+  case args of
+    [CharLit _ c] -> pure (boolExp (isAlphaNum c))
+    _ -> pure (fallbackApp (["harf"], "rakamlık") args)
+
+primCharIsUpper :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharIsUpper _fname args =
+  case args of
+    [CharLit _ c] -> pure (boolExp (isUpper c))
+    _ -> pure (fallbackApp (["büyük"], "harflik") args)
+
+primCharIsLower :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharIsLower _fname args =
+  case args of
+    [CharLit _ c] -> pure (boolExp (isLower c))
+    _ -> pure (fallbackApp (["küçük"], "harflik") args)
+
+primCharIsSpace :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
+primCharIsSpace fname args =
+  case args of
+    [CharLit _ c] -> pure (boolExp (isSpace c))
+    _ -> pure (fallbackApp ([], fname) args)
+
 primIntToString :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
 primIntToString fname args =
   case args of
@@ -736,6 +894,20 @@ parentDirs :: FilePath -> [FilePath]
 parentDirs dir =
   let parent = takeDirectory dir
   in if parent == dir then [dir] else dir : parentDirs parent
+
+textListExp :: Ann -> [Text] -> Exp Ann
+textListExp ann =
+  foldr (\txt acc -> listConsExp (StrLit ann txt) acc) listNilExp
+
+listNilExp :: Exp Ann
+listNilExp = Var (mkAnn Nom NoSpan) ([], "boş") [(([], "boş"), Nom)]
+
+listConsExp :: Exp Ann -> Exp Ann -> Exp Ann
+listConsExp x xs =
+  App
+    (mkAnn Nom NoSpan)
+    (Var (mkAnn P3s NoSpan) ([], "eki") [(([], "eki"), P3s)])
+    [x, xs]
 
 unitExp :: Exp Ann
 unitExp = Var (mkAnn Nom NoSpan) ([], "bitimlik") [(([], "bitimlik"), Nom)]
@@ -868,6 +1040,30 @@ primitiveJsPrelude = T.unlines
   , "var __kip_prim_öğe = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();"
   , "var __kip_prim_alış = (s, n) => s.slice(0, Math.max(0, n));"
   , "var __kip_prim_bırakış = (s, n) => s.slice(Math.max(0, n));"
+  , "var __kip_prim_son = (s) => s.length > 0 ? __kip_some(s[s.length - 1]) : __kip_none();"
+  , "var __kip_prim_bosluk = (s) => s.length === 0 ? __kip_true() : __kip_false();"
+  , "var __kip_prim_satirlar = (s) => {"
+  , "  var parts = s.length === 0 ? [] : s.split('\\n');"
+  , "  if (parts.length > 0 && parts[parts.length - 1] === '') {"
+  , "    parts.pop();"
+  , "  }"
+  , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+  , "  for (var i = parts.length - 1; i >= 0; i -= 1) {"
+  , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
+  , "  }"
+  , "  return out;"
+  , "};"
+  , "var __kip_prim_kelimeler = (s) => {"
+  , "  var trimmed = s.trim();"
+  , "  var parts = trimmed.length === 0 ? [] : trimmed.split(/\\s+/u);"
+  , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+  , "  for (var i = parts.length - 1; i >= 0; i -= 1) {"
+  , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
+  , "  }"
+  , "  return out;"
+  , "};"
+  , "var __kip_prim_dizge_büyük_hal = (s) => s.toUpperCase();"
+  , "var __kip_prim_dizge_küçük_hal = (s) => s.toLowerCase();"
   , "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));"
   , "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));"
   , ""
@@ -950,6 +1146,12 @@ primitiveJsPrelude = T.unlines
   , "var __kip_prim_dizge_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();"
   , "var __kip_prim_karakter_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();"
   , "var __kip_prim_karakter_dizge_hal = (c) => c;"
+  , "var __kip_prim_karakter_harflik = (c) => /^\\p{L}$/u.test(c) ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_rakamlık = (c) => /^\\p{Nd}$/u.test(c) ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_harf_rakamlık = (c) => /^[\\p{L}\\p{Nd}]$/u.test(c) ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_buyuk_harflik = (c) => /^\\p{Lu}$/u.test(c) ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_kucuk_harflik = (c) => /^\\p{Ll}$/u.test(c) ? __kip_true() : __kip_false();"
+  , "var __kip_prim_karakter_boslukluk = (c) => /^\\s$/u.test(c) ? __kip_true() : __kip_false();"
   , "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();"
   , "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();"
   , "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();"
@@ -993,6 +1195,34 @@ primitiveJsPrunableSpecs =
   , ("__kip_prim_öğe", ["varlık", "yokluk"], "var __kip_prim_öğe = (s, n) => n >= 0 && n < s.length ? __kip_some(s[n]) : __kip_none();\n")
   , ("__kip_prim_alış", [], "var __kip_prim_alış = (s, n) => s.slice(0, Math.max(0, n));\n")
   , ("__kip_prim_bırakış", [], "var __kip_prim_bırakış = (s, n) => s.slice(Math.max(0, n));\n")
+  , ("__kip_prim_son", ["varlık", "yokluk"], "var __kip_prim_son = (s) => s.length > 0 ? __kip_some(s[s.length - 1]) : __kip_none();\n")
+  , ("__kip_prim_bosluk", ["doğru", "yanlış"], "var __kip_prim_bosluk = (s) => s.length === 0 ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_satirlar", [], T.unlines
+      [ "var __kip_prim_satirlar = (s) => {"
+      , "  var parts = s.length === 0 ? [] : s.split('\\n');"
+      , "  if (parts.length > 0 && parts[parts.length - 1] === '') {"
+      , "    parts.pop();"
+      , "  }"
+      , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+      , "  for (var i = parts.length - 1; i >= 0; i -= 1) {"
+      , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
+      , "  }"
+      , "  return out;"
+      , "};"
+      ])
+  , ("__kip_prim_kelimeler", [], T.unlines
+      [ "var __kip_prim_kelimeler = (s) => {"
+      , "  var trimmed = s.trim();"
+      , "  var parts = trimmed.length === 0 ? [] : trimmed.split(/\\s+/u);"
+      , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+      , "  for (var i = parts.length - 1; i >= 0; i -= 1) {"
+      , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
+      , "  }"
+      , "  return out;"
+      , "};"
+      ])
+  , ("__kip_prim_dizge_büyük_hal", [], "var __kip_prim_dizge_büyük_hal = (s) => s.toUpperCase();\n")
+  , ("__kip_prim_dizge_küçük_hal", [], "var __kip_prim_dizge_küçük_hal = (s) => s.toLowerCase();\n")
   , ("__kip_prim_toplam", [], "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));\n")
   , ("__kip_prim_fark", [], "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));\n")
   , ("__kip_prim_oku_stdin", [], T.unlines
@@ -1085,6 +1315,12 @@ primitiveJsPrunableSpecs =
   , ("__kip_prim_dizge_eşitlik", ["doğru", "yanlış"], "var __kip_prim_dizge_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();\n")
   , ("__kip_prim_karakter_eşitlik", ["doğru", "yanlış"], "var __kip_prim_karakter_eşitlik = (a, b) => a === b ? __kip_true() : __kip_false();\n")
   , ("__kip_prim_karakter_dizge_hal", [], "var __kip_prim_karakter_dizge_hal = (c) => c;\n")
+  , ("__kip_prim_karakter_harflik", ["doğru", "yanlış"], "var __kip_prim_karakter_harflik = (c) => /^\\p{L}$/u.test(c) ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_rakamlık", ["doğru", "yanlış"], "var __kip_prim_karakter_rakamlık = (c) => /^\\p{Nd}$/u.test(c) ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_harf_rakamlık", ["doğru", "yanlış"], "var __kip_prim_karakter_harf_rakamlık = (c) => /^[\\p{L}\\p{Nd}]$/u.test(c) ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_buyuk_harflik", ["doğru", "yanlış"], "var __kip_prim_karakter_buyuk_harflik = (c) => /^\\p{Lu}$/u.test(c) ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_kucuk_harflik", ["doğru", "yanlış"], "var __kip_prim_karakter_kucuk_harflik = (c) => /^\\p{Ll}$/u.test(c) ? __kip_true() : __kip_false();\n")
+  , ("__kip_prim_karakter_boslukluk", ["doğru", "yanlış"], "var __kip_prim_karakter_boslukluk = (c) => /^\\s$/u.test(c) ? __kip_true() : __kip_false();\n")
   , ("eşitlik", ["doğru", "yanlış"], "var eşitlik = (a, b) => __kip_num(a) === __kip_num(b) ? __kip_true() : __kip_false();\n")
   , ("küçüklük", ["doğru", "yanlış"], "var küçüklük = (a, b) => __kip_num(a) < __kip_num(b) ? __kip_true() : __kip_false();\n")
   , ("küçük_eşitlik", ["doğru", "yanlış"], "var küçük_eşitlik = (a, b) => __kip_num(a) <= __kip_num(b) ? __kip_true() : __kip_false();\n")

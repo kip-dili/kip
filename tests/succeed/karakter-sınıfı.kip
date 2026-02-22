@@ -1,0 +1,49 @@
+('a'nın harfliği) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('7'nin rakamlığı) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('7'nin harf-rakamlığı) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('#'nin harf-rakamlığı) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('Ç'nin harfliği) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('A'nın büyük-harfliği) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('a'nın küçük-harfliği) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+(' 'in boşlukluğu) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('\n'nin boşlukluğu) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.
+
+('a'nın boşlukluğu) doğruysa,
+  "evet"'i yaz;
+değilse,
+  "hayır"'ı yaz.

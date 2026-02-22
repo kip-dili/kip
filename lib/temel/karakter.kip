@@ -24,6 +24,30 @@ ASCII tablosundaki sayılar için ASCII karakterini döndürür.
 (bu karakterin) (küçük karakteri),
   yerleşiktir.
 
+(* Karakter bir harfse doğru döner. *)
+(bu karakterin) (harflik doğruluğu),
+  yerleşiktir.
+
+(* Karakter bir rakamsa doğru döner. *)
+(bu karakterin) (rakamlık doğruluğu),
+  yerleşiktir.
+
+(* Karakter harf veya rakamsa doğru döner. *)
+(bu karakterin) (harf-rakamlık doğruluğu),
+  yerleşiktir.
+
+(* Karakter büyük harfse doğru döner. *)
+(bu karakterin) (büyük-harflik doğruluğu),
+  yerleşiktir.
+
+(* Karakter küçük harfse doğru döner. *)
+(bu karakterin) (küçük-harflik doğruluğu),
+  yerleşiktir.
+
+(* Karakter boşluk karakteriyse doğru döner. *)
+(bu karakterin) (boşlukluk doğruluğu),
+  yerleşiktir.
+
 (*
 İki karakterin eşit olup olmadığını doğruluk olarak döndürür.
 Örnek kullanım: ('a'yla 'b'nin eşitliği)
