@@ -114,8 +114,14 @@ mkTest :: FilePath -- ^ Kip executable path.
 mkTest kipPath shouldSucceed path =
   testCase path $ do
     inputText <- readIfExists (replaceExtension path "in")
+    argsText <- if shouldSucceed then readIfExists (replaceExtension path "args") else return Nothing
+    let extraArgs = maybe [] parseArgsFile argsText
+        runArgs =
+          case argsText of
+            Just _ -> ["--exec", path] ++ extraArgs
+            Nothing -> ["--test", path]
     let stdinText = fromMaybe "" inputText
-    (exitCode, stdout, stderr) <- readProcessWithExitCode kipPath ["--test", path] stdinText
+    (exitCode, stdout, stderr) <- readProcessWithExitCode kipPath runArgs stdinText
     expectedOut <- readIfExists (replaceExtension path "out")
     expectedErr <- readIfExists (replaceExtension path "err")
     case (shouldSucceed, exitCode) of
@@ -173,8 +179,10 @@ mkJsTest :: FilePath -- ^ Kip executable path.
 mkJsTest kipPath nodePath path =
   testCase ("js:" ++ path) $ do
     inputText <- readIfExists (replaceExtension path "in")
+    argsText <- readIfExists (replaceExtension path "args")
+    let extraArgs = maybe [] parseArgsFile argsText
     let stdinText = fromMaybe "" inputText
-    (exitCode, kipOut, kipErr) <- readProcessWithExitCode kipPath ["--exec", path] stdinText
+    (exitCode, kipOut, kipErr) <- readProcessWithExitCode kipPath (["--exec", path] ++ extraArgs) stdinText
     case exitCode of
       ExitFailure _ ->
         assertFailure (path ++ " failed in kip --exec:\n" ++ kipOut ++ kipErr)
@@ -184,7 +192,7 @@ mkJsTest kipPath nodePath path =
           ExitFailure _ ->
             assertFailure (path ++ " failed in kip --codegen js:\n" ++ jsSrc ++ jsErr)
           ExitSuccess -> do
-            (nodeExit, nodeOut, nodeErr) <- runNodeOnJs nodePath jsSrc stdinText
+            (nodeExit, nodeOut, nodeErr) <- runNodeOnJs nodePath extraArgs jsSrc stdinText
             case nodeExit of
               ExitFailure _ ->
                 assertFailure (path ++ " failed under node:\n" ++ nodeOut ++ nodeErr)
@@ -229,10 +237,11 @@ mkJsModulesTest kipPath nodePath path =
 
 -- | Write JS source to a temp file and execute it with Node.js.
 runNodeOnJs :: FilePath -- ^ Node.js executable path.
+            -> [String] -- ^ Extra argv passed to the generated JS program.
             -> String -- ^ JavaScript source.
             -> String -- ^ stdin payload.
             -> IO (ExitCode, String, String) -- ^ Exit code, stdout, stderr.
-runNodeOnJs nodePath jsSrc stdinText = do
+runNodeOnJs nodePath extraArgs jsSrc stdinText = do
   tempDir <- getTemporaryDirectory
   bracket
     (do
@@ -242,7 +251,7 @@ runNodeOnJs nodePath jsSrc stdinText = do
     removeFile
     (\path -> do
       writeFile path jsSrc
-      readProcessWithExitCode nodePath [path] stdinText)
+      readProcessWithExitCode nodePath (path : extraArgs) stdinText)
 
 
 -- | Render a diff-friendly output mismatch message.
@@ -329,3 +338,8 @@ stripCR s =
 trimRight :: String -- ^ Input string.
           -> String -- ^ Trimmed string.
 trimRight = reverse . dropWhile (`elem` ("\r\n \t" :: String)) . reverse
+
+-- | Parse whitespace-separated CLI args from a fixture file.
+parseArgsFile :: String -- ^ Raw args file text.
+              -> [String] -- ^ Parsed arguments.
+parseArgsFile = words

@@ -199,6 +199,7 @@ fromCachedEvalState cache fsm CachedEvalState{..} =
     , evalCtors = Map.fromList ectors
     , evalTyCons = Map.fromList etyCons
     , evalCurrentFile = Nothing
+    , evalArgs = []
     , evalRender = renderExpValue cache fsm
     , evalRandState = Nothing
     }

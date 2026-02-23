@@ -961,7 +961,9 @@ main = do
       (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
       (preludePst, preludeTC, preludeEval, preludeLoaded) <-
         runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
-      _ <- runReaderT (runFiles False False False preludePst preludeTC preludeEval moduleDirs preludeLoaded (optFiles opts)) renderCtx
+      let entryPath:progArgs = optFiles opts
+          execEval = preludeEval { Eval.evalArgs = map T.pack (entryPath : progArgs) }
+      _ <- runReaderT (runFiles False False False preludePst preludeTC execEval moduleDirs preludeLoaded [entryPath]) renderCtx
       exitSuccess
     ModeCodegen target -> do
       when (null (optFiles opts)) $

@@ -306,6 +306,7 @@ lookupPrimJsName name argTys =
     (([], "boşlukluk"), [TyChar {}]) -> "__kip_prim_karakter_boslukluk"
     (([], "oku"), []) -> "__kip_prim_oku_stdin"
     (([], "oku"), [_]) -> "__kip_prim_oku_dosya"
+    ((["argüman"], "oku"), []) -> "__kip_prim_arguman_oku"
     (([], "yaz"), [_, _]) -> "__kip_prim_yaz_dosya"
     _ -> toJsIdent name
 
@@ -612,7 +613,7 @@ runtimeExportNames =
   , "__kip_prim_fark", "__kip_prim_dizge_eşitlik", "__kip_prim_karakter_eşitlik", "__kip_prim_karakter_dizge_hal"
   , "__kip_prim_karakter_harflik", "__kip_prim_karakter_rakamlık", "__kip_prim_karakter_harf_rakamlık"
   , "__kip_prim_karakter_buyuk_harflik", "__kip_prim_karakter_kucuk_harflik", "__kip_prim_karakter_boslukluk"
-  , "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_yaz_dosya"
+  , "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_arguman_oku", "__kip_prim_yaz_dosya"
   , "doğru", "yanlış", "varlık", "yokluk", "bitimlik", "yaz", "çarpım", "fark"
   , "bölüm", "kalan", "karekök", "radyan", "derece", "pi_sayısı", "taban", "tavan"
   , "tam_sayı_ondalık_sayı_hali", "sayı_çek", "eşitlik", "küçüklük", "küçük_eşitlik"
