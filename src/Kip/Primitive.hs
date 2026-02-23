@@ -65,6 +65,7 @@ data PrimitiveEvalOps m = PrimitiveEvalOps
   , peReadLine :: m Text
   , peReadFirstPath :: [FilePath] -> m (Maybe Text)
   , peGetCurrentFile :: m (Maybe FilePath)
+  , peGetArgs :: m [Text]
   , peWriteFileText :: FilePath -> Text -> m Bool
   , peGetRandState :: m (Maybe Word32)
   , peSetRandState :: Word32 -> m ()
@@ -162,6 +163,10 @@ allPrimitives =
       [ anyTypes 0  -- stdin
       , withTypes 1 (\case [t] -> isStringTy t; _ -> False)  -- file read
       ]
+      ["etki.kip"]
+
+  , PrimitiveDef (["argüman"], "oku")
+      [ anyTypes 0 ]
       ["etki.kip"]
 
   , PrimitiveDef ([], "uzunluk")
@@ -380,6 +385,9 @@ primitiveEvalImpl ops mPath ident args = do
       | [] <- args -> Just (primRead ops)
       | [(_, TyString _)] <- args -> Just (primReadFile ops)
       | otherwise -> Nothing
+    (["argüman"], "oku")
+      | [] <- args -> Just (primReadArgs ops)
+      | otherwise -> Nothing
     ([], "uzunluk") -> Just (primStringLength "uzunluk")
     ([], "birleşim") -> Just (primStringConcat "birleşim")
     (["tam", "sayı"], "hal")
@@ -579,6 +587,12 @@ primReadFile ops args =
         Nothing -> pure noneExp
         Just text -> pure (someExp (StrLit (mkAnn Nom NoSpan) text))
     _ -> pure (fallbackApp ([], "oku") args)
+
+primReadArgs :: Monad m => PrimitiveEvalOps m -> [Exp Ann] -> m (Exp Ann)
+primReadArgs ops args =
+  case args of
+    [] -> textListExp (mkAnn Nom NoSpan) <$> peGetArgs ops
+    _ -> pure (fallbackApp (["argüman"], "oku") args)
 
 primWriteFile :: Monad m => PrimitiveEvalOps m -> [Exp Ann] -> m (Exp Ann)
 primWriteFile ops args =
@@ -897,7 +911,7 @@ parentDirs dir =
 
 textListExp :: Ann -> [Text] -> Exp Ann
 textListExp ann =
-  foldr (\txt acc -> listConsExp (StrLit ann txt) acc) listNilExp
+  foldr (listConsExp . StrLit ann) listNilExp
 
 listNilExp :: Exp Ann
 listNilExp = Var (mkAnn Nom NoSpan) ([], "boş") [(([], "boş"), Nom)]
@@ -1094,6 +1108,14 @@ primitiveJsPrelude = T.unlines
   , "    return __kip_none();"
   , "  }"
   , "};"
+  , "var __kip_prim_arguman_oku = () => {"
+  , "  var parts = (typeof process !== 'undefined' && process.argv && process.argv.length > 1) ? process.argv.slice(1) : [];"
+  , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+  , "  for (var i = parts.length - 1; i >= 0; i -= 1) {"
+  , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
+  , "  }"
+  , "  return out;"
+  , "};"
   , "var __kip_prim_yaz_dosya = (path, content) => {"
   , "  if (!__kip_require) return __kip_false();"
   , "  __kip_fs = __kip_fs || __kip_require('fs');"
@@ -1253,6 +1275,16 @@ primitiveJsPrunableSpecs =
       , "  } catch (e) {"
       , "    return __kip_none();"
       , "  }"
+      , "};"
+      ])
+  , ("__kip_prim_arguman_oku", [], T.unlines
+      [ "var __kip_prim_arguman_oku = () => {"
+      , "  var parts = (typeof process !== 'undefined' && process.argv && process.argv.length > 1) ? process.argv.slice(1) : [];"
+      , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+      , "  for (var i = parts.length - 1; i >= 0; i -= 1) {"
+      , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
+      , "  }"
+      , "  return out;"
       , "};"
       ])
   , ("__kip_prim_yaz_dosya", ["doğru", "yanlış"], T.unlines

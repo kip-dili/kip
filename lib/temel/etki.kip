@@ -50,6 +50,14 @@ Etkili bağlamda genellikle "okuyup" yapısıyla kullanılır.
   yerleşiktir.
 
 (*
+Çalışan programın komut satırı argümanlarını okur.
+Liste sırası çağrı sırasını izler; ilk öğe çalıştırılan `.kip` dosya yoludur.
+Örnek kullanım: argüman-okumak
+*)
+(argüman-okumak dizge listesi),
+  yerleşiktir.
+
+(*
 Belirtilen dosya yolundan metin okumayı dener.
 - Okuma başarılıysa dizge varlığı döner.
 - Dosya yoksa veya okunamıyorsa yokluk döner.

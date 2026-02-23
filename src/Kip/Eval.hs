@@ -53,13 +53,14 @@ data EvalState =
     , evalCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
     , evalTyCons :: !(Map.Map Identifier Int) -- ^ Type constructor arities.
     , evalCurrentFile :: Maybe FilePath -- ^ Current file path for relative I/O.
+    , evalArgs :: [Text] -- ^ CLI arguments visible to the running program.
     , evalRender :: EvalState -> Exp Ann -> IO String -- ^ Render function for values.
     , evalRandState :: Maybe Word32 -- ^ Optional deterministic random state.
     }
 
 -- | Empty evaluator state with a simple pretty-printer.
 emptyEvalState :: EvalState -- ^ Default evaluator state.
-emptyEvalState = MkEvalState Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Nothing (\_ e -> return (prettyExp e)) Nothing
+emptyEvalState = MkEvalState Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Nothing [] (\_ e -> return (prettyExp e)) Nothing
 
 -- | Evaluation errors (currently minimal).
 data EvalError =
@@ -1440,6 +1441,7 @@ mkPrimitiveEvalOps =
     , Prim.peReadLine = liftIO TIO.getLine
     , Prim.peReadFirstPath = liftIO . readFirstPath
     , Prim.peGetCurrentFile = gets evalCurrentFile
+    , Prim.peGetArgs = gets evalArgs
     , Prim.peWriteFileText = \path content -> do
         st <- get
         let resolved = resolvePath st (T.pack path)
