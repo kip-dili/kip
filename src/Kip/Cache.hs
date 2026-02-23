@@ -16,6 +16,7 @@ import System.FilePath
 import System.Directory
 import System.Environment (getExecutablePath)
 import Control.Exception (try, SomeException)
+import Control.Monad (when, foldM)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -31,7 +32,7 @@ import qualified Data.HashTable.IO as HT
 import Kip.AST
 import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
 import Kip.TypeCheck (TCState(..))
-import Kip.Eval (EvalState(..))
+import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import Kip.Render (RenderCache, renderExpValue)
 import Paths_kip (version)
@@ -42,11 +43,45 @@ import Paths_kip (version)
 hashCache :: IORef (Map.Map FilePath (Integer, ByteString))
 hashCache = unsafePerformIO (newIORef Map.empty)
 
+-- | Memoized canonical-path cache for the current process.
+--
+-- ==== Performance note (Optimization: canonical path interning)
+-- Many startup code paths repeatedly canonicalize the same module and cache
+-- paths. Interning canonicalization results avoids redundant filesystem calls.
+{-# NOINLINE canonicalPathCache #-}
+canonicalPathCache :: IORef (Map.Map FilePath FilePath)
+canonicalPathCache = unsafePerformIO (newIORef Map.empty)
+
 -- | Memoized compiler hash for the current process.
 -- The executable hash is stable per process, so compute once.
 {-# NOINLINE compilerHashCache #-}
 compilerHashCache :: IORef (Maybe ByteString)
 compilerHashCache = unsafePerformIO (newIORef Nothing)
+
+-- | Memoized dependency validation results for the current process.
+--
+-- ==== Performance note (Optimization: cache validation short-circuit)
+-- Multiple module caches often depend on the same library files. During a
+-- warm startup we may validate the same @(path,size,mtime,hash)@ tuple many
+-- times. Caching positive validations avoids repeated filesystem metadata reads
+-- and hash checks across those modules.
+{-# NOINLINE verifyPathCache #-}
+verifyPathCache :: IORef (Map.Map (FilePath, Integer, Integer, ByteString) Bool)
+verifyPathCache = unsafePerformIO (newIORef Map.empty)
+
+-- | Reverse dependency graph (dep source file -> direct dependent source files).
+--
+-- ==== Performance note (Optimization: dependency invalidation propagation)
+-- When one source changes, we propagate a dirty marker through this graph so
+-- subsequent cache validations can fail fast without re-checking all metadata.
+{-# NOINLINE reverseDepGraphCache #-}
+reverseDepGraphCache :: IORef (Map.Map FilePath (Set.Set FilePath))
+reverseDepGraphCache = unsafePerformIO (newIORef Map.empty)
+
+-- | Dirty source files known to invalidate dependent module caches.
+{-# NOINLINE dirtySourcesCache #-}
+dirtySourcesCache :: IORef (Set.Set FilePath)
+dirtySourcesCache = unsafePerformIO (newIORef Set.empty)
 
 -- | Metadata stored alongside cached modules for validation.
 data CacheMetadata = CacheMetadata
@@ -70,6 +105,21 @@ data CachedModule = CachedModule
   } deriving (Generic)
 
 instance Binary CachedModule
+
+-- | Cached prelude snapshot payload used for cold-start acceleration.
+--
+-- The snapshot stores fully merged parser/typechecker/evaluator states after
+-- loading @lib/giriş.kip@ and transitive dependencies.
+data CachedPrelude = CachedPrelude
+  { preludeCompilerHash :: !ByteString
+  , preludeFiles :: ![(FilePath, ByteString, Integer, Integer)] -- ^ (path, hash, size, mtime)
+  , preludeLoaded :: ![FilePath]
+  , preludeParser :: !CachedParserState
+  , preludeTC :: !CachedTCState
+  , preludeEval :: !CachedEvalState
+  } deriving (Generic)
+
+instance Binary CachedPrelude
 
 -- | Serialized parser state subset needed to restore a module.
 --
@@ -214,23 +264,48 @@ cacheFilePath ::
   -> FilePath -- ^ Corresponding `.iz` cache path.
 cacheFilePath path = replaceExtension path ".iz"
 
+-- | Default on-disk location for the prelude snapshot.
+--
+-- We keep this in @~/.kip/cache@ so all executables (`kip`, `kip-lsp`,
+-- `kip-playground`) can reuse the same startup artifact.
+preludeSnapshotPath :: IO FilePath
+preludeSnapshotPath = do
+  home <- getHomeDirectory
+  let dir = home </> ".kip" </> "cache"
+  createDirectoryIfMissing True dir
+  return (dir </> "prelude.izp")
+
+-- | Canonicalize a path with process-local memoization.
+canonicalizePathCached ::
+  FilePath -- ^ Path to canonicalize.
+  -> IO FilePath -- ^ Canonical absolute path.
+canonicalizePathCached path = do
+  cached <- readIORef canonicalPathCache
+  case Map.lookup path cached of
+    Just absPath -> return absPath
+    Nothing -> do
+      absPath <- canonicalizePath path
+      modifyIORef' canonicalPathCache (Map.insert path absPath)
+      return absPath
+
 -- | Load a cached module from disk if it is valid.
 loadCachedModule ::
   FilePath -- ^ Cache file path.
   -> IO (Maybe CachedModule) -- ^ Cached module when valid.
 loadCachedModule path = do
-  exists <- doesFileExist path
+  absCachePath <- canonicalizePathCached path
+  exists <- doesFileExist absCachePath
   if not exists
     then return Nothing
     else do
-      res <- try (BS.readFile path)
+      res <- try (BS.readFile absCachePath)
       case res of
         Left (_ :: SomeException) -> return Nothing
         Right bytes ->
           case decodeOrFail (fromStrict bytes) of
             Left _ -> return Nothing
             Right (_, _, m) -> do
-              valid <- isCacheValid path m
+              valid <- isCacheValid absCachePath m
               if valid
                 then return (Just m)
                 else return Nothing
@@ -241,8 +316,19 @@ saveCachedModule ::
   -> CachedModule -- ^ Module payload to write.
   -> IO () -- ^ Writes the cache file.
 saveCachedModule path m = do
+  absPath <- canonicalizePathCached path
   let bytes = toStrict (encode m)
-  BS.writeFile path bytes
+      newSize = fromIntegral (BS.length bytes)
+  mCurrentMeta <- getFileMeta absPath
+  shouldWrite <-
+    case mCurrentMeta of
+      Just (oldSize, _) | oldSize == newSize -> do
+        oldRes <- try (BS.readFile absPath)
+        case oldRes of
+          Left (_ :: SomeException) -> return True
+          Right oldBytes -> return (oldBytes /= bytes)
+      _ -> return True
+  when shouldWrite (BS.writeFile absPath bytes)
 
 -- | Check whether a cached module is valid for the current compiler and sources.
 isCacheValid ::
@@ -250,25 +336,34 @@ isCacheValid ::
   -> CachedModule -- ^ Cached module to validate.
   -> IO Bool -- ^ True when metadata matches current sources/compiler.
 isCacheValid path m = do
+  absCachePath <- canonicalizePathCached path
   let meta = metadata m
+      sourcePathRaw = replaceExtension absCachePath ".kip"
   mCompilerHash <- getCompilerHash
   case mCompilerHash of
     Nothing -> return False
     Just currentCompilerHash ->
       if compilerHash meta /= currentCompilerHash
         then return False
-        else validateSources meta
+        else do
+          sourcePath <- canonicalizePathCached sourcePathRaw
+          registerDependencyEdges sourcePath (map (\(p, _, _, _) -> p) (dependencies meta))
+          dirty <- readIORef dirtySourcesCache
+          if Set.member sourcePath dirty
+            then return False
+            else validateSources sourcePath meta
   where
     -- | Validate the source file and dependency hashes.
-    validateSources :: CacheMetadata -- ^ Cached metadata.
+    validateSources :: FilePath -- ^ Canonical source path.
+                    -> CacheMetadata -- ^ Cached metadata.
                     -> IO Bool -- ^ True when sources match.
-    validateSources meta = do
-      let sourcePath = replaceExtension path ".kip"
+    validateSources sourcePath meta = do
       sourceOk <- verifyPath sourcePath (sourceHash meta) (sourceSize meta) (sourceMTime meta)
       if not sourceOk
-        then return False
+        then markDirtySource sourcePath >> return False
         else do
-          depsValid <- mapM (\(depPath, depHash, depSize, depMTime) ->
+          depsValid <- mapM (\(depPathRaw, depHash, depSize, depMTime) -> do
+            depPath <- canonicalizePathCached depPathRaw
             verifyPath depPath depHash depSize depMTime) (dependencies meta)
           return (and depsValid)
 
@@ -280,13 +375,189 @@ isCacheValid path m = do
                -> Integer -- ^ Expected mtime.
                -> IO Bool -- ^ True when dependency matches.
     verifyPath depPath depHash depSize depMTime = do
-      mMeta <- getFileMeta depPath
+      dirty <- readIORef dirtySourcesCache
+      if Set.member depPath dirty
+        then return False
+        else do
+          let cacheKey = (depPath, depSize, depMTime, depHash)
+          validationCache <- readIORef verifyPathCache
+          case Map.lookup cacheKey validationCache of
+            Just ok -> return ok
+            Nothing -> do
+              mMeta <- getFileMeta depPath
+              ok <-
+                case mMeta of
+                  Just (size, mtime)
+                    | size == depSize && mtime == depMTime -> return True
+                  _ -> do
+                    mDepHash <- hashFile depPath
+                    return (mDepHash == Just depHash)
+              if ok
+                then modifyIORef' verifyPathCache (Map.insert cacheKey True)
+                else markDirtySource depPath
+              return ok
+
+-- | Register reverse edges for one source file to its direct dependencies.
+registerDependencyEdges :: FilePath -> [FilePath] -> IO ()
+registerDependencyEdges source deps = do
+  deps' <- mapM canonicalizePathCached deps
+  modifyIORef'
+    reverseDepGraphCache
+    (\g ->
+      foldl
+        (\acc dep -> Map.insertWith Set.union dep (Set.singleton source) acc)
+        g
+        deps')
+
+-- | Mark one source file dirty and propagate to transitive dependents.
+markDirtySource :: FilePath -> IO ()
+markDirtySource sourceRaw = do
+  source <- canonicalizePathCached sourceRaw
+  graph <- readIORef reverseDepGraphCache
+  dirty <- readIORef dirtySourcesCache
+  let go [] seen = seen
+      go (x:xs) seen
+        | Set.member x seen = go xs seen
+        | otherwise =
+            let parents = Set.toList (Map.findWithDefault Set.empty x graph)
+            in go (parents ++ xs) (Set.insert x seen)
+      newlyDirty = go [source] Set.empty
+  writeIORef dirtySourcesCache (Set.union dirty newlyDirty)
+  
+-- | Load a prelude snapshot if present and valid.
+loadCachedPrelude ::
+  FilePath -- ^ Snapshot file path.
+  -> RenderCache -- ^ Render cache for evaluator restore.
+  -> FSM -- ^ Morphology FSM handle.
+  -> MorphCache -- ^ Shared parser ups cache.
+  -> MorphCache -- ^ Shared parser downs cache.
+  -> IO (Maybe (ParserState, TCState, EvalState, Set.Set FilePath))
+loadCachedPrelude snapshotPath cache fsm upsCache downsCache = do
+  absSnapshotPath <- canonicalizePathCached snapshotPath
+  exists <- doesFileExist absSnapshotPath
+  if not exists
+    then return Nothing
+    else do
+      res <- try (BS.readFile absSnapshotPath)
+      case res of
+        Left (_ :: SomeException) -> return Nothing
+        Right bytes ->
+          case decodeOrFail (fromStrict bytes) of
+            Left _ -> return Nothing
+            Right (_, _, preludeSnap) -> do
+              valid <- isCachedPreludeValid preludeSnap
+              if not valid
+                then return Nothing
+                else do
+                  pst <- fromCachedParserState fsm Nothing upsCache downsCache (preludeParser preludeSnap)
+                  let tcSt = fromCachedTCState (preludeTC preludeSnap)
+                      evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
+                  evalSt <- rebuildPreludePrimFuncs (preludeLoaded preludeSnap) evalBase
+                  loadedSet <- Set.fromList <$> mapM canonicalizePathCached (preludeLoaded preludeSnap)
+                  return (Just (pst, tcSt, evalSt, loadedSet))
+
+-- | Persist a fully merged prelude snapshot.
+saveCachedPrelude ::
+  FilePath -- ^ Snapshot file path.
+  -> ParserState -- ^ Parser state after prelude load.
+  -> TCState -- ^ Typechecker state after prelude load.
+  -> EvalState -- ^ Evaluator state after prelude load.
+  -> Set.Set FilePath -- ^ Loaded source files in prelude graph.
+  -> IO ()
+saveCachedPrelude snapshotPath pst tcSt evalSt loaded = do
+  mCompilerHash <- getCompilerHash
+  case mCompilerHash of
+    Nothing -> return ()
+    Just compHash -> do
+      canonicalLoaded <- mapM canonicalizePathCached (Set.toList loaded)
+      files <- mapM fileFingerprint canonicalLoaded
+      case sequence files of
+        Nothing -> return ()
+        Just fps -> do
+          cachedParser <- toCachedParserState pst
+          let snap =
+                CachedPrelude
+                  { preludeCompilerHash = compHash
+                  , preludeFiles = fps
+                  , preludeLoaded = canonicalLoaded
+                  , preludeParser = cachedParser
+                  , preludeTC = toCachedTCState tcSt
+                  , preludeEval = toCachedEvalState evalSt
+                  }
+          absSnapshotPath <- canonicalizePathCached snapshotPath
+          let bytes = toStrict (encode snap)
+          -- Same write dedup shortcut as module caches.
+          mCurrentMeta <- getFileMeta absSnapshotPath
+          shouldWrite <-
+            case mCurrentMeta of
+              Just (oldSize, _) | oldSize == fromIntegral (BS.length bytes) -> do
+                oldRes <- try (BS.readFile absSnapshotPath)
+                case oldRes of
+                  Left (_ :: SomeException) -> return True
+                  Right oldBytes -> return (oldBytes /= bytes)
+              _ -> return True
+          when shouldWrite (BS.writeFile absSnapshotPath bytes)
+
+-- | Validate a prelude snapshot against current compiler and source metadata.
+isCachedPreludeValid :: CachedPrelude -> IO Bool
+isCachedPreludeValid snap = do
+  mCompilerHash <- getCompilerHash
+  case mCompilerHash of
+    Nothing -> return False
+    Just compHash
+      | compHash /= preludeCompilerHash snap -> return False
+      | otherwise -> do
+          allOk <- mapM verify (preludeFiles snap)
+          return (and allOk)
+  where
+    verify (pathRaw, expectedHash, expectedSize, expectedMTime) = do
+      path <- canonicalizePathCached pathRaw
+      mMeta <- getFileMeta path
       case mMeta of
         Just (size, mtime)
-          | size == depSize && mtime == depMTime -> return True
+          | size == expectedSize && mtime == expectedMTime -> return True
         _ -> do
-          mDepHash <- hashFile depPath
-          return (mDepHash == Just depHash)
+          mDigest <- hashFile path
+          return (mDigest == Just expectedHash)
+
+-- | Compute stable fingerprint tuple for one source file.
+fileFingerprint :: FilePath -> IO (Maybe (FilePath, ByteString, Integer, Integer))
+fileFingerprint pathRaw = do
+  path <- canonicalizePathCached pathRaw
+  mMeta <- getFileMeta path
+  case mMeta of
+    Nothing -> return Nothing
+    Just (size, mtime) -> do
+      mDigest <- hashFile path
+      case mDigest of
+        Nothing -> return Nothing
+        Just digest -> return (Just (path, digest, size, mtime))
+
+-- | Rebuild primitive-function bindings for a restored prelude evaluator.
+--
+-- `evalPrimFuncs` contains host callbacks and therefore cannot be serialized.
+-- We reconstruct those entries by replaying cached `PrimFunc` statements from
+-- each loaded module cache.
+rebuildPreludePrimFuncs :: [FilePath] -> EvalState -> IO EvalState
+rebuildPreludePrimFuncs loaded evalBase = do
+  canonicalLoaded <- mapM canonicalizePathCached loaded
+  foldM restoreOne evalBase canonicalLoaded
+  where
+    restoreOne st srcPath = do
+      let cachePath = cacheFilePath srcPath
+      mMod <- loadCachedModule cachePath
+      case mMod of
+        Nothing -> return st
+        Just cm -> do
+          let primStmts = [stmt | stmt@PrimFunc {} <- cachedTypedStmts cm]
+          foldM
+            (\acc stmt -> do
+              res <- runEvalM (evalStmtInFile (Just srcPath) stmt) acc
+              case res of
+                Left _ -> return acc
+                Right (_, st') -> return st')
+            st
+            primStmts
 
 -- | Get file size and modification time (microseconds since epoch).
 getFileMeta ::

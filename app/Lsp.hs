@@ -45,7 +45,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Row.Records ((.!))
-import System.Directory (canonicalizePath, doesFileExist, listDirectory, doesDirectoryExist)
+import System.Directory (doesFileExist, listDirectory, doesDirectoryExist)
 import System.Environment (getExecutablePath)
 import System.FilePath (takeDirectory, takeExtension, (</>), normalise, addTrailingPathSeparator)
 import System.IO (hPutStrLn, stderr)
@@ -1729,7 +1729,7 @@ loadCachedDoc st uri text =
   case uriToFilePath uri of
     Nothing -> return Nothing
     Just path -> do
-      absPath <- canonicalizePath path
+      absPath <- canonicalizePathCached path
       exists <- doesFileExist absPath
       if not exists
         then return Nothing
@@ -1797,7 +1797,7 @@ writeCacheForDoc st uri doc = do
   case uriToFilePath uri of
     Nothing -> return ()
     Just path -> do
-      absPath <- canonicalizePath path
+      absPath <- canonicalizePathCached path
       let cachePath = cacheFilePath absPath
       mCompilerHash <- getCompilerHash
       case mCompilerHash of
@@ -2813,7 +2813,7 @@ listKipFilesRecursive root = do
 -- | Load definition locations for a file, using cache when possible.
 loadDefsForFile :: LspState -> FilePath -> IO (Map.Map Identifier Location)
 loadDefsForFile st path = do
-  absPath <- canonicalizePath path
+  absPath <- canonicalizePathCached path
   let normalized = addTrailingPathSeparator (normalise absPath)
       moduleRoots = map (addTrailingPathSeparator . normalise) (lsModuleDirs st)
       isStdlib = any (`isPrefixOf` normalized) moduleRoots

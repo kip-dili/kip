@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -84,10 +85,11 @@ import Data.Maybe (maybeToList, mapMaybe, listToMaybe, isJust, isNothing, fromMa
 import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
 import Control.Applicative (optional)
-import Control.Monad (forM, forM_, guard, unless, when)
+import Control.Monad (foldM, forM, forM_, guard, unless, when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, get, put, modify, runStateT)
+import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
 import Data.Char (isLetter, isDigit, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -98,6 +100,7 @@ import Data.Hashable (Hashable)
 import qualified Data.HashTable.IO as HT
 import Data.Functor (($>))
 import Text.Read (readMaybe)
+import System.IO.Unsafe (unsafePerformIO)
 
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -219,6 +222,16 @@ TRmorph lookups are expensive, so we cache:
 -}
 type MorphCache = HT.BasicHashTable Text [Text]
 
+-- | Memoized possessive normalization roots for the current process.
+--
+-- ==== Performance note (Optimization: morphology normalization memo)
+-- @normalizePossessive@ is hit repeatedly while loading and resolving stdlib
+-- names. Keeping a process-local cache avoids repeating the same
+-- morphology-based normalization work for identical surface words.
+{-# NOINLINE normalizePossessiveCache #-}
+normalizePossessiveCache :: IORef (M.Map Text Text)
+normalizePossessiveCache = unsafePerformIO (newIORef M.empty)
+
 {- | Parser state tracking context and morphology caches.
 
 The parser state is updated as we parse to track:
@@ -258,14 +271,17 @@ The parser state is updated as we parse to track:
 -}
 data ParserState =
   MkParserState
+    -- ==== Performance note (Optimization: strict parser state spine)
+    -- These strict fields keep parser context/index updates in WHNF as the
+    -- state is threaded through large files and stdlib bootstrap.
     { fsm :: FSM
     , parserCtx :: !(Set.Set Identifier)
-    , parserCtors :: [Identifier]
-    , parserTyParams :: [Identifier]
-    , parserTyCons :: [(Identifier, Int)]
-    , parserTyMods :: [(Identifier, [Identifier])]
-    , parserPrimTypes :: [Identifier]
-    , parserFuncArities :: M.Map Identifier (Set.Set Int)
+    , parserCtors :: ![Identifier]
+    , parserTyParams :: ![Identifier]
+    , parserTyCons :: ![(Identifier, Int)]
+    , parserTyMods :: ![(Identifier, [Identifier])]
+    , parserPrimTypes :: ![Identifier]
+    , parserFuncArities :: !(M.Map Identifier (Set.Set Int))
     -- | Secondary index used by hot-path overload checks.
     --
     -- ==== Performance note (Optimization: parser overload lookup)
@@ -273,9 +289,9 @@ data ParserState =
     -- 'parserFuncArities' map to gather all entries with matching surface
     -- names. Keeping this precomputed name-based map makes those lookups
     -- O(log n) and allocation-light.
-    , parserFuncAritiesByName :: M.Map Text (Set.Set Int)
-    , parserDefSpans :: M.Map Identifier [Span]
-    , parserFilePath :: Maybe FilePath
+    , parserFuncAritiesByName :: !(M.Map Text (Set.Set Int))
+    , parserDefSpans :: !(M.Map Identifier [Span])
+    , parserFilePath :: !(Maybe FilePath)
     , parserUpsCache :: !MorphCache
     , parserDownsCache :: !MorphCache
     }
@@ -465,12 +481,14 @@ withPatVars patVars p = do
 
 -- | O(n log n) duplicate removal preserving first-occurrence order.
 ordNub :: Ord a => [a] -> [a]
-ordNub = go Set.empty
+ordNub xs = reverse uniquesRev
   where
-    go _ [] = []
-    go seen (x:xs)
-      | x `Set.member` seen = go seen xs
-      | otherwise = x : go (Set.insert x seen) xs
+    ( _, uniquesRev) = foldl' step (Set.empty, []) xs
+    step (!seen, acc) x
+      | x `Set.member` seen = (seen, acc)
+      | otherwise =
+          let !seen' = Set.insert x seen
+          in (seen', x : acc)
 
 -- | Append items to an already deduplicated list, keeping first occurrence.
 --
@@ -478,12 +496,16 @@ ordNub = go Set.empty
 -- This avoids re-running 'ordNub' over the entire left list when only a
 -- small right list is appended.
 ordNubAppend :: Ord a => [a] -> [a] -> [a]
-ordNubAppend xs = go (Set.fromList xs) xs
+ordNubAppend xs ys = xs ++ reverse extrasRev
   where
-    go _ acc [] = acc
-    go seen acc (z:zs)
-      | z `Set.member` seen = go seen acc zs
-      | otherwise = go (Set.insert z seen) (acc ++ [z]) zs
+    -- Build only the new unique suffix in reverse order, then append once.
+    -- This keeps complexity linear in both lists.
+    (_, extrasRev) = foldl' step (Set.fromList xs, []) ys
+    step (!seen, acc) z
+      | z `Set.member` seen = (seen, acc)
+      | otherwise =
+          let !seen' = Set.insert z seen
+          in (seen', z : acc)
 
 -- | Whitespace parser.
 ws :: KipParser () -- ^ No result.
@@ -926,28 +948,49 @@ estimateCandidates useCtx (ss, s) = do
           p3sMap = M.fromList (zip p3sStems p3sForms)
           hasCompoundP3sAcc =
             any (\analysis -> "<p3s>" `T.isInfixOf` analysis && "<acc>" `T.isInfixOf` analysis) morphAnalyses
-      candidatesRaw <- concat <$> forM (zip morphAnalyses stems) (\(y, stem) ->
-        case getPossibleCase y of
-          Nothing -> return []
-          Just (_, cas) -> do
-            let baseRoot = T.takeWhile (/= '<') y
-                direct = (ss, baseRoot)
-            -- Fast path: if the base root is already in context, avoid costly downs.
-            if direct `Set.member` ctx && not ("<lik>" `T.isInfixOf` y)
-              then return [(direct, cas)]
-              else do
-                let forms = fromMaybe [] (M.lookup stem stemMap)
-                    p3sFormsFor =
-                      if "<p3s>" `T.isInfixOf` y
-                        then fromMaybe [] (M.lookup (stem <> "<p3s>") p3sMap)
-                        else []
-                    includeBaseRoot = not ("<lik>" `T.isInfixOf` y)
-                    roots =
-                      case forms ++ p3sFormsFor of
-                        [] -> [baseRoot]
-                        xs -> if includeBaseRoot then xs ++ [baseRoot] else xs
-                return [((ss, root), cas) | root <- ordNub roots])
-      let candidatesDedup = ordNub candidatesRaw
+          addUnique :: Ord a => (Set.Set a, [a]) -> a -> (Set.Set a, [a])
+          addUnique (!seen, revAcc) x
+            | x `Set.member` seen = (seen, revAcc)
+            | otherwise =
+                let !seen' = Set.insert x seen
+                in (seen', x : revAcc)
+          addMany :: Ord a => (Set.Set a, [a]) -> [a] -> (Set.Set a, [a])
+          addMany = foldl' addUnique
+      -- Build and deduplicate candidates incrementally via a Set-backed
+      -- builder, avoiding repeated left-list appends.
+      (_, candidatesRev) <- foldM
+        (\candState (y, stem) ->
+          case getPossibleCase y of
+            Nothing -> return candState
+            Just (_, cas) -> do
+              let baseRoot = T.takeWhile (/= '<') y
+                  direct = (ss, baseRoot)
+              -- Fast path: if the base root is already in context, avoid costly downs.
+              if direct `Set.member` ctx && not ("<lik>" `T.isInfixOf` y)
+                then return $! addUnique candState (direct, cas)
+                else do
+                  let forms = fromMaybe [] (M.lookup stem stemMap)
+                      p3sFormsFor =
+                        if "<p3s>" `T.isInfixOf` y
+                          then fromMaybe [] (M.lookup (stem <> "<p3s>") p3sMap)
+                          else []
+                      includeBaseRoot = not ("<lik>" `T.isInfixOf` y)
+                      roots
+                        | null forms && null p3sFormsFor = [baseRoot]
+                        | otherwise =
+                            let (rootSeen0, rootRev0) = addMany (Set.empty, []) forms
+                                (rootSeen1, rootRev1) = addMany (rootSeen0, rootRev0) p3sFormsFor
+                                (_rootSeen2, rootRev2) =
+                                  if includeBaseRoot
+                                    then addUnique (rootSeen1, rootRev1) baseRoot
+                                    else (rootSeen1, rootRev1)
+                            in reverse rootRev2
+                      newCandidates = [((ss, root), cas) | root <- roots]
+                  return $! addMany candState newCandidates
+        )
+        (Set.empty, [])
+        (zip morphAnalyses stems)
+      let candidatesDedup = reverse candidatesRev
           candidates =
             if not hasCompoundP3sAcc
               then
@@ -1203,28 +1246,31 @@ resolveTypeCandidatePreferCtx ident = do
 normalizePossessive :: Identifier -- ^ Surface identifier.
                     -> KipParser Identifier -- ^ Normalized identifier.
 normalizePossessive (mods, word) = do
-  analyses <- upsCached word
-  case find (\a -> "<p3s>" `T.isInfixOf` a) analyses of
-    Just analysis -> do
-      let baseRoot = T.takeWhile (/= '<') analysis
-      forms <- downsCached (stripCaseTags analysis)
-      case forms of
-        (x:_) ->
-          if x == word
-            then case stripPossessiveSuffix word of
-                   Just base -> return (mods, base)
-                   Nothing -> return (mods, x)
-            else return (mods, x)
-        [] ->
-          if baseRoot == word
-            then case stripPossessiveSuffix word of
-                   Just base -> return (mods, base)
-                   Nothing -> return (mods, baseRoot)
-            else return (mods, baseRoot)
-    Nothing ->
-      case stripPossessiveSuffix word of
-        Just base -> return (mods, base)
-        Nothing -> return (mods, word)
+  cached <- liftIO (M.lookup word <$> readIORef normalizePossessiveCache)
+  base <- case cached of
+    Just hit -> return hit
+    Nothing -> do
+      analyses <- upsCached word
+      resolved <-
+        case find (\a -> "<p3s>" `T.isInfixOf` a) analyses of
+          Just analysis -> do
+            let baseRoot = T.takeWhile (/= '<') analysis
+            forms <- downsCached (stripCaseTags analysis)
+            return $
+              case forms of
+                (x:_) ->
+                  if x == word
+                    then fromMaybe x (stripPossessiveSuffix word)
+                    else x
+                [] ->
+                  if baseRoot == word
+                    then fromMaybe baseRoot (stripPossessiveSuffix word)
+                    else baseRoot
+          Nothing ->
+            return (fromMaybe word (stripPossessiveSuffix word))
+      liftIO (modifyIORef' normalizePossessiveCache (M.insert word resolved))
+      return resolved
+  return (mods, base)
   where
     stripPossessiveSuffix txt =
       case T.stripSuffix "si" txt
@@ -1945,27 +1991,35 @@ parseExpWithCtx' useCtx allowMatch =
         buildStrictApp ys = do
           ps <- getP
           let arityMap = parserFuncArities ps
-          results <- parseStrict arityMap ys
+              arityNameMap = parserFuncAritiesByName ps
+          results <- parseStrict arityMap arityNameMap ys
           return $
             case nub results of
               [e] -> Just e
               _ -> Nothing
 
-        parseStrict :: M.Map Identifier (Set.Set Int) -> [Exp Ann] -> KipParser [Exp Ann]
-        parseStrict _ [e] = return [e]
-        parseStrict arityMap ts =
+        parseStrict :: M.Map Identifier (Set.Set Int)
+                    -> M.Map Text (Set.Set Int)
+                    -> [Exp Ann]
+                    -> KipParser [Exp Ann]
+        parseStrict _ _ [e] = return [e]
+        parseStrict arityMap arityNameMap ts =
           case reverse ts of
             fnExp:revRest ->
-              uniqueKnownArity arityMap fnExp >>= maybe (return []) (\arity ->
+              uniqueKnownArity arityMap arityNameMap fnExp >>= maybe (return []) (\arity ->
                 if arity > 0
                   then
                     let rest = reverse revRest
-                    in fmap (map (mkApp ts fnExp)) (splitArgs arityMap arity rest)
+                    in fmap (map (mkApp ts fnExp)) (splitArgs arityMap arityNameMap arity rest)
                   else return [])
             [] -> return []
 
-        splitArgs :: M.Map Identifier (Set.Set Int) -> Int -> [Exp Ann] -> KipParser [[Exp Ann]]
-        splitArgs arityMap arity tokens
+        splitArgs :: M.Map Identifier (Set.Set Int)
+                  -> M.Map Text (Set.Set Int)
+                  -> Int
+                  -> [Exp Ann]
+                  -> KipParser [[Exp Ann]]
+        splitArgs arityMap arityNameMap arity tokens
           | arity <= 0 = return []
           | length tokens < arity = return []
           | otherwise = go arity tokens
@@ -1980,14 +2034,17 @@ parseExpWithCtx' useCtx allowMatch =
                       (\splitAtIx -> do
                           let prefix = take splitAtIx pool
                               chunk = drop splitAtIx pool
-                          argExps <- parseStrict arityMap chunk
+                          argExps <- parseStrict arityMap arityNameMap chunk
                           prevExpSets <- go (n - 1) prefix
                           return [prevArgs ++ [arg] | arg <- argExps, prevArgs <- prevExpSets]
                       )
                       [n - 1 .. length pool - 1]
 
-        uniqueKnownArity :: M.Map Identifier (Set.Set Int) -> Exp Ann -> KipParser (Maybe Int)
-        uniqueKnownArity arityMap expItem =
+        uniqueKnownArity :: M.Map Identifier (Set.Set Int)
+                         -> M.Map Text (Set.Set Int)
+                         -> Exp Ann
+                         -> KipParser (Maybe Int)
+        uniqueKnownArity arityMap arityNameMap expItem =
           case expItem of
             Var {varName, varCandidates} -> do
               aritySets <- mapM lookupCandidateArities (varName : map fst varCandidates)
@@ -2004,14 +2061,7 @@ parseExpWithCtx' useCtx allowMatch =
                     case stripBareCaseSuffix ident of
                       Just (base, _) -> fromMaybe Set.empty (M.lookup base arityMap)
                       Nothing -> Set.empty
-                  byName name =
-                    foldl'
-                      Set.union
-                      Set.empty
-                      [ ars
-                      | ((_, keyName), ars) <- M.toList arityMap
-                      , keyName == name
-                      ]
+                  byName name = fromMaybe Set.empty (M.lookup name arityNameMap)
                   byNameArities = byName (snd ident)
               normalized <- normalizePossessive ident
               let normalizedArities = fromMaybe Set.empty (M.lookup normalized arityMap)

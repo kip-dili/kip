@@ -46,16 +46,19 @@ import Data.Fixed (mod')
 -- @'Map.insertWith' (++) k [v]@.
 data EvalState =
   MkEvalState
+    -- ==== Performance note (Optimization: strict state spine)
+    -- Strict fields prevent deferred record updates from building up in the
+    -- evaluator state during long REPL sessions and module loads.
     { evalVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings.
     , evalFuncs :: !(Map.Map Identifier [([Arg Ann], [Clause Ann])]) -- ^ Function clauses (can be overloaded).
     , evalPrimFuncs :: !(Map.Map Identifier [([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))]) -- ^ Primitive implementations (can be overloaded).
     , evalSelectors :: !(Map.Map Identifier [Int]) -- ^ Record selector indices.
     , evalCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
     , evalTyCons :: !(Map.Map Identifier Int) -- ^ Type constructor arities.
-    , evalCurrentFile :: Maybe FilePath -- ^ Current file path for relative I/O.
-    , evalArgs :: [Text] -- ^ CLI arguments visible to the running program.
-    , evalRender :: EvalState -> Exp Ann -> IO String -- ^ Render function for values.
-    , evalRandState :: Maybe Word32 -- ^ Optional deterministic random state.
+    , evalCurrentFile :: !(Maybe FilePath) -- ^ Current file path for relative I/O.
+    , evalArgs :: ![Text] -- ^ CLI arguments visible to the running program.
+    , evalRender :: !(EvalState -> Exp Ann -> IO String) -- ^ Render function for values.
+    , evalRandState :: !(Maybe Word32) -- ^ Optional deterministic random state.
     }
 
 -- | Empty evaluator state with a simple pretty-printer.

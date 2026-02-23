@@ -38,7 +38,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.HashTable.IO as HT
 import Paths_kip (getDataFileName)
-import System.Directory (canonicalizePath, doesFileExist)
+import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (die)
 import System.FilePath ((</>), takeDirectory, takeFileName)
@@ -271,10 +271,10 @@ emitJsFilesWithDeps ::
   RenderM Text
 emitJsFilesWithDeps moduleDirs basePst baseTC _preludeLoaded files progressHooks = do
   preludePath <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
-  preludeAbs <- liftIO (canonicalizePath preludePath)
+  preludeAbs <- liftIO (canonicalizePathCached preludePath)
   (preludeStmts, pst', tcSt', loaded') <- emitJsFileWithDeps moduleDirs progressHooks ([], basePst, baseTC, Set.empty) preludeAbs
   (taggedStmts, _, finalTC, _) <- foldM' (emitJsFileWithDeps moduleDirs progressHooks) (preludeStmts, pst', tcSt', loaded') files
-  entryAbs <- liftIO (mapM canonicalizePath files)
+  entryAbs <- liftIO (mapM canonicalizePathCached files)
   let resolvMap = Map.fromList (tcResolvedSigs finalTC)
       rootFiles = Set.fromList entryAbs
       prunedTagged = pruneProgramTaggedStmts resolvMap (`Set.member` rootFiles) taggedStmts
@@ -297,7 +297,7 @@ emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
   unless exists $ do
     msg <- renderMsg (MsgFileNotFound path)
     liftIO (die (T.unpack msg))
-  absPath <- liftIO (canonicalizePath path)
+  absPath <- liftIO (canonicalizePathCached path)
   if Set.member absPath loaded
     then return (acc, pst, tcSt, loaded)
     else do
@@ -349,5 +349,5 @@ emitJsLoad ::
   RenderM ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
 emitJsLoad moduleDirs progressHooks _paramTyCons _tyMods (acc, pst, tcSt, loaded) (dirPath, name) = do
   path <- resolveModulePath moduleDirs dirPath name
-  absPath <- liftIO (canonicalizePath path)
+  absPath <- liftIO (canonicalizePathCached path)
   emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) absPath

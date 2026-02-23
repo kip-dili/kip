@@ -6,7 +6,7 @@
 module Main where
 
 import System.Exit
-import System.Directory (doesFileExist, canonicalizePath, doesDirectoryExist, listDirectory, getHomeDirectory, createDirectoryIfMissing, getCurrentDirectory)
+import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, getHomeDirectory, createDirectoryIfMissing, getCurrentDirectory)
 import Paths_kip (version, getDataFileName)
 import Data.List
 import Options.Applicative hiding (ParseError)
@@ -16,8 +16,9 @@ import Control.Monad (forM, forM_, foldM, when, unless, filterM)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict
-import Control.Exception (AsyncException(UserInterrupt), catch)
+import Control.Exception (AsyncException(UserInterrupt), SomeException, catch, displayException, try)
 import Control.Monad.Reader (ReaderT, runReaderT, ask, lift)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, tryReadMVar)
 
 import System.Console.Haskeline
 import Data.Text (Text)
@@ -67,6 +68,9 @@ data ReplState =
     , replEvalState :: EvalState
     , replModuleDirs :: [FilePath]
     , replLoaded :: Set FilePath
+    , replPreludeLoaded :: Bool
+    , replAutoPrelude :: Bool
+    , replPreludeFuture :: Maybe (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath)))
     }
 
 -- | Supported CLI modes.
@@ -997,9 +1001,10 @@ main = do
         populateDemonstrativeCache upsCache
         downsCache <- HT.new
         let renderCache = mkRenderCache upsCache downsCache
-            moduleDirs = nub (libDir : optIncludeDirs opts)
+        moduleDirs <- internModuleRoots (libDir : optIncludeDirs opts)
+        let moduleDirs' = nub moduleDirs
             renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm) (Just upsCache) (Just downsCache)
-        return (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache)
+        return (renderCtx, moduleDirs', renderCache, fsm, upsCache, downsCache)
   case optMode opts of
     ModeTest -> do
       when (null (optFiles opts)) $
@@ -1029,7 +1034,7 @@ main = do
           (codegenPst, codegenTC, codegenLoaded) <-
             runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs fsm upsCache downsCache) renderCtx
           (finalTC, taggedStmts) <- runReaderT (codegenFilesTagged codegenPst codegenTC moduleDirs codegenLoaded (optFiles opts)) renderCtx
-          entryAbs <- mapM canonicalizePath (optFiles opts)
+          entryAbs <- mapM canonicalizePathCached (optFiles opts)
           let entrySet = Set.fromList entryAbs
               prunedTaggedStmts = pruneProgramTaggedStmts (Map.fromList (tcResolvedSigs finalTC)) (`Set.member` entrySet) taggedStmts
           -- Emit JS and print
@@ -1043,13 +1048,13 @@ main = do
             Just dir -> return dir
             Nothing -> die "--codegen js-modules requires --outdir <dir>"
           createDirectoryIfMissing True outDir
-          outDirAbs <- canonicalizePath outDir
+          outDirAbs <- canonicalizePathCached outDir
           (codegenPst, codegenTC, codegenLoaded) <-
             runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs fsm upsCache downsCache) renderCtx
           (finalTC, taggedStmts) <- runReaderT (codegenFilesTagged codegenPst codegenTC moduleDirs codegenLoaded (optFiles opts)) renderCtx
           let resolvMap = Map.fromList (tcResolvedSigs finalTC)
           cwd <- getCurrentDirectory
-          entryAbs <- mapM canonicalizePath (optFiles opts)
+          entryAbs <- mapM canonicalizePathCached (optFiles opts)
           let modulePaths = nub (map fst taggedStmts)
               allStmts = map snd taggedStmts
               moduleDefs =
@@ -1110,8 +1115,6 @@ main = do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFileOrDir) basicCtx
       (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
-      (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
       buildTargets <- resolveBuildTargets (optFiles opts)
       let extraDirs = nub (concatMap takeDirectories buildTargets)
           buildModuleDirs = nub (moduleDirs ++ extraDirs)
@@ -1124,11 +1127,15 @@ main = do
         (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
         if null (optFiles opts)
         then do
-          (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-            runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
           emitMsgIO renderCtx (MsgHeader title)
           emitMsgIO renderCtx (MsgSeparator title)
-          kipSettings >>= \s -> runInputT s (runReaderT (loop (ReplState (parserCtx preludePst) (parserCtors preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) (parserFuncArities preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
+          let replAuto = not (optNoPrelude opts)
+          preludeFuture <-
+            if replAuto
+              then Just <$> startPreludeWarmup renderCtx moduleDirs renderCache fsm upsCache downsCache
+              else return Nothing
+          let baseRs = emptyReplState moduleDirs renderCache fsm replAuto preludeFuture
+          kipSettings >>= \s -> runInputT s (runReaderT (loop baseRs) renderCtx)
         else do
           (preludePst, preludeTC, preludeEval, preludeLoaded) <-
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
@@ -1146,6 +1153,69 @@ main = do
       let dir = home </> ".kip"
       createDirectoryIfMissing True dir
       return defaultSettings { historyFile = Just (dir </> "history.txt") }
+
+    -- | Canonicalize existing module roots once and reuse interned paths.
+    --
+    -- ==== Performance note (Optimization: module root canonicalization)
+    -- Module resolution repeatedly combines search roots with relative module
+    -- paths. Canonicalizing roots once avoids repeated canonicalization churn.
+    internModuleRoots :: [FilePath] -> IO [FilePath]
+    internModuleRoots = mapM (\dir -> do
+      isDir <- doesDirectoryExist dir
+      if isDir then canonicalizePathCached dir else return dir)
+
+    -- | Construct an empty REPL state and defer prelude loading until needed.
+    --
+    -- ==== Performance note (Optimization: lazy REPL bootstrap)
+    -- Starting the REPL no longer eagerly loads @lib/giriş.kip@ when
+    -- @autoPrelude@ is enabled. Instead, we start from empty parser/type/eval
+    -- state and load the prelude on the first command that requires language
+    -- definitions. This significantly reduces cold-start time for quick
+    -- interactive sessions (for example launching and quitting).
+    emptyReplState ::
+      [FilePath] ->
+      RenderCache ->
+      FSM ->
+      Bool ->
+      Maybe (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath))) ->
+      ReplState
+    emptyReplState moduleDirs cache fsm autoPrelude =
+      ReplState
+        Set.empty
+        []
+        []
+        []
+        []
+        []
+        Map.empty
+        emptyTCState
+        (mkEvalState cache fsm)
+        moduleDirs
+        Set.empty
+        (not autoPrelude)
+        autoPrelude
+
+    -- | Start prelude loading in the background while REPL waits for input.
+    --
+    -- ==== Performance note (Optimization: parallel REPL warmup)
+    -- REPL startup now overlaps prelude load with user think-time: prompt is
+    -- shown immediately, and `giriş.kip` loading runs on a background thread.
+    -- Commands that do not require prelude stay non-blocking.
+    startPreludeWarmup ::
+      RenderCtx ->
+      [FilePath] ->
+      RenderCache ->
+      FSM ->
+      MorphCache ->
+      MorphCache ->
+      IO (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath)))
+    startPreludeWarmup renderCtx moduleDirs cache fsm uCache dCache = do
+      done <- newEmptyMVar
+      _ <- forkIO $ do
+        result <- try (runReaderT (loadPreludeState False moduleDirs cache fsm uCache dCache) renderCtx)
+          :: IO (Either SomeException (ParserState, TCState, EvalState, Set FilePath))
+        putMVar done (either (Left . T.pack . displayException) Right result)
+      return done
     -- | CLI option parser.
     cliParser :: Parser CliOptions -- ^ CLI option parser.
     cliParser =
@@ -1238,6 +1308,7 @@ main = do
               lift (outputStrLn path)
             loop rs
       | input == ":functions" = do
+          rs <- ensurePreludeLoaded rs
           ctx <- ask
           (cache, fsm) <- runApp requireCacheFsm
           let paramTyCons = [name | (name, arity) <- replTyCons rs, arity > 0]
@@ -1255,6 +1326,7 @@ main = do
             lift (outputStrLn (T.unpack line))
           loop rs
       | input == ":types" = do
+          rs <- ensurePreludeLoaded rs
           let names = nub [name | ((_, name), _arity) <- replTyCons rs]
           forM_ (sort names) $ \name ->
             lift (outputStrLn (T.unpack name))
@@ -1272,6 +1344,7 @@ main = do
           liftIO (downs fsm (T.pack word)) >>= \xs -> lift (mapM_ (outputStrLn . T.unpack) xs)
           loop rs
       | Just expr <- stripPrefix ":t " input = do
+          rs <- ensurePreludeLoaded rs
           ctx <- ask
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
@@ -1297,7 +1370,7 @@ main = do
                       hasEffectfulCandidate = any isEffectfulName candidateNames
                       hasAmbiguousEffectCall = hasEffectfulCandidate && not isInfinitive && length sigs > 1
                   if null sigs
-                    then inferExprType ctx paramTyCons parsed expr
+                    then inferExprType rs ctx paramTyCons parsed expr
                     else if hasAmbiguousEffectCall
                       then do
                         emitMsgTCtx (MsgTCError (Ambiguity (annSpan (annExp parsed))) (Just (T.pack expr)) paramTyCons (replTyMods rs))
@@ -1311,8 +1384,9 @@ main = do
                         line <- liftIO (renderReplSig ctx cache fsm paramTyCons (replTyMods rs) isInfinitive name args mRet)
                         lift (outputStrLn (T.unpack line))
                       loop rs
-                _ -> inferExprType ctx paramTyCons parsed expr
+                _ -> inferExprType rs ctx paramTyCons parsed expr
       | Just expr <- stripPrefix ":parse " input = do
+          rs <- ensurePreludeLoaded rs
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs)
@@ -1339,6 +1413,7 @@ main = do
                     lift (outputStrLn ("Remaining: " ++ T.unpack remaining))
           loop rs
       | Just expr <- stripPrefix ":steps " input = do
+          rs <- ensurePreludeLoaded rs
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
@@ -1381,6 +1456,7 @@ main = do
                             else emitMsgTCtx (MsgEvalError Eval.RuntimeTypeErrorNonValue)
                           loop rs
       | otherwise = do
+          rs <- ensurePreludeLoaded rs
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
@@ -1397,7 +1473,7 @@ main = do
                   case stmt of
                     Load dirPath name -> do
                       path <- runApp (resolveModulePath (replModuleDirs rs) dirPath name)
-                      absPath <- liftIO (canonicalizePath path)
+                      absPath <- liftIO (canonicalizePathCached path)
                       let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty (Just path) uCache dCache
                       if Set.member absPath (replLoaded rs)
                         then loop rs
@@ -1475,73 +1551,126 @@ main = do
                           loop rs
       where
         -- | Infer and print a type for a REPL expression.
-        inferExprType :: RenderCtx -- ^ Render context.
+        inferExprType :: ReplState -- ^ Current REPL state.
+                      -> RenderCtx -- ^ Render context.
                       -> [Identifier] -- ^ Type parameters for rendering.
                       -> Exp Ann -- ^ Parsed expression.
                       -> String -- ^ Original input string.
                       -> ReplM () -- ^ No result.
-        inferExprType ctx paramTyCons parsed expr =
-          liftIO (runTCM (tcExp1 parsed >>= inferType) (replTCState rs)) >>= \case
+        inferExprType currentRs ctx paramTyCons parsed expr =
+          liftIO (runTCM (tcExp1 parsed >>= inferType) (replTCState currentRs)) >>= \case
             Left tcErr -> do
-              emitMsgTCtx (MsgTCError tcErr (Just (T.pack expr)) paramTyCons (replTyMods rs))
-              loop rs
+              emitMsgTCtx (MsgTCError tcErr (Just (T.pack expr)) paramTyCons (replTyMods currentRs))
+              loop currentRs
             Right (mty, _) -> do
               case mty of
                 Nothing -> emitMsgTCtx MsgTypeInferFailed
                 Just ty -> do
                   (cache, fsm) <- runApp requireCacheFsm
                   let tyNom = normalizeTyNom ty
-                  tyParts <- liftIO (renderTyParts cache fsm paramTyCons (replTyMods rs) tyNom)
+                  tyParts <- liftIO (renderTyParts cache fsm paramTyCons (replTyMods currentRs) tyNom)
                   emitMsgTCtx (MsgTypeOf tyParts)
-              loop rs
+              loop currentRs
 
-        -- | Render a REPL function signature with return type.
-        renderReplSig :: RenderCtx -- ^ Render context.
-                      -> RenderCache -- ^ Render cache.
-                      -> FSM -- ^ Morphology FSM.
-                      -> [Identifier] -- ^ Type parameters for rendering.
-                      -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-                      -> Bool -- ^ Whether the function is an infinitive.
-                      -> Identifier -- ^ Canonical function name.
-                      -> [Arg Ann] -- ^ Argument types.
-                      -> Maybe (Ty Ann) -- ^ Optional return type.
-                      -> IO Text -- ^ Rendered signature.
-        renderReplSig ctx cache fsm paramTyCons tyMods isInfinitive name args mRet = do
-          argParts <- mapM (renderArgParts cache fsm paramTyCons tyMods) args
-          let argStrs =
-                [ T.concat ["(", T.pack argName, " ", colorizeTyParts (rcUseColor ctx) tyParts, ")"]
-                | (argName, tyParts) <- argParts
-                ]
-          nameStr <-
-            if isInfinitive
-              then renderInfinitiveName cache fsm name
-              else renderIdentWithCase cache fsm name Nom
-          retPart <-
-            case mRet of
-              Just ty -> do
-                tyParts <- renderTyPartsPossessive cache fsm paramTyCons tyMods (normalizeTyNom ty)
-                return (Just (colorizeTyParts (rcUseColor ctx) tyParts))
-              Nothing -> return Nothing
-          let retStr =
-                case retPart of
-                  Just tyStr -> T.concat ["(", T.pack nameStr, " ", tyStr, ")"]
-                  Nothing -> T.concat ["(", T.pack nameStr, ")"]
-          return (T.intercalate " " (argStrs ++ [retStr]))
+    -- | Lazily load prelude state on first command that needs language context.
+    --
+    -- ==== Performance note (Optimization: lazy prelude loading)
+    -- The REPL carries a lightweight empty state at startup and only pays the
+    -- prelude parse/typecheck/eval cost when a command requires names/types.
+    ensurePreludeLoaded :: ReplState -> ReplM ReplState
+    ensurePreludeLoaded rs
+      | replPreludeLoaded rs || not (replAutoPrelude rs) = return rs
+      | otherwise = do
+          let applyPrelude (preludePst, preludeTC, preludeEval, preludeLoaded) =
+                rs
+                  { replCtx = parserCtx preludePst
+                  , replCtors = parserCtors preludePst
+                  , replTyParams = parserTyParams preludePst
+                  , replTyCons = parserTyCons preludePst
+                  , replTyMods = parserTyMods preludePst
+                  , replPrimTypes = parserPrimTypes preludePst
+                  , replFuncArities = parserFuncArities preludePst
+                  , replTCState = preludeTC
+                  , replEvalState = preludeEval
+                  , replLoaded = preludeLoaded
+                  , replPreludeLoaded = True
+                  , replPreludeFuture = Nothing
+                  }
+              disablePrelude =
+                rs
+                  { replAutoPrelude = False
+                  , replPreludeFuture = Nothing
+                  }
+          case replPreludeFuture rs of
+            Just done -> do
+              ready <- liftIO (tryReadMVar done)
+              case ready of
+                Just (Right st) -> return (applyPrelude st)
+                Just (Left errMsg) -> do
+                  lift (outputStrLn (T.unpack errMsg))
+                  return disablePrelude
+                Nothing -> do
+                  -- User reached a prelude-dependent command before warmup
+                  -- finished: block here and consume the completed result.
+                  liftIO (readMVar done) >>= \case
+                    Right st -> return (applyPrelude st)
+                    Left errMsg -> do
+                      lift (outputStrLn (T.unpack errMsg))
+                      return disablePrelude
+            Nothing -> do
+              -- Fallback path when background warmup was not started.
+              (cache, fsm) <- runApp requireCacheFsm
+              (uCache, dCache) <- runApp requireParserCaches
+              st <- runApp (loadPreludeState False (replModuleDirs rs) cache fsm uCache dCache)
+              return (applyPrelude st)
 
-        -- | Normalize a type to nominative case for display.
-        normalizeTyNom :: Ty Ann -- ^ Type to normalize.
-                       -> Ty Ann -- ^ Nominative type.
-        normalizeTyNom ty =
-          case ty of
-            TyString ann -> TyString (setAnnCase ann Nom)
-            TyInt ann -> TyInt (setAnnCase ann Nom)
-            TyFloat ann -> TyFloat (setAnnCase ann Nom)
-            TyChar ann -> TyChar (setAnnCase ann Nom)
-            TyInd ann name -> TyInd (setAnnCase ann Nom) name
-            TyVar ann name -> TyVar (setAnnCase ann Nom) name
-            TySkolem ann name -> TySkolem (setAnnCase ann Nom) name
-            Arr ann d i -> Arr (setAnnCase ann Nom) (normalizeTyNom d) (normalizeTyNom i)
-            TyApp ann ctor args -> TyApp (setAnnCase ann Nom) (normalizeTyNom ctor) (map normalizeTyNom args)
+    -- | Render a REPL function signature with return type.
+    renderReplSig :: RenderCtx -- ^ Render context.
+                  -> RenderCache -- ^ Render cache.
+                  -> FSM -- ^ Morphology FSM.
+                  -> [Identifier] -- ^ Type parameters for rendering.
+                  -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
+                  -> Bool -- ^ Whether the function is an infinitive.
+                  -> Identifier -- ^ Canonical function name.
+                  -> [Arg Ann] -- ^ Argument types.
+                  -> Maybe (Ty Ann) -- ^ Optional return type.
+                  -> IO Text -- ^ Rendered signature.
+    renderReplSig ctx cache fsm paramTyCons tyMods isInfinitive name args mRet = do
+      argParts <- mapM (renderArgParts cache fsm paramTyCons tyMods) args
+      let argStrs =
+            [ T.concat ["(", T.pack argName, " ", colorizeTyParts (rcUseColor ctx) tyParts, ")"]
+            | (argName, tyParts) <- argParts
+            ]
+      nameStr <-
+        if isInfinitive
+          then renderInfinitiveName cache fsm name
+          else renderIdentWithCase cache fsm name Nom
+      retPart <-
+        case mRet of
+          Just ty -> do
+            tyParts <- renderTyPartsPossessive cache fsm paramTyCons tyMods (normalizeTyNom ty)
+            return (Just (colorizeTyParts (rcUseColor ctx) tyParts))
+          Nothing -> return Nothing
+      let retStr =
+            case retPart of
+              Just tyStr -> T.concat ["(", T.pack nameStr, " ", tyStr, ")"]
+              Nothing -> T.concat ["(", T.pack nameStr, ")"]
+      return (T.intercalate " " (argStrs ++ [retStr]))
+
+    -- | Normalize a type to nominative case for display.
+    normalizeTyNom :: Ty Ann -- ^ Type to normalize.
+                   -> Ty Ann -- ^ Nominative type.
+    normalizeTyNom ty =
+      case ty of
+        TyString ann -> TyString (setAnnCase ann Nom)
+        TyInt ann -> TyInt (setAnnCase ann Nom)
+        TyFloat ann -> TyFloat (setAnnCase ann Nom)
+        TyChar ann -> TyChar (setAnnCase ann Nom)
+        TyInd ann name -> TyInd (setAnnCase ann Nom) name
+        TyVar ann name -> TyVar (setAnnCase ann Nom) name
+        TySkolem ann name -> TySkolem (setAnnCase ann Nom) name
+        Arr ann d i -> Arr (setAnnCase ann Nom) (normalizeTyNom d) (normalizeTyNom i)
+        TyApp ann ctor args -> TyApp (setAnnCase ann Nom) (normalizeTyNom ctor) (map normalizeTyNom args)
 
     -- | Evaluate a REPL statement and update the evaluator state.
     evalReplStmt :: [Identifier] -- ^ Type parameters for rendering.
@@ -1607,7 +1736,7 @@ main = do
       unless exists $ do
         msg <- renderMsg (MsgFileNotFound path)
         liftIO (die (T.unpack msg))
-      absPath <- liftIO (canonicalizePath path)
+      absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
         then return (pst, tcSt, accStmts, loaded)
         else do
@@ -1657,7 +1786,7 @@ main = do
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePath path)
+          absPath <- liftIO (canonicalizePathCached path)
           if Set.member absPath loaded
             then return (pst, tcSt, accStmts ++ [(currentPath, stmt)], loaded)
             else collectFileStmts moduleDirs (pst, tcSt, accStmts ++ [(currentPath, stmt)], loaded) path
@@ -1697,7 +1826,7 @@ main = do
              -> AppM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
       (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
+      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded' True False Nothing)
     -- | Run a single file and update all states.
     runFile :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.
@@ -1711,7 +1840,7 @@ main = do
       unless exists $ do
         msg <- renderMsg (MsgFileNotFound path)
         liftIO (die (T.unpack msg))
-      absPath <- liftIO (canonicalizePath path)
+      absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
         then return (pst, tcSt, evalSt, loaded)
         else do
@@ -1756,17 +1885,17 @@ main = do
 
                       -- Save to cache
                       let depStmts = [(dp, n) | Load dp n <- stmts]
-                      depPaths <- mapM (uncurry (resolveModulePath moduleDirs)) depStmts
+                      depPathsRaw <- mapM (uncurry (resolveModulePath moduleDirs)) depStmts
+                      depPaths <- liftIO (mapM canonicalizePathCached depPathsRaw)
                       depHashes <- liftIO $ mapM (\p -> do
-                        -- Reuse cached hashes when possible to avoid re-reading deps.
-                        mDigest <- hashFile p
-                        digest <- case mDigest of
-                          Just d -> return d
-                          Nothing -> hash <$> BS.readFile p
-                        mMeta <- getFileMeta p
-                        let fallbackSize = maybe 0 fst mMeta
-                            (depSize, depMTime) = fromMaybe (fallbackSize, 0) mMeta
-                        return (p, digest, depSize, depMTime)) depPaths
+                        mFp <- fileFingerprint p
+                        case mFp of
+                          Just fp -> return fp
+                          -- Fallback path is intentionally conservative; it
+                          -- should be rare and only used when metadata calls fail.
+                          Nothing -> do
+                            digest <- hash <$> BS.readFile p
+                            return (p, digest, 0, 0)) depPaths
                       mCompilerHash <- liftIO getCompilerHash
                       case mCompilerHash of
                         Nothing -> return ()
@@ -1843,7 +1972,7 @@ main = do
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePath path)
+          absPath <- liftIO (canonicalizePathCached path)
           if Set.member absPath loaded
             then do
               when showLoad $
@@ -1911,7 +2040,7 @@ main = do
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePath path)
+          absPath <- liftIO (canonicalizePathCached path)
           if Set.member absPath loaded
             then do
               when showLoad $
@@ -1970,7 +2099,7 @@ main = do
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePath path)
+          absPath <- liftIO (canonicalizePathCached path)
           if Set.member absPath loaded
             then do
               when showLoad $
@@ -2198,7 +2327,7 @@ main = do
                            -> AppM ParserState -- ^ Loaded parser state.
     loadPreludeParserState moduleDirs uCache dCache fsm = do
       path <- resolveModulePath moduleDirs [] ([], T.pack "temel")
-      absPath <- liftIO (canonicalizePath path)
+      absPath <- liftIO (canonicalizePathCached path)
       let pst = newParserStateWithCaches fsm (Just path) uCache dCache
       let cachePath = cacheFilePath absPath
       liftIO (loadCachedModule cachePath) >>= \case
@@ -2222,21 +2351,30 @@ main = do
       if noPrelude
         then return (pst, tcSt, Set.empty)
         else do
-          path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
-          absPath <- liftIO (canonicalizePath path)
-          let cachePath = cacheFilePath absPath
-          liftIO (loadCachedModule cachePath) >>= \case
-            Just cached -> do
-              depPaths <- liftIO $ mapM (canonicalizePath . (\(p, _, _, _) -> p)) (dependencies (metadata cached))
-              pst' <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
-              let
-                  tcSt' = fromCachedTCState (cachedTC cached)
-                  loaded = Set.fromList (absPath : depPaths)
-              return (pst', tcSt', loaded)
+          snapshotPath <- liftIO preludeSnapshotPath
+          -- ==== Performance note (Optimization: prelude snapshot reuse)
+          -- Reuse the merged prelude graph snapshot for codegen startup. Even
+          -- though codegen does not evaluate terms, restoring parser+TC from a
+          -- validated snapshot avoids reparsing and re-typechecking stdlib.
+          liftIO (loadCachedPrelude snapshotPath (mkRenderCache uCache dCache) fsm uCache dCache) >>= \case
+            Just (pstSnap, tcSnap, _, loadedSnap) ->
+              return (pstSnap, tcSnap, loadedSnap)
             Nothing -> do
-              let pst = pst { parserFilePath = Just path }
-              (pst', tcSt', _, loaded') <- collectFileStmts moduleDirs (pst, tcSt, [], Set.empty) path
-              return (pst', tcSt', loaded')
+              path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
+              absPath <- liftIO (canonicalizePathCached path)
+              let cachePath = cacheFilePath absPath
+              liftIO (loadCachedModule cachePath) >>= \case
+                Just cached -> do
+                  depPaths <- liftIO $ mapM (canonicalizePathCached . (\(p, _, _, _) -> p)) (dependencies (metadata cached))
+                  pst' <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
+                  let
+                      tcSt' = fromCachedTCState (cachedTC cached)
+                      loaded = Set.fromList (absPath : depPaths)
+                  return (pst', tcSt', loaded)
+                Nothing -> do
+                  let pstFile = pst { parserFilePath = Just path }
+                  (pst', tcSt', _, loaded') <- collectFileStmts moduleDirs (pstFile, tcSt, [], Set.empty) path
+                  return (pst', tcSt', loaded')
 
     -- | Load the prelude module into parser/type/eval states unless disabled.
     loadPreludeState :: Bool -- ^ Whether to skip the prelude.
@@ -2253,9 +2391,20 @@ main = do
       if noPrelude
         then return (pst, tcSt, evalSt, Set.empty)
         else do
-          path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
-          let pst' = pst { parserFilePath = Just path }
-          runFile False False False moduleDirs (pst', tcSt, evalSt, Set.empty) path
+          snapshotPath <- liftIO preludeSnapshotPath
+          -- ==== Performance note (Optimization: prelude snapshot/image cache)
+          -- The first successful prelude load persists a merged snapshot. Later
+          -- startups validate file fingerprints and restore parser/TC/eval in
+          -- one step instead of traversing the whole stdlib graph.
+          liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache) >>= \case
+            Just snapState -> return snapState
+            Nothing -> do
+              path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
+              let pst' = pst { parserFilePath = Just path }
+              state'@(pstLoaded, tcLoaded, evalLoaded, loaded') <-
+                runFile False False False moduleDirs (pst', tcSt, evalSt, Set.empty) path
+              liftIO (saveCachedPrelude snapshotPath pstLoaded tcLoaded evalLoaded loaded')
+              return state'
 
     -- | Build an evaluator state wired to the render cache.
     mkEvalState :: RenderCache -- ^ Render cache.

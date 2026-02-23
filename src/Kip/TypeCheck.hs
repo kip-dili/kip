@@ -144,26 +144,29 @@ recordFuncSigLocations path defs =
 -- | Type checker state for names, signatures, and constructors.
 data TCState =
   MkTCState
-    { tcCtx :: Set.Set Identifier -- ^ Names in scope.
-    , tcFuncs :: Map.Map Identifier [Int] -- ^ Known function arities (list for overloading).
-    , tcFuncSigs :: Map.Map Identifier [[Arg Ann]] -- ^ Function argument signatures (list for overloading).
+    -- ==== Performance note (Optimization: strict state spine)
+    -- Keep the environment record fields strict so repeated 'modify' updates
+    -- do not accumulate thunk chains across parser/typechecker bootstrap.
+    { tcCtx :: !(Set.Set Identifier) -- ^ Names in scope.
+    , tcFuncs :: !(Map.Map Identifier [Int]) -- ^ Known function arities (list for overloading).
+    , tcFuncSigs :: !(Map.Map Identifier [[Arg Ann]]) -- ^ Function argument signatures (list for overloading).
     -- | Exact-arity signature index for overload resolution.
     --
     -- ==== Performance note (Optimization: overload candidate pruning)
     -- Call checking repeatedly requests "signatures of name N with arity K".
     -- Keeping this index avoids filtering every signature list on each call.
-    , tcFuncSigsByArity :: Map.Map (Identifier, Int) [[Arg Ann]]
-    , tcFuncSigRets :: Map.Map (Identifier, [Ty Ann]) (Ty Ann) -- ^ Function return types by arg types.
-    , tcVarTys :: [(Identifier, Ty Ann)] -- ^ Variable type bindings (list for shadowing).
-    , tcVals :: Map.Map Identifier (Exp Ann) -- ^ Value bindings for inlining.
-    , tcCtors :: Map.Map Identifier ([Ty Ann], Ty Ann) -- ^ Constructor signatures.
-    , tcTyCons :: Map.Map Identifier Int -- ^ Type constructor arities.
-    , tcInfinitives :: Set.Set Identifier -- ^ Infinitive (effectful) functions.
-    , tcResolvedNames :: [(Span, Identifier)] -- ^ Resolved variable names by span.
-    , tcResolvedSigs :: [(Span, (Identifier, [Ty Ann]))] -- ^ Resolved function signatures by span.
-    , tcResolvedTypes :: [(Span, Ty Ann)] -- ^ Resolved variable types by span.
-    , tcDefLocations :: Map.Map Identifier (FilePath, Span) -- ^ Definition locations by identifier.
-    , tcFuncSigLocs :: Map.Map (Identifier, [Ty Ann]) (FilePath, Span) -- ^ Definition locations by signature.
+    , tcFuncSigsByArity :: !(Map.Map (Identifier, Int) [[Arg Ann]])
+    , tcFuncSigRets :: !(Map.Map (Identifier, [Ty Ann]) (Ty Ann)) -- ^ Function return types by arg types.
+    , tcVarTys :: ![(Identifier, Ty Ann)] -- ^ Variable type bindings (list for shadowing).
+    , tcVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings for inlining.
+    , tcCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
+    , tcTyCons :: !(Map.Map Identifier Int) -- ^ Type constructor arities.
+    , tcInfinitives :: !(Set.Set Identifier) -- ^ Infinitive (effectful) functions.
+    , tcResolvedNames :: ![(Span, Identifier)] -- ^ Resolved variable names by span.
+    , tcResolvedSigs :: ![(Span, (Identifier, [Ty Ann]))] -- ^ Resolved function signatures by span.
+    , tcResolvedTypes :: ![(Span, Ty Ann)] -- ^ Resolved variable types by span.
+    , tcDefLocations :: !(Map.Map Identifier (FilePath, Span)) -- ^ Definition locations by identifier.
+    , tcFuncSigLocs :: !(Map.Map (Identifier, [Ty Ann]) (FilePath, Span)) -- ^ Definition locations by signature.
     -- | Environment-change token for inferType memo safety.
     --
     -- The token is bumped whenever surrounding typing context changes.
@@ -175,7 +178,7 @@ data TCState =
     -- The memo infrastructure is intentionally conservative right now; we
     -- keep the state plumbing and invalidation hooks in place, but inference
     -- currently uses the uncached path to preserve exact behavior.
-    , tcInferTypeMemo :: Map.Map (Int, Span, T.Text) (Maybe (Ty Ann))
+    , tcInferTypeMemo :: !(Map.Map (Int, Span, T.Text) (Maybe (Ty Ann)))
     }
   deriving (Generic)
 
@@ -249,6 +252,17 @@ insertFuncSig name args st =
       { tcFuncSigs = mmInsert name argsNorm (tcFuncSigs st)
       , tcFuncSigsByArity = mmInsert (name, length argsNorm) argsNorm (tcFuncSigsByArity st)
       }
+
+-- | Insert one function declaration into function-arity and signature indices.
+--
+-- ==== Performance note (Optimization: strict TC env updates)
+-- Function declarations update three maps in tandem ('tcFuncs',
+-- 'tcFuncSigs', 'tcFuncSigsByArity'). Updating them through a single helper
+-- reduces intermediate state allocations on stdlib bootstrap paths.
+insertFuncDecl :: Identifier -> [Arg Ann] -> TCState -> TCState
+insertFuncDecl name args st =
+  let st' = insertFuncSig name args st
+  in st' { tcFuncs = mmInsert name (length args) (tcFuncs st') }
 
 -- | Invalidate inferType memo after any environment-affecting state change.
 --
@@ -884,11 +898,10 @@ tcStmt stmt =
                 Just (TyVar _ n) | isInfinitive && n == name -> defaultInfRet
                 _ -> fromMaybe ty mRet
             retTy = if explicit then ty else inferredRet
-            s' = insertFuncSig name args s
+            s' = insertFuncDecl name args s
         in invalidateInferMemo
              (s'
                { tcCtx = Set.insert name (tcCtx s')
-               , tcFuncs = mmInsert name (length args) (tcFuncs s')
                , tcFuncSigRets =
                    Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy retTy) (tcFuncSigRets s')
                , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
@@ -905,11 +918,10 @@ tcStmt stmt =
       unless (Prim.isImplementedPrimitive name args) $
         lift (throwE (UnimplementedPrimitive name args NoSpan))
       modify (\s ->
-        let s' = insertFuncSig name args s
+        let s' = insertFuncDecl name args s
         in invalidateInferMemo
              (s'
                { tcCtx = Set.insert name (tcCtx s')
-               , tcFuncs = mmInsert name (length args) (tcFuncs s')
                , tcFuncSigRets = Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy ty) (tcFuncSigRets s')
                , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
                }))
@@ -1276,7 +1288,7 @@ withFuncSig :: Identifier -- ^ Function name.
             -> TCM a -- ^ Result of the computation.
 withFuncSig name args m = do
   st <- get
-  put (invalidateInferMemo ((insertFuncSig name args st) { tcFuncs = mmInsert name (length args) (tcFuncs st) }))
+  put (invalidateInferMemo (insertFuncDecl name args st))
   res <- m
   modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st }))
   return res
@@ -2107,7 +2119,11 @@ runTCM m s = runExceptT (runStateT m (invalidateInferMemo s))
 -- This allows forward references within a file.
 registerForwardDecls :: [Stmt Ann] -- ^ Statements to scan.
                      -> TCM () -- ^ No result.
-registerForwardDecls = mapM_ registerStmt
+registerForwardDecls stmts = do
+  mapM_ registerStmt stmts
+  -- Forward-declaration registration performs no local inference; we only
+  -- need one memo invalidation after the batch update.
+  modify invalidateInferMemo
   where
     -- | Register a single statement for forward references.
     registerStmt :: Stmt Ann -- ^ Statement to register.
@@ -2116,26 +2132,22 @@ registerForwardDecls = mapM_ registerStmt
       case stmt of
         Function name args _ _ isInfinitive ->
           modify (\s ->
-            let s' = insertFuncSig name args s
-            in invalidateInferMemo
-                 (s'
-                   { tcCtx = Set.insert name (tcCtx s')
-                   , tcFuncs = mmInsert name (length args) (tcFuncs s')
-                   , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
-                   }))
+            let s' = insertFuncDecl name args s
+            in s'
+                 { tcCtx = Set.insert name (tcCtx s')
+                 , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+                 })
         PrimFunc name args _ isInfinitive -> do
           unless (Prim.isImplementedPrimitive name args) $
             lift (throwE (UnimplementedPrimitive name args NoSpan))
           modify (\s ->
-            let s' = insertFuncSig name args s
-            in invalidateInferMemo
-                 (s'
-                   { tcCtx = Set.insert name (tcCtx s')
-                   , tcFuncs = mmInsert name (length args) (tcFuncs s')
-                   , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
-                   }))
+            let s' = insertFuncDecl name args s
+            in s'
+                 { tcCtx = Set.insert name (tcCtx s')
+                 , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+                 })
         Defn name _ _ ->
-          modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s) }))
+          modify (\s -> s { tcCtx = Set.insert name (tcCtx s) })
         NewType name params ctors -> do
           MkTCState{tcTyCons = existingTyCons} <- get
           let ctorNames = map (fst . fst) ctors

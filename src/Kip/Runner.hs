@@ -58,7 +58,7 @@ import qualified Data.ByteString as BS
 import Data.Text.Encoding (encodeUtf8)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Exit (die)
 import System.FilePath ((</>), joinPath, takeExtension)
 import Text.Megaparsec (ParseErrorBundle(..), PosState(..), errorBundlePretty)
@@ -717,7 +717,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
     liftIO (emitMsgIO ctx (MsgFileNotFound path))
     msg <- renderMsg MsgRunFailed
     liftIO (die (T.unpack msg))
-  absPath <- liftIO (canonicalizePath path)
+  absPath <- liftIO (canonicalizePathCached path)
   if Set.member absPath loaded
     then return (pst, tcSt, evalSt, loaded)
     else do
@@ -766,16 +766,14 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                   let startState = (pst', tcStWithDefs, evalSt, Set.insert absPath loaded, [], [])
                   (pstFinal, tcSt', evalSt', loaded', typedStmts, depPathsRaw) <-
                     foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
-                  let depPaths = nub depPathsRaw
+                  depPaths <- liftIO (nub <$> mapM canonicalizePathCached depPathsRaw)
                   depHashes <- liftIO $ mapM (\p -> do
-                    mDigest <- hashFile p
-                    digest <- case mDigest of
-                      Just d -> return d
-                      Nothing -> hash <$> BS.readFile p
-                    mMeta <- getFileMeta p
-                    let fallbackSize = maybe 0 fst mMeta
-                        (depSize, depMTime) = fromMaybe (fallbackSize, 0) mMeta
-                    return (p, digest, depSize, depMTime)) depPaths
+                    mFp <- fileFingerprint p
+                    case mFp of
+                      Just fp -> return fp
+                      Nothing -> do
+                        digest <- hash <$> BS.readFile p
+                        return (p, digest, 0, 0)) depPaths
                   mCompilerHash <- liftIO getCompilerHash
                   case mCompilerHash of
                     Nothing -> return ()
@@ -838,7 +836,7 @@ runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods pr
   case stmt of
     Load dirPath name -> do
       path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePath path)
+      absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
         then return (pst, tcSt, evalSt, loaded)
         else do
@@ -879,7 +877,7 @@ runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath _paramTyCons _ty
   case stmt of
     Load dirPath name -> do
       path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePath path)
+      absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
         then return (pst, tcSt, evalSt, loaded)
         else do
@@ -911,7 +909,7 @@ runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons ty
   case stmt of
     Load dirPath name -> do
       path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePath path)
+      absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
         then return (pst, tcSt, evalSt, loaded, typedAcc ++ [stmt], depPathsAcc ++ [path])
         else do
@@ -1032,7 +1030,7 @@ resolveModulePath dirs dirPath name@(xs, x) = do
       candidates = map (</> relPath) dirs
   found <- liftIO (filterM doesFileExist candidates)
   case found of
-    path:_ -> return path
+    path:_ -> liftIO (canonicalizePathCached path)
     [] -> do
       msg <- renderMsg (MsgModuleNotFound dirPath name)
       liftIO (die (T.unpack msg))
@@ -1068,10 +1066,19 @@ loadPreludeState noPrelude moduleDirs cache fsm uCache dCache = do
   if noPrelude
     then return (pst, tcSt, evalSt, Set.empty)
     else do
-      path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
-      -- Update pst with the path
-      let pst' = pst { parserFilePath = Just path }
-      runFile False False False moduleDirs (pst, tcSt, evalSt, Set.empty) path
+      snapshotPath <- liftIO preludeSnapshotPath
+      -- ==== Performance note (Optimization: prelude snapshot/image cache)
+      -- Restore the merged prelude graph from a validated snapshot when
+      -- possible; otherwise load and persist it for future startup runs.
+      liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache) >>= \case
+        Just snapState -> return snapState
+        Nothing -> do
+          path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
+          let pst' = pst { parserFilePath = Just path }
+          state'@(pstLoaded, tcLoaded, evalLoaded, loaded') <-
+            runFile False False False moduleDirs (pst', tcSt, evalSt, Set.empty) path
+          liftIO (saveCachedPrelude snapshotPath pstLoaded tcLoaded evalLoaded loaded')
+          return state'
 
 -- | Build an evaluator state wired to the render cache.
 mkEvalState :: RenderCache -> FSM -> EvalState
