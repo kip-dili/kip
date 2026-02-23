@@ -266,15 +266,29 @@ renderParseErrorFor target lang err =
                ParseErrorForCli -> header <> renderSpanSnippet source sp <> "\n" <> msg
                ParseErrorForLsp -> header <> msg
         Nothing ->
-          case lang of
-            LangTr ->
-              let trBundle = mapParseErrorBundle ParserErrorTr err
-                  pretty = T.pack (turkifyParseError (errorBundlePretty trBundle))
-              in "Sözdizim hatası:\n" <> compactPretty target pretty
-            LangEn ->
-              let enBundle = mapParseErrorBundle ParserErrorEn err
-                  pretty = T.pack (errorBundlePretty enBundle)
-              in "Syntax error:\n" <> compactPretty target pretty
+          case findAmbiguousBareApplicationError err of
+            Just (ambErr, sp, source) ->
+              let header =
+                    case lang of
+                      LangTr -> "Sözdizim hatası:\n"
+                      LangEn -> "Syntax error:\n"
+                  msg =
+                    case lang of
+                      LangTr -> renderParserErrorTr ambErr
+                      LangEn -> renderParserErrorEn ambErr
+              in case target of
+                   ParseErrorForCli -> header <> renderLocatedSpanSnippet "Kip" source sp <> "\n" <> msg
+                   ParseErrorForLsp -> header <> msg
+            Nothing ->
+              case lang of
+                LangTr ->
+                  let trBundle = mapParseErrorBundle ParserErrorTr err
+                      pretty = T.pack (turkifyParseError (errorBundlePretty trBundle))
+                  in "Sözdizim hatası:\n" <> compactPretty target pretty
+                LangEn ->
+                  let enBundle = mapParseErrorBundle ParserErrorEn err
+                      pretty = T.pack (errorBundlePretty enBundle)
+                  in "Syntax error:\n" <> compactPretty target pretty
 
 -- | Remove location/snippet gutter emitted by Megaparsec pretty printer.
 compactPretty :: ParseErrorRenderTarget -> Text -> Text
@@ -334,6 +348,24 @@ findUnrecognizedWordError (ParseErrorBundle errs posState) = do
         FancyError _ xs ->
           [ (w, sp, suggestions)
           | ErrorCustom (ErrUnrecognizedTurkishWord w sp suggestions) <- Set.toList xs
+          ]
+        _ -> []
+
+-- | Find the custom ambiguous bare-application parser error, if present.
+findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -> Maybe (ParserError, Span, Text)
+findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
+  (errComp, sp) <- listToMaybe (concatMap extract (NE.toList errs))
+  return (errComp, sp, pstateInput posState)
+  where
+    extract :: ParseError Text ParserError -> [(ParserError, Span)]
+    extract parseErr =
+      case parseErr of
+        FancyError _ xs ->
+          [ (ErrAmbiguousBareApplication sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplication sp) <- Set.toList xs
+          ] <>
+          [ (ErrAmbiguousBareApplicationOverload ident arities sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplicationOverload ident arities sp) <- Set.toList xs
           ]
         _ -> []
 
@@ -591,6 +623,26 @@ renderSpanSnippet source sp =
              let first = caretLine (getLine sLine) sCol (T.length (getLine sLine) + 1)
                  lastLine = caretLine (getLine eLine) 1 eCol
              in T.concat [first, "\n", lastLine]
+
+-- | Render a span snippet with Megaparsec-style location and gutter lines.
+renderLocatedSpanSnippet :: Text -> Text -> Span -> Text
+renderLocatedSpanSnippet sourceName source sp =
+  case sp of
+    NoSpan -> ""
+    Span start _ _ ->
+      let lineNo = T.pack (show (unPos (sourceLine start)))
+          colNo = T.pack (show (unPos (sourceColumn start)))
+          gutterPad = T.replicate (T.length lineNo) " "
+          snippetLines = T.lines (renderSpanSnippet source sp)
+      in case snippetLines of
+           codeLn:caretLn:_ ->
+             T.concat
+               [ sourceName, ":", lineNo, ":", colNo, ":\n"
+               , gutterPad, " |\n"
+               , lineNo, " | ", codeLn, "\n"
+               , gutterPad, " | ", caretLn
+               ]
+           _ -> renderSpanSnippet source sp
 
 -- | Render a span into human-readable text.
 renderSpan :: Lang -> Span -> Text

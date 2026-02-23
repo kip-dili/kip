@@ -571,6 +571,29 @@ renderSpanSnippet source sp =
                  lastLine = caretLine (getLine eLine) 1 eCol
              in T.concat [first, "\n", lastLine]
 
+-- | Render a span snippet with Megaparsec-style location and gutter lines.
+renderLocatedSpanSnippet :: Text -- ^ Source name.
+                         -> Text -- ^ Source input.
+                         -> Span -- ^ Source span.
+                         -> Text -- ^ Rendered snippet.
+renderLocatedSpanSnippet sourceName source sp =
+  case sp of
+    NoSpan -> ""
+    Span start _ _ ->
+      let lineNo = T.pack (show (unPos (sourceLine start)))
+          colNo = T.pack (show (unPos (sourceColumn start)))
+          gutterPad = T.replicate (T.length lineNo) " "
+          snippetLines = T.lines (renderSpanSnippet source sp)
+      in case snippetLines of
+           codeLn:caretLn:_ ->
+             T.concat
+               [ sourceName, ":", lineNo, ":", colNo, ":\n"
+               , gutterPad, " |\n"
+               , lineNo, " | ", codeLn, "\n"
+               , gutterPad, " | ", caretLn
+               ]
+           _ -> renderSpanSnippet source sp
+
 -- | Render an optional type for diagnostics.
 renderTyOpt :: [Identifier] -- ^ Type parameters for rendering.
             -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
@@ -823,13 +846,25 @@ renderParseError lang err =
                   LangEn -> renderParserErrorEn (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
           in header <> renderSpanSnippet source sp <> "\n" <> msg
         Nothing ->
-          case lang of
-            LangTr ->
-              let trBundle = mapParseErrorBundle ParserErrorTr err
-              in "Sözdizim hatası:\n" <> T.pack (turkifyParseError (errorBundlePretty trBundle))
-            LangEn ->
-              let enBundle = mapParseErrorBundle ParserErrorEn err
-              in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
+          case findAmbiguousBareApplicationError err of
+            Just (ambErr, sp, source) ->
+              let header =
+                    case lang of
+                      LangTr -> "Sözdizim hatası:\n"
+                      LangEn -> "Syntax error:\n"
+                  msg =
+                    case lang of
+                      LangTr -> renderParserErrorTr ambErr
+                      LangEn -> renderParserErrorEn ambErr
+              in header <> renderLocatedSpanSnippet "Kip" source sp <> "\n" <> msg
+            Nothing ->
+              case lang of
+                LangTr ->
+                  let trBundle = mapParseErrorBundle ParserErrorTr err
+                  in "Sözdizim hatası:\n" <> T.pack (turkifyParseError (errorBundlePretty trBundle))
+                LangEn ->
+                  let enBundle = mapParseErrorBundle ParserErrorEn err
+                  in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
 
 -- | Find the custom repeated-pattern-binder parser error, if present.
 findPatternBinderRepeatedError :: ParseErrorBundle Text ParserError -> Maybe (Identifier, Span, Text)
@@ -858,6 +893,24 @@ findUnrecognizedWordError (ParseErrorBundle errs posState) = do
         FancyError _ xs ->
           [ (w, sp, suggestions)
           | ErrorCustom (ErrUnrecognizedTurkishWord w sp suggestions) <- Set.toList xs
+          ]
+        _ -> []
+
+-- | Find the custom ambiguous bare-application parser error, if present.
+findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -> Maybe (ParserError, Span, Text)
+findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
+  (errComp, sp) <- listToMaybe (concatMap extract (NE.toList errs))
+  return (errComp, sp, pstateInput posState)
+  where
+    extract :: ParseError Text ParserError -> [(ParserError, Span)]
+    extract parseErr =
+      case parseErr of
+        FancyError _ xs ->
+          [ (ErrAmbiguousBareApplication sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplication sp) <- Set.toList xs
+          ] <>
+          [ (ErrAmbiguousBareApplicationOverload ident arities sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplicationOverload ident arities sp) <- Set.toList xs
           ]
         _ -> []
 
