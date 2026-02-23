@@ -1,0 +1,13 @@
+App
+  Var çarpımı
+  args:
+    App
+      Var farkıyla
+      args:
+        IntLit 4
+        IntLit 2
+    App
+      Var farkının
+      args:
+        IntLit 5
+        IntLit 3

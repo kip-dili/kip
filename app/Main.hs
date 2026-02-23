@@ -38,7 +38,7 @@ import System.Console.Chalk
 import Kip.Parser
 import Kip.AST
 import qualified Data.HashTable.IO as HT
-import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender)
+import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender, isRuntimeValue)
 import qualified Kip.Eval as Eval
 import Kip.TypeCheck
 import qualified Kip.TypeCheck as TC
@@ -62,6 +62,7 @@ data ReplState =
     , replTyCons :: [(Identifier, Int)]
     , replTyMods :: [(Identifier, [Identifier])]
     , replPrimTypes :: [Identifier]
+    , replFuncArities :: Map.Map Identifier (Set.Set Int)
     , replTCState :: TCState
     , replEvalState :: EvalState
     , replModuleDirs :: [FilePath]
@@ -570,6 +571,29 @@ renderSpanSnippet source sp =
                  lastLine = caretLine (getLine eLine) 1 eCol
              in T.concat [first, "\n", lastLine]
 
+-- | Render a span snippet with Megaparsec-style location and gutter lines.
+renderLocatedSpanSnippet :: Text -- ^ Source name.
+                         -> Text -- ^ Source input.
+                         -> Span -- ^ Source span.
+                         -> Text -- ^ Rendered snippet.
+renderLocatedSpanSnippet sourceName source sp =
+  case sp of
+    NoSpan -> ""
+    Span start _ _ ->
+      let lineNo = T.pack (show (unPos (sourceLine start)))
+          colNo = T.pack (show (unPos (sourceColumn start)))
+          gutterPad = T.replicate (T.length lineNo) " "
+          snippetLines = T.lines (renderSpanSnippet source sp)
+      in case snippetLines of
+           codeLn:caretLn:_ ->
+             T.concat
+               [ sourceName, ":", lineNo, ":", colNo, ":\n"
+               , gutterPad, " |\n"
+               , lineNo, " | ", codeLn, "\n"
+               , gutterPad, " | ", caretLn
+               ]
+           _ -> renderSpanSnippet source sp
+
 -- | Render an optional type for diagnostics.
 renderTyOpt :: [Identifier] -- ^ Type parameters for rendering.
             -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
@@ -822,13 +846,25 @@ renderParseError lang err =
                   LangEn -> renderParserErrorEn (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
           in header <> renderSpanSnippet source sp <> "\n" <> msg
         Nothing ->
-          case lang of
-            LangTr ->
-              let trBundle = mapParseErrorBundle ParserErrorTr err
-              in "Sözdizim hatası:\n" <> T.pack (turkifyParseError (errorBundlePretty trBundle))
-            LangEn ->
-              let enBundle = mapParseErrorBundle ParserErrorEn err
-              in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
+          case findAmbiguousBareApplicationError err of
+            Just (ambErr, sp, source) ->
+              let header =
+                    case lang of
+                      LangTr -> "Sözdizim hatası:\n"
+                      LangEn -> "Syntax error:\n"
+                  msg =
+                    case lang of
+                      LangTr -> renderParserErrorTr ambErr
+                      LangEn -> renderParserErrorEn ambErr
+              in header <> renderLocatedSpanSnippet "Kip" source sp <> "\n" <> msg
+            Nothing ->
+              case lang of
+                LangTr ->
+                  let trBundle = mapParseErrorBundle ParserErrorTr err
+                  in "Sözdizim hatası:\n" <> T.pack (turkifyParseError (errorBundlePretty trBundle))
+                LangEn ->
+                  let enBundle = mapParseErrorBundle ParserErrorEn err
+                  in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
 
 -- | Find the custom repeated-pattern-binder parser error, if present.
 findPatternBinderRepeatedError :: ParseErrorBundle Text ParserError -> Maybe (Identifier, Span, Text)
@@ -857,6 +893,24 @@ findUnrecognizedWordError (ParseErrorBundle errs posState) = do
         FancyError _ xs ->
           [ (w, sp, suggestions)
           | ErrorCustom (ErrUnrecognizedTurkishWord w sp suggestions) <- Set.toList xs
+          ]
+        _ -> []
+
+-- | Find the custom ambiguous bare-application parser error, if present.
+findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -> Maybe (ParserError, Span, Text)
+findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
+  (errComp, sp) <- listToMaybe (concatMap extract (NE.toList errs))
+  return (errComp, sp, pstateInput posState)
+  where
+    extract :: ParseError Text ParserError -> [(ParserError, Span)]
+    extract parseErr =
+      case parseErr of
+        FancyError _ xs ->
+          [ (ErrAmbiguousBareApplication sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplication sp) <- Set.toList xs
+          ] <>
+          [ (ErrAmbiguousBareApplicationOverload ident arities sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplicationOverload ident arities sp) <- Set.toList xs
           ]
         _ -> []
 
@@ -1074,7 +1128,7 @@ main = do
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
           emitMsgIO renderCtx (MsgHeader title)
           emitMsgIO renderCtx (MsgSeparator title)
-          kipSettings >>= \s -> runInputT s (runReaderT (loop (ReplState (parserCtx preludePst) (parserCtors preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
+          kipSettings >>= \s -> runInputT s (runReaderT (loop (ReplState (parserCtx preludePst) (parserCtors preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) (parserFuncArities preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
         else do
           (preludePst, preludeTC, preludeEval, preludeLoaded) <-
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
@@ -1221,7 +1275,7 @@ main = do
           ctx <- ask
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty Nothing uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1263,7 +1317,7 @@ main = do
           (uCache, dCache) <- runApp requireParserCaches
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs)
                     (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs)
-                    Map.empty Nothing uCache dCache
+                    (replFuncArities rs) Map.empty Nothing uCache dCache
           -- Decide statement vs expression based on trailing period
           let isStmt = case dropWhile (== ' ') (reverse expr) of '.':_ -> True; _ -> False
           if isStmt
@@ -1287,7 +1341,7 @@ main = do
       | Just expr <- stripPrefix ":steps " input = do
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty Nothing uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1315,18 +1369,21 @@ main = do
                           emitMsgTCtx (MsgEvalError evalErr)
                           loop rs
                         Right (Right ((result, steps), evalSt')) -> do
-                          ctx <- ask
-                          let renderSteps exp = renderExpPreservingCase cache fsm' evalSt' exp >>= stripStepsCopulaTRmorph cache fsm'
-                              rInput = renderSteps
-                              rOutput = renderSteps . setTopCaseNom
-                          let rInputM = liftIO . rInput
-                              rOutputM = liftIO . rOutput
-                          formatStepsStreaming (rcUseColor ctx) rInputM rOutputM result steps (lift . outputStrLn)
+                          if isRuntimeValue evalSt' result
+                            then do
+                              ctx <- ask
+                              let renderSteps exp = renderExpPreservingCase cache fsm' evalSt' exp >>= stripStepsCopulaTRmorph cache fsm'
+                                  rInput = renderSteps
+                                  rOutput = renderSteps . setTopCaseNom
+                              let rInputM = liftIO . rInput
+                                  rOutputM = liftIO . rOutput
+                              formatStepsStreaming (rcUseColor ctx) rInputM rOutputM result steps (lift . outputStrLn)
+                            else emitMsgTCtx (MsgEvalError Eval.RuntimeTypeErrorNonValue)
                           loop rs
       | otherwise = do
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty Nothing uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
           -- If input ends with a period, parse as statement; otherwise parse as expression
           if case dropWhile (== ' ') (reverse input) of
                '.':_ -> True
@@ -1336,28 +1393,36 @@ main = do
                 Left err -> do
                   emitMsgTCtx (MsgParseError err)
                   loop rs
-                Right (stmt, MkParserState _ pctx pctors pty ptycons ptymods pprim _ _ _ _) -> do
+                Right (stmt, pst') -> do
                   case stmt of
                     Load dirPath name -> do
                       path <- runApp (resolveModulePath (replModuleDirs rs) dirPath name)
                       absPath <- liftIO (canonicalizePath path)
-                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty (Just path) uCache dCache
+                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty (Just path) uCache dCache
                       if Set.member absPath (replLoaded rs)
                         then loop rs
                         else do
-                          (pst', tcSt', evalSt', loaded') <- runApp (runFile False False False (replModuleDirs rs) (loadPst, replTCState rs, replEvalState rs, replLoaded rs) path)
+                          (pstLoaded, tcSt', evalSt', loaded') <- runApp (runFile False False False (replModuleDirs rs) (loadPst, replTCState rs, replEvalState rs, replLoaded rs) path)
                           emitMsgTCtx (MsgLoaded name)
-                          loop (rs { replCtx = parserCtx pst'
-                                               , replCtors = parserCtors pst'
-                                               , replTyParams = parserTyParams pst'
-                                               , replTyCons = parserTyCons pst'
-                                               , replTyMods = parserTyMods pst'
-                                               , replPrimTypes = parserPrimTypes pst'
+                          loop (rs { replCtx = parserCtx pstLoaded
+                                               , replCtors = parserCtors pstLoaded
+                                               , replTyParams = parserTyParams pstLoaded
+                                               , replTyCons = parserTyCons pstLoaded
+                                               , replTyMods = parserTyMods pstLoaded
+                                               , replPrimTypes = parserPrimTypes pstLoaded
+                                               , replFuncArities = parserFuncArities pstLoaded
                                                , replTCState = tcSt'
                                                , replEvalState = evalSt'
                                                , replLoaded = loaded'
                                                })
                     _ -> do
+                      let pctx = parserCtx pst'
+                          pctors = parserCtors pst'
+                          pty = parserTyParams pst'
+                          ptycons = parserTyCons pst'
+                          ptymods = parserTyMods pst'
+                          pprim = parserPrimTypes pst'
+                          pfuncArities = parserFuncArities pst'
                       let paramTyCons = [name | (name, arity) <- ptycons, arity > 0]
                       liftIO (runTCM (tcStmt stmt) (replTCState rs)) >>= \case
                         Left tcErr -> do
@@ -1373,6 +1438,7 @@ main = do
                                                    , replTyCons = ptycons
                                                    , replTyMods = ptymods
                                                    , replPrimTypes = pprim
+                                                   , replFuncArities = pfuncArities
                                                    , replTCState = tcSt
                                                    , replEvalState = evalSt
                                                    })
@@ -1401,8 +1467,11 @@ main = do
                           emitMsgTCtx (MsgEvalError evalErr)
                           loop rs
                         Right (Right (result, _)) -> do
-                          rendered <- liftIO (evalRender (replEvalState rs) (replEvalState rs) result)
-                          lift (outputStrLn rendered)
+                          if isRuntimeValue (replEvalState rs) result
+                            then do
+                              rendered <- liftIO (evalRender (replEvalState rs) (replEvalState rs) result)
+                              lift (outputStrLn rendered)
+                            else emitMsgTCtx (MsgEvalError Eval.RuntimeTypeErrorNonValue)
                           loop rs
       where
         -- | Infer and print a type for a REPL expression.
@@ -1628,7 +1697,7 @@ main = do
              -> AppM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
       (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
+      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
     -- | Run a single file and update all states.
     runFile :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.
@@ -1736,22 +1805,26 @@ main = do
                  -> TCState -- ^ Cached TC state.
                  -> TCState -- ^ Combined TC state.
     mergeTCState cur cached =
-      MkTCState
-        { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
-        , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
-        , tcFuncSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
-        , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
-        , tcVarTys = tcVarTys cached ++ tcVarTys cur
-        , tcVals = Map.union (tcVals cached) (tcVals cur)
-        , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
-        , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
-        , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-        , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
-        , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-        , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
-        , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
-        , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
-        }
+      let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
+          -- Rebuild derived signature indices after merge so REPL/LSP lookup
+          -- paths keep using the same optimized arity index.
+      in emptyTCState
+           { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
+           , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
+           , tcFuncSigs = mergedSigs
+           , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
+           , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
+           , tcVarTys = tcVarTys cached ++ tcVarTys cur
+           , tcVals = Map.union (tcVals cached) (tcVals cur)
+           , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
+           , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
+           , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
+           , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
+           , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
+           , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
+           , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
+           , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
+           }
 
     -- | Run a single statement in the context of a file.
     runStmt :: Bool -- ^ Whether to show definitions.

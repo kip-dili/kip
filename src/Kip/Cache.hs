@@ -29,7 +29,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashTable.IO as HT
 
 import Kip.AST
-import Kip.Parser (ParserState(..), MorphCache)
+import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
 import Kip.TypeCheck (TCState(..))
 import Kip.Eval (EvalState(..))
 import Language.Foma (FSM)
@@ -84,6 +84,7 @@ data CachedParserState = CachedParserState
   , ptyCons :: [(Identifier, Int)] -- ^ Type constructor arities.
   , ptyMods :: [(Identifier, [Identifier])] -- ^ Type modifier expansions.
   , pprimTypes :: [Identifier] -- ^ Primitive type identifiers.
+  , pfuncArities :: Map.Map Identifier (Set.Set Int) -- ^ Known function arities.
   , pdefSpans :: Map.Map Identifier [Span] -- ^ Definition spans.
   , pupsCache :: [(T.Text, [T.Text])] -- ^ Persisted morphology analysis cache.
   , pdownsCache :: [(T.Text, [T.Text])] -- ^ Persisted morphology generation cache.
@@ -110,6 +111,7 @@ toCachedParserState ps = do
       , ptyCons = parserTyCons ps
       , ptyMods = parserTyMods ps
       , pprimTypes = parserPrimTypes ps
+      , pfuncArities = parserFuncArities ps
       , pdefSpans = parserDefSpans ps
       , pupsCache = upsEntries
       , pdownsCache = downsEntries
@@ -130,7 +132,9 @@ fromCachedParserState ::
 fromCachedParserState fsm cachePath upsCache downsCache CachedParserState{..} = do
   mapM_ (uncurry (HT.insert upsCache)) pupsCache
   mapM_ (uncurry (HT.insert downsCache)) pdownsCache
-  return (MkParserState fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pdefSpans cachePath upsCache downsCache)
+  -- Use the shared constructor so derived parser indices (for overload
+  -- lookup) are rebuilt consistently after cache restore.
+  return (newParserStateWithCtxAndCaches fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath upsCache downsCache)
 
 -- | Cached wrapper for the type checker state.
 newtype CachedTCState = CachedTCState TCState

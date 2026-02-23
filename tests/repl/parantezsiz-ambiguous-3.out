@@ -1,0 +1,6 @@
+Sözdizim hatası:
+Kip:1:1:
+  |
+1 | 5'le 4'le 3'ün toplamının toplamı
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+'toplam' işlevinin farklı argüman sayılarıyla aşırı yüklenmiş sürümleri var (1, 2). Parantezsiz çağrı bu yüzden belirsiz; alt ifadeleri parantezleyin.

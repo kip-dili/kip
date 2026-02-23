@@ -123,6 +123,8 @@ data ParserError
   | ErrPatternOnlyNames
   | ErrPatternArgNameRepeated
   | ErrPatternBinderRepeated Identifier Span
+  | ErrAmbiguousBareApplication Span
+  | ErrAmbiguousBareApplicationOverload Identifier [Int] Span
   | ErrYaDaInvalid
   | ErrInternal Text
   deriving (Eq, Ord, Show)
@@ -152,6 +154,19 @@ renderParserErrorTr err =
     ErrPatternArgNameRepeated -> "Örüntüde argüman adı tekrar edilemez."
     ErrPatternBinderRepeated ident _ ->
       "Örüntüde aynı bağlayıcı isim tekrar edilemez: " <> identText ident
+    ErrAmbiguousBareApplication _ ->
+      "Parantezsiz çağrı burada belirsiz. İç çağrıları parantezleyin."
+    ErrAmbiguousBareApplicationOverload ident arities _ ->
+      if null arities
+        then "'" <> identText ident
+             <> "' işlevi farklı argüman sayılarıyla aşırı yüklenmiş olabilir. "
+             <> "Parantezsiz çağrı bu yüzden belirsiz; alt ifadeleri parantezleyin."
+        else
+          let arityTxt = T.intercalate ", " (map (T.pack . show) arities)
+          in "'" <> identText ident
+             <> "' işlevinin farklı argüman sayılarıyla aşırı yüklenmiş sürümleri var ("
+             <> arityTxt
+             <> "). Parantezsiz çağrı bu yüzden belirsiz; alt ifadeleri parantezleyin."
     ErrYaDaInvalid -> "\"ya da\" yalnızca çok yapkılı tiplerin son yapkısında kullanılabilir."
     ErrInternal msg -> msg
 
@@ -180,6 +195,19 @@ renderParserErrorEn err =
     ErrPatternArgNameRepeated -> "Pattern argument names cannot be repeated."
     ErrPatternBinderRepeated ident _ ->
       "The same binder name cannot be repeated in a pattern: " <> identText ident
+    ErrAmbiguousBareApplication _ ->
+      "Parenthesis-free call is ambiguous here. Parenthesize inner calls."
+    ErrAmbiguousBareApplicationOverload ident arities _ ->
+      if null arities
+        then "'" <> identText ident
+             <> "' may be overloaded with different arities. "
+             <> "This parenthesis-free call is ambiguous; parenthesize subexpressions."
+        else
+          let arityTxt = T.intercalate ", " (map (T.pack . show) arities)
+          in "'" <> identText ident
+             <> "' is overloaded with multiple arities ("
+             <> arityTxt
+             <> "). This parenthesis-free call is ambiguous; parenthesize subexpressions."
     ErrYaDaInvalid -> "\"ya da\" can only appear before the last constructor."
     ErrInternal msg -> msg
 
@@ -237,6 +265,15 @@ data ParserState =
     , parserTyCons :: [(Identifier, Int)]
     , parserTyMods :: [(Identifier, [Identifier])]
     , parserPrimTypes :: [Identifier]
+    , parserFuncArities :: M.Map Identifier (Set.Set Int)
+    -- | Secondary index used by hot-path overload checks.
+    --
+    -- ==== Performance note (Optimization: parser overload lookup)
+    -- Ambiguity detection in REPL used to scan the whole
+    -- 'parserFuncArities' map to gather all entries with matching surface
+    -- names. Keeping this precomputed name-based map makes those lookups
+    -- O(log n) and allocation-light.
+    , parserFuncAritiesByName :: M.Map Text (Set.Set Int)
     , parserDefSpans :: M.Map Identifier [Span]
     , parserFilePath :: Maybe FilePath
     , parserUpsCache :: !MorphCache
@@ -319,7 +356,7 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty mFilePath upsCache <$> HT.new
+  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -328,9 +365,13 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
 newParserStateWithCaches fsm' =
-  MkParserState fsm' Set.empty [] [] [] [] [] M.empty
+  MkParserState fsm' Set.empty [] [] [] [] [] M.empty M.empty M.empty
 
 -- | Create a parser state with context and shared caches.
+--
+-- ==== Performance note (Optimization: parser state indexing)
+-- We compute 'parserFuncAritiesByName' eagerly here so all call sites
+-- (fresh states and cache-restored states) get the same fast-path lookup.
 newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> Set.Set Identifier -- ^ Initial identifier context.
                                -> [Identifier] -- ^ Initial constructor identifiers.
@@ -338,12 +379,23 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> [(Identifier, Int)] -- ^ Type constructor arities.
                                -> [(Identifier, [Identifier])] -- ^ Type modifiers.
                                -> [Identifier] -- ^ Primitive types.
+                               -> M.Map Identifier (Set.Set Int) -- ^ Known function arities.
                                -> M.Map Identifier [Span] -- ^ Definition spans.
                                -> Maybe FilePath -- ^ Optional file path for span tracking.
                                -> MorphCache -- ^ Shared ups cache.
                                -> MorphCache -- ^ Shared downs cache.
                                -> ParserState -- ^ Parser state.
-newParserStateWithCtxAndCaches = MkParserState
+newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities =
+  MkParserState
+    fsm'
+    ctx
+    ctors
+    tyParams
+    tyCons
+    tyMods
+    primTypes
+    funcArities
+    (funcAritiesNameIndex funcArities)
 
 -- | Get the current parser state.
 getP :: KipParser ParserState -- ^ Current parser state.
@@ -363,6 +415,32 @@ modifyP = lift . modify
 recordDefSpan :: Identifier -> Span -> KipParser ()
 recordDefSpan ident sp =
   modifyP (\ps -> ps { parserDefSpans = M.insertWith (flip (<>)) ident [sp] (parserDefSpans ps) })
+
+-- | Track declared arities for functions seen by the parser.
+--
+-- ==== Performance note (Optimization: incremental index maintenance)
+-- Updates both arity maps in one state transition so the secondary name
+-- index stays in sync without requiring periodic rebuilds.
+registerFuncArity :: Identifier -> Int -> KipParser ()
+registerFuncArity ident arity =
+  modifyP (\ps ->
+    ps
+      { parserFuncArities =
+          M.insertWith Set.union ident (Set.singleton arity) (parserFuncArities ps)
+      , parserFuncAritiesByName =
+          M.insertWith Set.union (snd ident) (Set.singleton arity) (parserFuncAritiesByName ps)
+      })
+
+-- | Build a secondary arity index keyed only by function surface name.
+--
+-- This is used by parenthesis-free ambiguity checks that operate on
+-- inflected surface forms where only the final word is needed for
+-- overload grouping.
+funcAritiesNameIndex :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int)
+funcAritiesNameIndex =
+  M.fromListWith Set.union
+    . map (\((_, name), arities) -> (name, arities))
+    . M.toList
 
 -- | Parse an item and return it with a span.
 withSpan :: KipParser a -- ^ Parser to wrap.
@@ -1822,36 +1900,145 @@ parseExpWithCtx' useCtx allowMatch =
       case xs of
         [] -> customFailure (ErrInternal "Internal error: buildAppFrom called with empty list")
         [x] -> return x
-        first:_ ->
-          case reverse xs of
-            x:revRest ->
-              let rest = reverse revRest
-                  start = annSpan (annExp first)
-                  end = annSpan (annExp x)
-                  ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
-              in case x of
-                   Var {varCandidates} | isWriteCandidates varCandidates -> do
-                     case rest of
-                       [] -> return (App ann x [])
-                       [arg] -> do
-                         let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                         return (App ann' x [arg])
-                       _ ->
-                         case reverse rest of
-                           lastRest:_ ->
-                             case lastRest of
-                               Var {} -> do
-                                 arg <- buildAppFrom rest
-                                 let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                                 return (App ann' x [arg])
-                               App {} -> do
-                                 arg <- buildAppFrom rest
-                                 let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                                 return (App ann' x [arg])
-                               _ -> return (App ann x rest)
-                           [] -> return (App ann x rest)
-                   _ -> return (App ann x rest)
-            [] -> customFailure (ErrInternal "Internal error: buildAppFrom reverse returned empty")
+        _ -> do
+          mStrict <- buildStrictApp xs
+          case mStrict of
+            Just expStrict -> return expStrict
+            Nothing -> buildAppFromFallback xs
+      where
+        buildAppFromFallback ys =
+          case ys of
+            [] -> customFailure (ErrInternal "Internal error: buildAppFromFallback called with empty list")
+            [x] -> return x
+            first:_ ->
+              case reverse ys of
+                x:revRest ->
+                  let rest = reverse revRest
+                      start = annSpan (annExp first)
+                      end = annSpan (annExp x)
+                      ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
+                  in case x of
+                       Var {varCandidates} | isWriteCandidates varCandidates -> do
+                         case rest of
+                           [] -> return (App ann x [])
+                           [arg] -> do
+                             let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                             return (App ann' x [arg])
+                           _ ->
+                             case reverse rest of
+                               lastRest:_ ->
+                                 case lastRest of
+                                   Var {} -> do
+                                     arg <- buildAppFrom rest
+                                     let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                                     return (App ann' x [arg])
+                                   App {} -> do
+                                     arg <- buildAppFrom rest
+                                     let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                                     return (App ann' x [arg])
+                                   _ -> return (App ann x rest)
+                               [] -> return (App ann x rest)
+                       _ -> return (App ann x rest)
+                [] -> customFailure (ErrInternal "Internal error: buildAppFromFallback reverse returned empty")
+
+        buildStrictApp :: [Exp Ann] -> KipParser (Maybe (Exp Ann))
+        buildStrictApp ys = do
+          ps <- getP
+          let arityMap = parserFuncArities ps
+          results <- parseStrict arityMap ys
+          return $
+            case nub results of
+              [e] -> Just e
+              _ -> Nothing
+
+        parseStrict :: M.Map Identifier (Set.Set Int) -> [Exp Ann] -> KipParser [Exp Ann]
+        parseStrict _ [e] = return [e]
+        parseStrict arityMap ts =
+          case reverse ts of
+            fnExp:revRest ->
+              uniqueKnownArity arityMap fnExp >>= maybe (return []) (\arity ->
+                if arity > 0
+                  then
+                    let rest = reverse revRest
+                    in fmap (map (mkApp ts fnExp)) (splitArgs arityMap arity rest)
+                  else return [])
+            [] -> return []
+
+        splitArgs :: M.Map Identifier (Set.Set Int) -> Int -> [Exp Ann] -> KipParser [[Exp Ann]]
+        splitArgs arityMap arity tokens
+          | arity <= 0 = return []
+          | length tokens < arity = return []
+          | otherwise = go arity tokens
+          where
+            go n pool
+              | n == 0 =
+                  return ([[] | null pool])
+              | length pool < n = return []
+              | otherwise =
+                  concat <$>
+                    mapM
+                      (\splitAtIx -> do
+                          let prefix = take splitAtIx pool
+                              chunk = drop splitAtIx pool
+                          argExps <- parseStrict arityMap chunk
+                          prevExpSets <- go (n - 1) prefix
+                          return [prevArgs ++ [arg] | arg <- argExps, prevArgs <- prevExpSets]
+                      )
+                      [n - 1 .. length pool - 1]
+
+        uniqueKnownArity :: M.Map Identifier (Set.Set Int) -> Exp Ann -> KipParser (Maybe Int)
+        uniqueKnownArity arityMap expItem =
+          case expItem of
+            Var {varName, varCandidates} -> do
+              aritySets <- mapM lookupCandidateArities (varName : map fst varCandidates)
+              let arities = foldl' Set.union Set.empty aritySets
+              return $
+                case Set.toList arities of
+                  [n] -> Just n
+                  _ -> Nothing
+            _ -> return Nothing
+          where
+            lookupCandidateArities ident = do
+              let exact = fromMaybe Set.empty (M.lookup ident arityMap)
+                  strippedBase =
+                    case stripBareCaseSuffix ident of
+                      Just (base, _) -> fromMaybe Set.empty (M.lookup base arityMap)
+                      Nothing -> Set.empty
+                  byName name =
+                    foldl'
+                      Set.union
+                      Set.empty
+                      [ ars
+                      | ((_, keyName), ars) <- M.toList arityMap
+                      , keyName == name
+                      ]
+                  byNameArities = byName (snd ident)
+              normalized <- normalizePossessive ident
+              let normalizedArities = fromMaybe Set.empty (M.lookup normalized arityMap)
+                  normalizedByName = byName (snd normalized)
+              normalizedFromStripped <-
+                case stripBareCaseSuffix ident of
+                  Just (base, _) -> do
+                    normalizedBase <- normalizePossessive base
+                    let exactBase = fromMaybe Set.empty (M.lookup normalizedBase arityMap)
+                        byNameBase = byName (snd normalizedBase)
+                    return (Set.union exactBase byNameBase)
+                  Nothing -> return Set.empty
+              return (foldl' Set.union Set.empty [exact, strippedBase, byNameArities, normalizedArities, normalizedByName, normalizedFromStripped])
+
+        mkApp :: [Exp Ann] -> Exp Ann -> [Exp Ann] -> Exp Ann
+        mkApp ts fnExp args =
+          case ts of
+            first:_ ->
+              let ann =
+                    mkAnn
+                      (annCase (annExp fnExp))
+                      (mergeSpan (annSpan (annExp first)) (annSpan (annExp fnExp)))
+              in App ann fnExp args
+            [] ->
+              let ann = mkAnn (annCase (annExp fnExp)) (annSpan (annExp fnExp))
+              in App ann fnExp args
+
     -- | Attempt to reinterpret application as a type cast.
     tryApplyTypeCase :: Exp Ann -- ^ Candidate expression.
                      -> Exp Ann -- ^ Candidate type expression.
@@ -2401,6 +2588,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           case clauses of
             [Clause (PWildcard _) body] -> do
               modifyP (\ps -> ps {parserCtx = Set.insert fname (parserCtx ps)})
+              registerFuncArity fname 0
               return (Defn fname (TyString (mkAnn Nom NoSpan)) body)
             _ -> customFailure ErrDefinitionBodyMissing
         else do
@@ -2413,6 +2601,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             Just _ -> do
               st' <- getP
               putP (st' {parserCtx = Set.insert fname (parserCtx st)})
+              registerFuncArity fname (length args)
               return (PrimFunc fname args retTy isInfinitive)
             Nothing -> do
               isBindStart <- option False (try bindStartLookahead)
@@ -2422,6 +2611,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                   else try (parseBodyOnly argNames) <|> parseClauses argNames
               st' <- getP
               putP (st' {parserCtx = Set.insert fname (parserCtx st)})
+              registerFuncArity fname (length args)
               return (Function fname args retTy clauses isInfinitive)
     -- | Ensure newly defined names are recognized Turkish surface forms.
     -- For hyphenated identifiers, morphology applies to the head (last segment).
@@ -3727,8 +3917,16 @@ parseExpFromRepl :: ParserState -- ^ Initial parser state.
                  -- ^ REPL input buffer.
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann)) -- ^ Parsed expression.
 parseExpFromRepl st input = do
-  (res, _) <- runStateT (runParserT p "Kip" (removeComments input)) st
-  return res
+  let stripped = removeComments input
+  (res, st') <- runStateT (runParserT p "Kip" stripped) st
+  case res of
+    Right e
+      | Just ambErr <- ambiguousBareReplError st' e ->
+          case runParser (customFailure ambErr) "Kip" stripped of
+            Left err -> return (Left err)
+            Right _ -> return res
+      | otherwise -> return res
+    _ -> return res
   where
     -- | Parser entry for REPL expressions.
     p :: KipParser (Exp Ann) -- ^ Parsed expression.
@@ -3758,8 +3956,16 @@ parseForDebug st input = do
 parseExpForDebug :: ParserState -> Text
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann, Text))
 parseExpForDebug st input = do
-  (res, _) <- runStateT (runParserT p "Kip" (removeComments input)) st
-  return res
+  let stripped = removeComments input
+  (res, st') <- runStateT (runParserT p "Kip" stripped) st
+  case res of
+    Right (e, remaining)
+      | Just ambErr <- ambiguousBareReplError st' e ->
+          case runParser (customFailure ambErr) "Kip" stripped of
+            Left err -> return (Left err)
+            Right _ -> return res
+      | otherwise -> return res
+    _ -> return res
   where
     p = do
       ws
@@ -3767,6 +3973,89 @@ parseExpForDebug st input = do
       ws
       remaining <- getInput
       return (e, remaining)
+
+-- | Detect unresolved parenthesis-free REPL applications and build a custom error.
+ambiguousBareReplError :: ParserState -> Exp Ann -> Maybe ParserError
+ambiguousBareReplError st expItem =
+  case expItem of
+    App _ fnExp args ->
+      let arities = headArities st fnExp
+          tooManyArgs =
+            case arities of
+              [] -> False
+              _ -> length args > maximum arities
+          suspiciousChain = length args >= 4 && inflectedVarCount args >= 2
+      in if tooManyArgs || suspiciousChain
+           then Just (mkAmbiguousBareError expItem fnExp arities)
+           else Nothing
+    _ -> Nothing
+  where
+    inflectedVarCount =
+      length . filter isInflectedVar
+    isInflectedVar e =
+      case e of
+        Var ann _ _ -> annCase ann /= Nom
+        _ -> False
+
+    mkAmbiguousBareError :: Exp Ann -> Exp Ann -> [Int] -> ParserError
+    mkAmbiguousBareError fullExp fnExp arities =
+      let sp = annSpan (annExp fullExp)
+      in case functionIdent fnExp of
+           Just ident ->
+             let displayIdent =
+                   case stripBareCaseSuffix ident of
+                     Just (base, _) -> base
+                     Nothing -> ident
+             in if length arities > 1
+                  then ErrAmbiguousBareApplicationOverload displayIdent arities sp
+                  else ErrAmbiguousBareApplicationOverload displayIdent [] sp
+           Nothing -> ErrAmbiguousBareApplication sp
+
+    functionIdent :: Exp Ann -> Maybe Identifier
+    functionIdent e =
+      case e of
+        Var _ varName _ -> Just varName
+        _ -> Nothing
+
+    headArities :: ParserState -> Exp Ann -> [Int]
+    headArities pst fnExp =
+      case fnExp of
+        Var _ varName varCandidates ->
+          let arityMap = parserFuncArities pst
+              arityByName = parserFuncAritiesByName pst
+              directIds = varName : map fst varCandidates
+              strippedIds =
+                mapMaybe
+                  (\ident ->
+                    case stripBareCaseSuffix ident of
+                      Just (base, _) -> Just base
+                      Nothing -> Nothing
+                  )
+                  directIds
+              ids = nub (directIds ++ strippedIds)
+          in aritiesForIds arityMap arityByName ids
+        _ -> []
+
+    -- | Gather candidate arities by exact identifier and by surface name.
+    --
+    -- ==== Performance note (Optimization: ambiguity arity lookup)
+    -- Name-based collection uses the prebuilt 'parserFuncAritiesByName'
+    -- index, avoiding full scans of all known arities on each REPL parse.
+    aritiesForIds :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int) -> [Identifier] -> [Int]
+    aritiesForIds arityMap arityByName ids =
+      let byIdent =
+            foldl'
+              Set.union
+              Set.empty
+              [ fromMaybe Set.empty (M.lookup ident arityMap)
+              | ident <- ids
+              ]
+          byName =
+            foldl'
+              (\acc keyName -> Set.union acc (fromMaybe Set.empty (M.lookup keyName arityByName)))
+              Set.empty
+              (ordNub (map snd ids))
+      in sort (Set.toList (Set.union byIdent byName))
 
 -- | Parse a full file into statements.
 parseFromFile :: ParserState -- ^ Initial parser state.

@@ -102,6 +102,7 @@ data ReplState =
     , replTyCons :: [(Identifier, Int)]
     , replTyMods :: [(Identifier, [Identifier])]
     , replPrimTypes :: [Identifier]
+    , replFuncArities :: Map.Map Identifier (Set.Set Int)
     , replTCState :: TCState
     , replEvalState :: EvalState
     , replModuleDirs :: [FilePath]
@@ -162,12 +163,14 @@ renderEvalError lang evalErr =
         Eval.UnboundVariable name -> "Değerleme hatası: " <> T.pack (prettyIdent name) <> " tanımlı değil."
         Eval.NoMatchingFunction name -> "Değerleme hatası: " <> T.pack (prettyIdent name) <> " için uygun bir tanım bulunamadı."
         Eval.NoMatchingClause -> "Değerleme hatası: eşleşen bir dal bulunamadı."
+        Eval.RuntimeTypeErrorNonValue -> "Değerleme hatası: sonuç bir değer değil (çalışma zamanı tip hatası)."
     LangEn ->
       case evalErr of
         Eval.Unknown -> "Evaluation error: unknown error."
         Eval.UnboundVariable name -> "Evaluation error: " <> T.pack (prettyIdent name) <> " is not defined."
         Eval.NoMatchingFunction name -> "Evaluation error: no matching definition found for " <> T.pack (prettyIdent name) <> "."
         Eval.NoMatchingClause -> "Evaluation error: no matching clause found."
+        Eval.RuntimeTypeErrorNonValue -> "Evaluation error: result is not a value (runtime type error)."
 
 -- | Render a compiler message to text.
 renderMsg :: CompilerMsg -> RenderM Text
@@ -265,15 +268,29 @@ renderParseErrorFor target lang err =
                ParseErrorForCli -> header <> renderSpanSnippet source sp <> "\n" <> msg
                ParseErrorForLsp -> header <> msg
         Nothing ->
-          case lang of
-            LangTr ->
-              let trBundle = mapParseErrorBundle ParserErrorTr err
-                  pretty = T.pack (turkifyParseError (errorBundlePretty trBundle))
-              in "Sözdizim hatası:\n" <> compactPretty target pretty
-            LangEn ->
-              let enBundle = mapParseErrorBundle ParserErrorEn err
-                  pretty = T.pack (errorBundlePretty enBundle)
-              in "Syntax error:\n" <> compactPretty target pretty
+          case findAmbiguousBareApplicationError err of
+            Just (ambErr, sp, source) ->
+              let header =
+                    case lang of
+                      LangTr -> "Sözdizim hatası:\n"
+                      LangEn -> "Syntax error:\n"
+                  msg =
+                    case lang of
+                      LangTr -> renderParserErrorTr ambErr
+                      LangEn -> renderParserErrorEn ambErr
+              in case target of
+                   ParseErrorForCli -> header <> renderLocatedSpanSnippet "Kip" source sp <> "\n" <> msg
+                   ParseErrorForLsp -> header <> msg
+            Nothing ->
+              case lang of
+                LangTr ->
+                  let trBundle = mapParseErrorBundle ParserErrorTr err
+                      pretty = T.pack (turkifyParseError (errorBundlePretty trBundle))
+                  in "Sözdizim hatası:\n" <> compactPretty target pretty
+                LangEn ->
+                  let enBundle = mapParseErrorBundle ParserErrorEn err
+                      pretty = T.pack (errorBundlePretty enBundle)
+                  in "Syntax error:\n" <> compactPretty target pretty
 
 -- | Remove location/snippet gutter emitted by Megaparsec pretty printer.
 compactPretty :: ParseErrorRenderTarget -> Text -> Text
@@ -333,6 +350,24 @@ findUnrecognizedWordError (ParseErrorBundle errs posState) = do
         FancyError _ xs ->
           [ (w, sp, suggestions)
           | ErrorCustom (ErrUnrecognizedTurkishWord w sp suggestions) <- Set.toList xs
+          ]
+        _ -> []
+
+-- | Find the custom ambiguous bare-application parser error, if present.
+findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -> Maybe (ParserError, Span, Text)
+findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
+  (errComp, sp) <- listToMaybe (concatMap extract (NE.toList errs))
+  return (errComp, sp, pstateInput posState)
+  where
+    extract :: ParseError Text ParserError -> [(ParserError, Span)]
+    extract parseErr =
+      case parseErr of
+        FancyError _ xs ->
+          [ (ErrAmbiguousBareApplication sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplication sp) <- Set.toList xs
+          ] <>
+          [ (ErrAmbiguousBareApplicationOverload ident arities sp, sp)
+          | ErrorCustom (ErrAmbiguousBareApplicationOverload ident arities sp) <- Set.toList xs
           ]
         _ -> []
 
@@ -591,6 +626,26 @@ renderSpanSnippet source sp =
                  lastLine = caretLine (getLine eLine) 1 eCol
              in T.concat [first, "\n", lastLine]
 
+-- | Render a span snippet with Megaparsec-style location and gutter lines.
+renderLocatedSpanSnippet :: Text -> Text -> Span -> Text
+renderLocatedSpanSnippet sourceName source sp =
+  case sp of
+    NoSpan -> ""
+    Span start _ _ ->
+      let lineNo = T.pack (show (unPos (sourceLine start)))
+          colNo = T.pack (show (unPos (sourceColumn start)))
+          gutterPad = T.replicate (T.length lineNo) " "
+          snippetLines = T.lines (renderSpanSnippet source sp)
+      in case snippetLines of
+           codeLn:caretLn:_ ->
+             T.concat
+               [ sourceName, ":", lineNo, ":", colNo, ":\n"
+               , gutterPad, " |\n"
+               , lineNo, " | ", codeLn, "\n"
+               , gutterPad, " | ", caretLn
+               ]
+           _ -> renderSpanSnippet source sp
+
 -- | Render a span into human-readable text.
 renderSpan :: Lang -> Span -> Text
 renderSpan lang sp =
@@ -651,7 +706,7 @@ requireCacheFsm = do
 runFiles :: Bool -> Bool -> Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM ReplState
 runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
   (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-  return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
+  return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
 
 -- | Run a single file and update all states.
 runFile :: Bool -> Bool -> Bool -> [FilePath] -> (ParserState, TCState, EvalState, Set FilePath) -> FilePath -> RenderM (ParserState, TCState, EvalState, Set FilePath)
@@ -756,22 +811,26 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
 -- cache. Current-state entries are retained for keys not present in cache.
 mergeTCState :: TCState -> TCState -> TCState
 mergeTCState cur cached =
-  MkTCState
-    { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
-    , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
-    , tcFuncSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
-    , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
-    , tcVarTys = tcVarTys cached ++ tcVarTys cur
-    , tcVals = Map.union (tcVals cached) (tcVals cur)
-    , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
-    , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
-    , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-    , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
-    , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-    , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
-    , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
-    , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
-    }
+  let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
+      -- Rebuild derived signature indices after merge so overload lookups
+      -- stay fast and deterministic for subsequent checks.
+  in emptyTCState
+       { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
+       , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
+       , tcFuncSigs = mergedSigs
+       , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
+       , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
+       , tcVarTys = tcVarTys cached ++ tcVarTys cur
+       , tcVals = Map.union (tcVals cached) (tcVals cur)
+       , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
+       , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
+       , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
+       , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
+       , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
+       , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
+       , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
+       , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
+       }
 
 -- | Run a single statement in the context of a file.
 runStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath)
