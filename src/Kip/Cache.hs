@@ -29,7 +29,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashTable.IO as HT
 
 import Kip.AST
-import Kip.Parser (ParserState(..), MorphCache)
+import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
 import Kip.TypeCheck (TCState(..))
 import Kip.Eval (EvalState(..))
 import Language.Foma (FSM)
@@ -132,7 +132,9 @@ fromCachedParserState ::
 fromCachedParserState fsm cachePath upsCache downsCache CachedParserState{..} = do
   mapM_ (uncurry (HT.insert upsCache)) pupsCache
   mapM_ (uncurry (HT.insert downsCache)) pdownsCache
-  return (MkParserState fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath upsCache downsCache)
+  -- Use the shared constructor so derived parser indices (for overload
+  -- lookup) are rebuilt consistently after cache restore.
+  return (newParserStateWithCtxAndCaches fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath upsCache downsCache)
 
 -- | Cached wrapper for the type checker state.
 newtype CachedTCState = CachedTCState TCState

@@ -1805,22 +1805,26 @@ main = do
                  -> TCState -- ^ Cached TC state.
                  -> TCState -- ^ Combined TC state.
     mergeTCState cur cached =
-      MkTCState
-        { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
-        , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
-        , tcFuncSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
-        , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
-        , tcVarTys = tcVarTys cached ++ tcVarTys cur
-        , tcVals = Map.union (tcVals cached) (tcVals cur)
-        , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
-        , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
-        , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-        , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
-        , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-        , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
-        , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
-        , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
-        }
+      let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
+          -- Rebuild derived signature indices after merge so REPL/LSP lookup
+          -- paths keep using the same optimized arity index.
+      in emptyTCState
+           { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
+           , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
+           , tcFuncSigs = mergedSigs
+           , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
+           , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
+           , tcVarTys = tcVarTys cached ++ tcVarTys cur
+           , tcVals = Map.union (tcVals cached) (tcVals cur)
+           , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
+           , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
+           , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
+           , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
+           , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
+           , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
+           , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
+           , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
+           }
 
     -- | Run a single statement in the context of a file.
     runStmt :: Bool -- ^ Whether to show definitions.

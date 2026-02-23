@@ -147,6 +147,12 @@ data TCState =
     { tcCtx :: Set.Set Identifier -- ^ Names in scope.
     , tcFuncs :: Map.Map Identifier [Int] -- ^ Known function arities (list for overloading).
     , tcFuncSigs :: Map.Map Identifier [[Arg Ann]] -- ^ Function argument signatures (list for overloading).
+    -- | Exact-arity signature index for overload resolution.
+    --
+    -- ==== Performance note (Optimization: overload candidate pruning)
+    -- Call checking repeatedly requests "signatures of name N with arity K".
+    -- Keeping this index avoids filtering every signature list on each call.
+    , tcFuncSigsByArity :: Map.Map (Identifier, Int) [[Arg Ann]]
     , tcFuncSigRets :: Map.Map (Identifier, [Ty Ann]) (Ty Ann) -- ^ Function return types by arg types.
     , tcVarTys :: [(Identifier, Ty Ann)] -- ^ Variable type bindings (list for shadowing).
     , tcVals :: Map.Map Identifier (Exp Ann) -- ^ Value bindings for inlining.
@@ -158,6 +164,18 @@ data TCState =
     , tcResolvedTypes :: [(Span, Ty Ann)] -- ^ Resolved variable types by span.
     , tcDefLocations :: Map.Map Identifier (FilePath, Span) -- ^ Definition locations by identifier.
     , tcFuncSigLocs :: Map.Map (Identifier, [Ty Ann]) (FilePath, Span) -- ^ Definition locations by signature.
+    -- | Environment-change token for inferType memo safety.
+    --
+    -- The token is bumped whenever surrounding typing context changes.
+    -- This lets future memoized inferType lookups remain context-aware.
+    , tcInferMemoToken :: !Int
+    -- | Per-pass inferType memo table.
+    --
+    -- ==== Note
+    -- The memo infrastructure is intentionally conservative right now; we
+    -- keep the state plumbing and invalidation hooks in place, but inference
+    -- currently uses the uncached path to preserve exact behavior.
+    , tcInferTypeMemo :: Map.Map (Int, Span, T.Text) (Maybe (Ty Ann))
     }
   deriving (Generic)
 
@@ -192,11 +210,13 @@ instance Binary TCState where
     resolvedSigs <- B.get
     resolvedTypes <- B.get
     defLocs <- B.get
-    MkTCState ctx funcs funcSigs funcSigRets varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs <$> B.get
+    funcSigLocs <- B.get
+    let byArity = buildFuncSigsByArity funcSigs
+    return (MkTCState ctx funcs funcSigs byArity funcSigRets varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState Set.empty Map.empty Map.empty Map.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty
+emptyTCState = MkTCState Set.empty Map.empty Map.empty Map.empty Map.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
 
 -- | Prepend a single value to the list stored under a key in a 'Map.Map'.
 --
@@ -204,6 +224,42 @@ emptyTCState = MkTCState Set.empty Map.empty Map.empty Map.empty [] Map.empty Ma
 -- Used for overloadable bindings ('tcFuncs', 'tcFuncSigs').
 mmInsert :: Ord k => k -> v -> Map.Map k [v] -> Map.Map k [v]
 mmInsert k v = Map.insertWith (++) k [v]
+
+-- | Build an exact-arity index for function signatures.
+--
+-- This is rebuilt when loading cached state and then maintained
+-- incrementally by 'insertFuncSig'.
+buildFuncSigsByArity :: Map.Map Identifier [[Arg Ann]]
+                    -> Map.Map (Identifier, Int) [[Arg Ann]]
+buildFuncSigsByArity sigs =
+  Map.fromListWith (++)
+    [ ((name, length args), [args])
+    | (name, sigList) <- Map.toList sigs
+    , args <- sigList
+    ]
+
+-- | Insert one function signature into both signature indices.
+--
+-- Keeping both maps synchronized is cheaper than rebuilding the arity index
+-- after every declaration.
+insertFuncSig :: Identifier -> [Arg Ann] -> TCState -> TCState
+insertFuncSig name args st =
+  let argsNorm = map (Bifunctor.second normalizePrimTy) args
+  in st
+      { tcFuncSigs = mmInsert name argsNorm (tcFuncSigs st)
+      , tcFuncSigsByArity = mmInsert (name, length argsNorm) argsNorm (tcFuncSigsByArity st)
+      }
+
+-- | Invalidate inferType memo after any environment-affecting state change.
+--
+-- This centralizes invalidation so future memo-enabled inference can remain
+-- sound as bindings/signatures enter and leave scope.
+invalidateInferMemo :: TCState -> TCState
+invalidateInferMemo st =
+  st
+    { tcInferMemoToken = tcInferMemoToken st + 1
+    , tcInferTypeMemo = Map.empty
+    }
 
 -- | Type checker errors.
 data TCError =
@@ -297,7 +353,7 @@ tcExp1With allowEffect e =
           case varCandidates of
             (ident, _) : _ -> unless allowEffect (rejectReadEffect annFn ident)
             _ -> return ()
-          MkTCState{tcFuncSigs, tcTyCons, tcCtors, tcFuncSigRets, tcVarTys} <- get
+          MkTCState{tcFuncSigs, tcFuncSigsByArity, tcTyCons, tcCtors, tcFuncSigRets, tcVarTys} <- get
           let higherOrderResultTy =
                 case lookupByCandidates tcVarTys varCandidates of
                   Just (Arr _ _ imgTy) -> Just imgTy
@@ -343,8 +399,19 @@ tcExp1With allowEffect e =
                       [] -> varName
               let fnNames = map fst varCandidates
                   allSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs]
-                  exactSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig == length allArgs]
-                  partialSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig > length allArgs]
+                  -- Fast-path: exact-arity overloads come from the dedicated
+                  -- index instead of filtering all signatures by length.
+                  exactSigs =
+                    [ (n, sig)
+                    | n <- fnNames
+                    , sig <- Map.findWithDefault [] (n, length allArgs) tcFuncSigsByArity
+                    ]
+                  partialSigs =
+                    [ (n, sig)
+                    | n <- fnNames
+                    , sig <- Map.findWithDefault [] n tcFuncSigs
+                    , length sig > length allArgs
+                    ]
               if null exactSigs && null partialSigs
                 then do
                   case lookupByCandidatesMap tcCtors varCandidates of
@@ -714,9 +781,9 @@ withCtx :: [Identifier] -- ^ Identifiers to add to context.
         -> TCM a -- ^ Result of the computation.
 withCtx idents m = do
   st <- get
-  put st { tcCtx = Set.union (Set.fromList idents) (tcCtx st) }
+  put (invalidateInferMemo (st { tcCtx = Set.union (Set.fromList idents) (tcCtx st) }))
   res <- m
-  modify (\s -> s { tcCtx = tcCtx st })
+  modify (\s -> invalidateInferMemo (s { tcCtx = tcCtx st }))
   return res
 
 -- | Normalize primitive types to their canonical forms.
@@ -777,9 +844,9 @@ tcStmt stmt =
               -- Type error: inferred type doesn't match declared type with rigid type variables
               lift (throwE (NoType NoSpan))
           Nothing -> return ()
-      modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
-                      , tcVals = Map.insert name e' (tcVals s)
-                      })
+      modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
+                                           , tcVals = Map.insert name e' (tcVals s)
+                                           }))
       return (Defn name ty e')
     Function name args ty body isInfinitive -> do
       let argNames = map argIdent args
@@ -809,20 +876,23 @@ tcStmt stmt =
             unless matches $
               lift (throwE (NoType NoSpan))
           Nothing -> return ()
-      modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
-                      , tcFuncs = mmInsert name (length args) (tcFuncs s)
-                      , tcFuncSigs = mmInsert name (map (Bifunctor.second normalizePrimTy) args) (tcFuncSigs s)
-                      , tcFuncSigRets =
-                          let explicit = annSpan (annTy ty) /= NoSpan
-                              defaultInfRet = TyInd (mkAnn Nom NoSpan) ([], T.pack "bitim")
-                              inferredRet =
-                                case mRet of
-                                  Just (TyVar _ n) | isInfinitive && n == name -> defaultInfRet
-                                  _ -> fromMaybe ty mRet
-                              retTy = if explicit then ty else inferredRet
-                          in Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy retTy) (tcFuncSigRets s)
-                      , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s) else tcInfinitives s
-                      })
+      modify (\s ->
+        let explicit = annSpan (annTy ty) /= NoSpan
+            defaultInfRet = TyInd (mkAnn Nom NoSpan) ([], T.pack "bitim")
+            inferredRet =
+              case mRet of
+                Just (TyVar _ n) | isInfinitive && n == name -> defaultInfRet
+                _ -> fromMaybe ty mRet
+            retTy = if explicit then ty else inferredRet
+            s' = insertFuncSig name args s
+        in invalidateInferMemo
+             (s'
+               { tcCtx = Set.insert name (tcCtx s')
+               , tcFuncs = mmInsert name (length args) (tcFuncs s')
+               , tcFuncSigRets =
+                   Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy retTy) (tcFuncSigRets s')
+               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+               }))
       return (Function name args ty body' isInfinitive)
     PrimFunc name args ty isInfinitive -> do
       -- Check that the return type case is one of the allowed forms.
@@ -835,12 +905,14 @@ tcStmt stmt =
       unless (Prim.isImplementedPrimitive name args) $
         lift (throwE (UnimplementedPrimitive name args NoSpan))
       modify (\s ->
-        s { tcCtx = Set.insert name (tcCtx s)
-          , tcFuncs = mmInsert name (length args) (tcFuncs s)
-          , tcFuncSigs = mmInsert name (map (Bifunctor.second normalizePrimTy) args) (tcFuncSigs s)
-          , tcFuncSigRets = Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy ty) (tcFuncSigRets s)
-          , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s) else tcInfinitives s
-          })
+        let s' = insertFuncSig name args s
+        in invalidateInferMemo
+             (s'
+               { tcCtx = Set.insert name (tcCtx s')
+               , tcFuncs = mmInsert name (length args) (tcFuncs s')
+               , tcFuncSigRets = Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy ty) (tcFuncSigRets s')
+               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+               }))
       return (PrimFunc name args ty isInfinitive)
     Load dirPath name ->
       return (Load dirPath name)
@@ -874,15 +946,15 @@ tcStmt stmt =
               validateTy i
             _ -> return ()
       mapM_ (\((_, _), ctorArgs) -> mapM_ validateTy ctorArgs) ctors
-      modify (\s -> s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
-                      , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
-                      , tcTyCons = Map.insert name (length params) (tcTyCons s)
-                      })
+      modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
+                                           , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
+                                           , tcTyCons = Map.insert name (length params) (tcTyCons s)
+                                           }))
       return (NewType name params ctors)
     PrimType name -> do
-      modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
-                      , tcTyCons = Map.insert name 0 (tcTyCons s)
-                      })
+      modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
+                                           , tcTyCons = Map.insert name 0 (tcTyCons s)
+                                           }))
       return (PrimType name)
     ExpStmt e -> do
       e' <- tcExp1With True e
@@ -1038,106 +1110,109 @@ lookupFuncRetMap tyCons env candidates argTys =
 -- | Infer a type for an expression when possible.
 inferType :: Exp Ann -- ^ Expression to infer.
           -> TCM (Maybe (Ty Ann)) -- ^ Inferred type.
-inferType e =
-  case e of
-    IntLit {} -> return (Just (TyInt (mkAnn Nom NoSpan)))
-    FloatLit {} -> return (Just (TyFloat (mkAnn Nom NoSpan)))
-    StrLit {} -> return (Just (TyString (mkAnn Nom NoSpan)))
-    CharLit {} -> return (Just (TyChar (mkAnn Nom NoSpan)))
-    Bind {bindExp} -> inferType bindExp
-    Seq {second} -> inferType second
-    Var {varCandidates} -> do
-      MkTCState{tcVals, tcCtors, tcCtx, tcVarTys, tcFuncSigs, tcFuncSigRets} <- get
-      case lookupByCandidates tcVarTys varCandidates of
-        Just ty -> return (Just ty)
-        Nothing ->
-          case lookupByCandidatesMap tcVals varCandidates of
-            Just v -> inferType v
-            Nothing ->
-              case lookupByCandidatesMap tcCtors varCandidates of
-                Just (argTys, ty) ->
-                  return (Just (foldr (Arr (mkAnn Nom NoSpan)) ty argTys))
-                _ ->
-                  case inferFunctionValueType varCandidates tcFuncSigs tcFuncSigRets of
-                    Just ty -> return (Just ty)
-                    Nothing ->
-                      case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
-                        Just (ident, cas) -> return (Just (TyVar (mkAnn cas NoSpan) ident))
-                        Nothing -> return Nothing
-    App {fn, args} ->
-      case fn of
-        Var {annExp = annFn, varCandidates} -> do
-          MkTCState{tcCtors, tcTyCons, tcFuncSigRets, tcCtx, tcFuncSigs, tcVarTys} <- get
-          case lookupByCandidates tcVarTys varCandidates of
-            Just fnTy@(Arr {}) ->
-              case applyFunTy (length args) fnTy of
-                Just retTy -> return (Just retTy)
-                Nothing -> return Nothing
-            _ -> do
-              case lookupByCandidatesMap tcCtors varCandidates of
-                Just (tys, resTy)
-                  | length tys == length args -> do
-                      argTys <- mapM inferType args
-                      if Nothing `elem` argTys
-                        then return Nothing
-                        else do
-                          let actuals = catMaybes argTys
-                          case unifyTypes (Map.toList tcTyCons) tys actuals of
-                            Just subst -> return (Just (applySubst subst resTy))
-                            Nothing -> return Nothing
-                _ -> do
-                  -- Find matching overload by argument types and return its return type
-                  argTys <- mapM inferType args
-                  let fnNames = map fst varCandidates
-                      argCount = length args
-                      exactSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig == argCount]
-                      partialSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig > argCount]
-                      matchExactSig (name, argsSig) =
-                        let tys = map snd argsSig
-                        in if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys tys)
-                             then Map.lookup (name, tys) tcFuncSigRets
-                             else Nothing
-                      matchPartialSig (name, argsSig) =
-                        let tys = map snd argsSig
-                            expCases = map (annCase . annTy . snd) argsSig
-                            actCases = map (annCase . annExp) args
-                        in case matchPartialCaseIndices expCases actCases of
-                             Just idxs ->
-                               let appliedTys = map (tys !!) idxs
-                                   remainingIdxs = [i | i <- [0 .. length tys - 1], i `notElem` idxs]
-                                   remainingTys = map (tys !!) remainingIdxs
-                                   mkPartial retTy = foldr (Arr (mkAnn Nom NoSpan)) retTy remainingTys
-                               in if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys appliedTys)
-                                    then fmap mkPartial (Map.lookup (name, tys) tcFuncSigRets)
-                                    else Nothing
-                             Nothing -> Nothing
-                      matches = mapMaybe matchExactSig exactSigs ++ mapMaybe matchPartialSig partialSigs
-                  case matches of
-                    retTy:_ -> return (Just retTy)
-                    [] ->
-                      -- Fallback: try to find any matching return type
-                      let actuals = catMaybes argTys
-                      in case lookupFuncRetMap tcTyCons tcFuncSigRets varCandidates actuals of
-                        Just retTy -> return (Just retTy)
-                        Nothing ->
-                          let inCtx = any (\(ident, _) -> Set.member ident tcCtx) varCandidates
-                              inSigs = any (\(ident, _) -> not (null (Map.findWithDefault [] ident tcFuncSigs))) varCandidates
-                          in case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
-                               Just (ident, _) -> return (Just (TyVar (mkAnn (annCase annFn) NoSpan) ident))
-                               Nothing ->
-                                 if inCtx || inSigs
-                                   then case varCandidates of
-                                     (ident, _):_ -> return (Just (TyVar (mkAnn (annCase annFn) NoSpan) ident))
-                                     [] -> return Nothing
-                                   else return Nothing
-        _ -> return Nothing
-    Match {clauses} ->
-      case clauses of
-        [] -> return Nothing
-        Clause _ body:_ -> inferType body
-    Ascribe {ascType} -> return (Just ascType)
-    _ -> return Nothing
+inferType e = inferTypeUncached
   where
+    inferTypeUncached :: TCM (Maybe (Ty Ann))
+    inferTypeUncached =
+      case e of
+        IntLit {} -> return (Just (TyInt (mkAnn Nom NoSpan)))
+        FloatLit {} -> return (Just (TyFloat (mkAnn Nom NoSpan)))
+        StrLit {} -> return (Just (TyString (mkAnn Nom NoSpan)))
+        CharLit {} -> return (Just (TyChar (mkAnn Nom NoSpan)))
+        Bind {bindExp} -> inferType bindExp
+        Seq {second} -> inferType second
+        Var {varCandidates} -> do
+          MkTCState{tcVals, tcCtors, tcCtx, tcVarTys, tcFuncSigs, tcFuncSigRets} <- get
+          case lookupByCandidates tcVarTys varCandidates of
+            Just ty -> return (Just ty)
+            Nothing ->
+              case lookupByCandidatesMap tcVals varCandidates of
+                Just v -> inferType v
+                Nothing ->
+                  case lookupByCandidatesMap tcCtors varCandidates of
+                    Just (argTys, ty) ->
+                      return (Just (foldr (Arr (mkAnn Nom NoSpan)) ty argTys))
+                    _ ->
+                      case inferFunctionValueType varCandidates tcFuncSigs tcFuncSigRets of
+                        Just ty -> return (Just ty)
+                        Nothing ->
+                          case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
+                            Just (ident, cas) -> return (Just (TyVar (mkAnn cas NoSpan) ident))
+                            Nothing -> return Nothing
+        App {fn, args} ->
+          case fn of
+            Var {annExp = annFn, varCandidates} -> do
+              MkTCState{tcCtors, tcTyCons, tcFuncSigRets, tcCtx, tcFuncSigs, tcFuncSigsByArity, tcVarTys} <- get
+              case lookupByCandidates tcVarTys varCandidates of
+                Just fnTy@(Arr {}) ->
+                  case applyFunTy (length args) fnTy of
+                    Just retTy -> return (Just retTy)
+                    Nothing -> return Nothing
+                _ -> do
+                  case lookupByCandidatesMap tcCtors varCandidates of
+                    Just (tys, resTy)
+                      | length tys == length args -> do
+                          argTys <- mapM inferType args
+                          if Nothing `elem` argTys
+                            then return Nothing
+                            else do
+                              let actuals = catMaybes argTys
+                              case unifyTypes (Map.toList tcTyCons) tys actuals of
+                                Just subst -> return (Just (applySubst subst resTy))
+                                Nothing -> return Nothing
+                    _ -> do
+                      -- Find matching overload by argument types and return its return type
+                      argTys <- mapM inferType args
+                      let fnNames = map fst varCandidates
+                          argCount = length args
+                          -- Exact overload retrieval is indexed by (name, arity).
+                          exactSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] (n, argCount) tcFuncSigsByArity]
+                          partialSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig > argCount]
+                          matchExactSig (name, argsSig) =
+                            let tys = map snd argsSig
+                            in if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys tys)
+                                 then Map.lookup (name, tys) tcFuncSigRets
+                                 else Nothing
+                          matchPartialSig (name, argsSig) =
+                            let tys = map snd argsSig
+                                expCases = map (annCase . annTy . snd) argsSig
+                                actCases = map (annCase . annExp) args
+                            in case matchPartialCaseIndices expCases actCases of
+                                 Just idxs ->
+                                   let appliedTys = map (tys !!) idxs
+                                       remainingIdxs = [i | i <- [0 .. length tys - 1], i `notElem` idxs]
+                                       remainingTys = map (tys !!) remainingIdxs
+                                       mkPartial retTy = foldr (Arr (mkAnn Nom NoSpan)) retTy remainingTys
+                                   in if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys appliedTys)
+                                        then fmap mkPartial (Map.lookup (name, tys) tcFuncSigRets)
+                                        else Nothing
+                                 Nothing -> Nothing
+                          matches = mapMaybe matchExactSig exactSigs ++ mapMaybe matchPartialSig partialSigs
+                      case matches of
+                        retTy:_ -> return (Just retTy)
+                        [] ->
+                          -- Fallback: try to find any matching return type
+                          let actuals = catMaybes argTys
+                          in case lookupFuncRetMap tcTyCons tcFuncSigRets varCandidates actuals of
+                            Just retTy -> return (Just retTy)
+                            Nothing ->
+                              let inCtx = any (\(ident, _) -> Set.member ident tcCtx) varCandidates
+                                  inSigs = any (\(ident, _) -> not (null (Map.findWithDefault [] ident tcFuncSigs))) varCandidates
+                              in case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
+                                   Just (ident, _) -> return (Just (TyVar (mkAnn (annCase annFn) NoSpan) ident))
+                                   Nothing ->
+                                     if inCtx || inSigs
+                                       then case varCandidates of
+                                         (ident, _):_ -> return (Just (TyVar (mkAnn (annCase annFn) NoSpan) ident))
+                                         [] -> return Nothing
+                                       else return Nothing
+            _ -> return Nothing
+        Match {clauses} ->
+          case clauses of
+            [] -> return Nothing
+            Clause _ body:_ -> inferType body
+        Ascribe {ascType} -> return (Just ascType)
+        _ -> return Nothing
     -- | Apply an n-argument application to a function type.
     -- Returns the remaining result type when the application is valid.
     applyFunTy :: Int -> Ty Ann -> Maybe (Ty Ann)
@@ -1189,9 +1264,9 @@ withFuncRet :: Identifier -- ^ Function name.
 withFuncRet _ _ Nothing m = m
 withFuncRet name argTys (Just ty) m = do
   st <- get
-  put st { tcFuncSigRets = Map.insert (name, argTys) ty (tcFuncSigRets st) }
+  put (invalidateInferMemo (st { tcFuncSigRets = Map.insert (name, argTys) ty (tcFuncSigRets st) }))
   res <- m
-  modify (\s -> s { tcFuncSigRets = tcFuncSigRets st })
+  modify (\s -> invalidateInferMemo (s { tcFuncSigRets = tcFuncSigRets st }))
   return res
 
 -- | Run a computation with a function signature in scope.
@@ -1201,11 +1276,9 @@ withFuncSig :: Identifier -- ^ Function name.
             -> TCM a -- ^ Result of the computation.
 withFuncSig name args m = do
   st <- get
-  put st { tcFuncs = mmInsert name (length args) (tcFuncs st)
-         , tcFuncSigs = mmInsert name (map (Bifunctor.second normalizePrimTy) args) (tcFuncSigs st)
-         }
+  put (invalidateInferMemo ((insertFuncSig name args st) { tcFuncs = mmInsert name (length args) (tcFuncs st) }))
   res <- m
-  modify (\s -> s { tcFuncs = tcFuncs st, tcFuncSigs = tcFuncSigs st })
+  modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st }))
   return res
 
 -- | Run a computation with variable types in scope.
@@ -1215,9 +1288,9 @@ withVarTypes :: [(Identifier, Ty Ann)] -- ^ Variable bindings.
 withVarTypes [] m = m
 withVarTypes tys m = do
   st <- get
-  put st { tcVarTys = tys ++ tcVarTys st }
+  put (invalidateInferMemo (st { tcVarTys = tys ++ tcVarTys st }))
   res <- m
-  modify (\s -> s { tcVarTys = tcVarTys st })
+  modify (\s -> invalidateInferMemo (s { tcVarTys = tcVarTys st }))
   return res
 
 -- | Infer types for identifiers bound in a pattern.
@@ -2028,7 +2101,7 @@ applySubst subst ty =
 runTCM :: TCM a -- ^ Type checker computation.
        -> TCState -- ^ Initial type checker state.
        -> IO (Either TCError (a, TCState)) -- ^ Result or error.
-runTCM m s = runExceptT (runStateT m s)
+runTCM m s = runExceptT (runStateT m (invalidateInferMemo s))
 
 -- | Pre-register forward declarations for all functions and types.
 -- This allows forward references within a file.
@@ -2042,21 +2115,27 @@ registerForwardDecls = mapM_ registerStmt
     registerStmt stmt =
       case stmt of
         Function name args _ _ isInfinitive ->
-          modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
-                          , tcFuncs = mmInsert name (length args) (tcFuncs s)
-                          , tcFuncSigs = mmInsert name (map (Bifunctor.second normalizePrimTy) args) (tcFuncSigs s)
-                          , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s) else tcInfinitives s
-                          })
+          modify (\s ->
+            let s' = insertFuncSig name args s
+            in invalidateInferMemo
+                 (s'
+                   { tcCtx = Set.insert name (tcCtx s')
+                   , tcFuncs = mmInsert name (length args) (tcFuncs s')
+                   , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+                   }))
         PrimFunc name args _ isInfinitive -> do
           unless (Prim.isImplementedPrimitive name args) $
             lift (throwE (UnimplementedPrimitive name args NoSpan))
-          modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
-                          , tcFuncs = mmInsert name (length args) (tcFuncs s)
-                          , tcFuncSigs = mmInsert name (map (Bifunctor.second normalizePrimTy) args) (tcFuncSigs s)
-                          , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s) else tcInfinitives s
-                          })
+          modify (\s ->
+            let s' = insertFuncSig name args s
+            in invalidateInferMemo
+                 (s'
+                   { tcCtx = Set.insert name (tcCtx s')
+                   , tcFuncs = mmInsert name (length args) (tcFuncs s')
+                   , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+                   }))
         Defn name _ _ ->
-          modify (\s -> s { tcCtx = Set.insert name (tcCtx s) })
+          modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s) }))
         NewType name params ctors -> do
           MkTCState{tcTyCons = existingTyCons} <- get
           let ctorNames = map (fst . fst) ctors
@@ -2087,12 +2166,12 @@ registerForwardDecls = mapM_ registerStmt
                   validateTy i
                 _ -> return ()
           mapM_ (\((_, _), ctorArgs) -> mapM_ validateTy ctorArgs) ctors
-          modify (\s -> s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
-                          , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
-                          , tcTyCons = Map.insert name (length params) (tcTyCons s)
-                          })
+          modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
+                                               , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
+                                               , tcTyCons = Map.insert name (length params) (tcTyCons s)
+                                               }))
         PrimType name ->
-          modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
-                          , tcTyCons = Map.insert name 0 (tcTyCons s)
-                          })
+          modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
+                                               , tcTyCons = Map.insert name 0 (tcTyCons s)
+                                               }))
         _ -> return ()

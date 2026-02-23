@@ -266,6 +266,14 @@ data ParserState =
     , parserTyMods :: [(Identifier, [Identifier])]
     , parserPrimTypes :: [Identifier]
     , parserFuncArities :: M.Map Identifier (Set.Set Int)
+    -- | Secondary index used by hot-path overload checks.
+    --
+    -- ==== Performance note (Optimization: parser overload lookup)
+    -- Ambiguity detection in REPL used to scan the whole
+    -- 'parserFuncArities' map to gather all entries with matching surface
+    -- names. Keeping this precomputed name-based map makes those lookups
+    -- O(log n) and allocation-light.
+    , parserFuncAritiesByName :: M.Map Text (Set.Set Int)
     , parserDefSpans :: M.Map Identifier [Span]
     , parserFilePath :: Maybe FilePath
     , parserUpsCache :: !MorphCache
@@ -348,7 +356,7 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache <$> HT.new
+  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -357,9 +365,13 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
 newParserStateWithCaches fsm' =
-  MkParserState fsm' Set.empty [] [] [] [] [] M.empty M.empty
+  MkParserState fsm' Set.empty [] [] [] [] [] M.empty M.empty M.empty
 
 -- | Create a parser state with context and shared caches.
+--
+-- ==== Performance note (Optimization: parser state indexing)
+-- We compute 'parserFuncAritiesByName' eagerly here so all call sites
+-- (fresh states and cache-restored states) get the same fast-path lookup.
 newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> Set.Set Identifier -- ^ Initial identifier context.
                                -> [Identifier] -- ^ Initial constructor identifiers.
@@ -373,7 +385,17 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> MorphCache -- ^ Shared ups cache.
                                -> MorphCache -- ^ Shared downs cache.
                                -> ParserState -- ^ Parser state.
-newParserStateWithCtxAndCaches = MkParserState
+newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities =
+  MkParserState
+    fsm'
+    ctx
+    ctors
+    tyParams
+    tyCons
+    tyMods
+    primTypes
+    funcArities
+    (funcAritiesNameIndex funcArities)
 
 -- | Get the current parser state.
 getP :: KipParser ParserState -- ^ Current parser state.
@@ -395,13 +417,30 @@ recordDefSpan ident sp =
   modifyP (\ps -> ps { parserDefSpans = M.insertWith (flip (<>)) ident [sp] (parserDefSpans ps) })
 
 -- | Track declared arities for functions seen by the parser.
+--
+-- ==== Performance note (Optimization: incremental index maintenance)
+-- Updates both arity maps in one state transition so the secondary name
+-- index stays in sync without requiring periodic rebuilds.
 registerFuncArity :: Identifier -> Int -> KipParser ()
 registerFuncArity ident arity =
   modifyP (\ps ->
     ps
       { parserFuncArities =
           M.insertWith Set.union ident (Set.singleton arity) (parserFuncArities ps)
+      , parserFuncAritiesByName =
+          M.insertWith Set.union (snd ident) (Set.singleton arity) (parserFuncAritiesByName ps)
       })
+
+-- | Build a secondary arity index keyed only by function surface name.
+--
+-- This is used by parenthesis-free ambiguity checks that operate on
+-- inflected surface forms where only the final word is needed for
+-- overload grouping.
+funcAritiesNameIndex :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int)
+funcAritiesNameIndex =
+  M.fromListWith Set.union
+    . map (\((_, name), arities) -> (name, arities))
+    . M.toList
 
 -- | Parse an item and return it with a span.
 withSpan :: KipParser a -- ^ Parser to wrap.
@@ -3983,6 +4022,7 @@ ambiguousBareReplError st expItem =
       case fnExp of
         Var _ varName varCandidates ->
           let arityMap = parserFuncArities pst
+              arityByName = parserFuncAritiesByName pst
               directIds = varName : map fst varCandidates
               strippedIds =
                 mapMaybe
@@ -3993,11 +4033,16 @@ ambiguousBareReplError st expItem =
                   )
                   directIds
               ids = nub (directIds ++ strippedIds)
-          in aritiesForIds arityMap ids
+          in aritiesForIds arityMap arityByName ids
         _ -> []
 
-    aritiesForIds :: M.Map Identifier (Set.Set Int) -> [Identifier] -> [Int]
-    aritiesForIds arityMap ids =
+    -- | Gather candidate arities by exact identifier and by surface name.
+    --
+    -- ==== Performance note (Optimization: ambiguity arity lookup)
+    -- Name-based collection uses the prebuilt 'parserFuncAritiesByName'
+    -- index, avoiding full scans of all known arities on each REPL parse.
+    aritiesForIds :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int) -> [Identifier] -> [Int]
+    aritiesForIds arityMap arityByName ids =
       let byIdent =
             foldl'
               Set.union
@@ -4005,16 +4050,11 @@ ambiguousBareReplError st expItem =
               [ fromMaybe Set.empty (M.lookup ident arityMap)
               | ident <- ids
               ]
-          targetNames = Set.fromList (map snd ids)
           byName =
             foldl'
-              (\acc ((_, keyName), ars) ->
-                if Set.member keyName targetNames
-                  then Set.union acc ars
-                  else acc
-              )
+              (\acc keyName -> Set.union acc (fromMaybe Set.empty (M.lookup keyName arityByName)))
               Set.empty
-              (M.toList arityMap)
+              (ordNub (map snd ids))
       in sort (Set.toList (Set.union byIdent byName))
 
 -- | Parse a full file into statements.
