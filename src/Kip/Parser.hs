@@ -3878,11 +3878,12 @@ parseExpFromRepl :: ParserState -- ^ Initial parser state.
                  -- ^ REPL input buffer.
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann)) -- ^ Parsed expression.
 parseExpFromRepl st input = do
-  (res, st') <- runStateT (runParserT p "Kip" (removeComments input)) st
+  let stripped = removeComments input
+  (res, st') <- runStateT (runParserT p "Kip" stripped) st
   case res of
     Right e
-      | isAmbiguousBareReplApp st' e ->
-          case runParser (customFailure (mkAmbiguousBareError st' e)) "Kip" (removeComments input) of
+      | Just ambErr <- ambiguousBareReplError st' e ->
+          case runParser (customFailure ambErr) "Kip" stripped of
             Left err -> return (Left err)
             Right _ -> return res
       | otherwise -> return res
@@ -3916,11 +3917,12 @@ parseForDebug st input = do
 parseExpForDebug :: ParserState -> Text
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann, Text))
 parseExpForDebug st input = do
-  (res, st') <- runStateT (runParserT p "Kip" (removeComments input)) st
+  let stripped = removeComments input
+  (res, st') <- runStateT (runParserT p "Kip" stripped) st
   case res of
     Right (e, remaining)
-      | isAmbiguousBareReplApp st' e ->
-          case runParser (customFailure (mkAmbiguousBareError st' e)) "Kip" (removeComments input) of
+      | Just ambErr <- ambiguousBareReplError st' e ->
+          case runParser (customFailure ambErr) "Kip" stripped of
             Left err -> return (Left err)
             Right _ -> return res
       | otherwise -> return res
@@ -3933,20 +3935,21 @@ parseExpForDebug st input = do
       remaining <- getInput
       return (e, remaining)
 
--- | Detect an unresolved parenthesis-free chain in REPL expression parsing.
--- We only flag a top-level flat application with at least four arguments and
--- multiple inflected bare variables among its arguments.
-isAmbiguousBareReplApp :: ParserState -> Exp Ann -> Bool
-isAmbiguousBareReplApp st expItem =
+-- | Detect unresolved parenthesis-free REPL applications and build a custom error.
+ambiguousBareReplError :: ParserState -> Exp Ann -> Maybe ParserError
+ambiguousBareReplError st expItem =
   case expItem of
-    App _ fn args ->
-      let arities = headArities st fn
+    App _ fnExp args ->
+      let arities = headArities st fnExp
           tooManyArgs =
             case arities of
               [] -> False
               _ -> length args > maximum arities
-      in tooManyArgs || (length args >= 4 && inflectedVarCount args >= 2)
-    _ -> False
+          suspiciousChain = length args >= 4 && inflectedVarCount args >= 2
+      in if tooManyArgs || suspiciousChain
+           then Just (mkAmbiguousBareError expItem fnExp arities)
+           else Nothing
+    _ -> Nothing
   where
     inflectedVarCount =
       length . filter isInflectedVar
@@ -3954,6 +3957,27 @@ isAmbiguousBareReplApp st expItem =
       case e of
         Var ann _ _ -> annCase ann /= Nom
         _ -> False
+
+    mkAmbiguousBareError :: Exp Ann -> Exp Ann -> [Int] -> ParserError
+    mkAmbiguousBareError fullExp fnExp arities =
+      let sp = annSpan (annExp fullExp)
+      in case functionIdent fnExp of
+           Just ident ->
+             let displayIdent =
+                   case stripBareCaseSuffix ident of
+                     Just (base, _) -> base
+                     Nothing -> ident
+             in if length arities > 1
+                  then ErrAmbiguousBareApplicationOverload displayIdent arities sp
+                  else ErrAmbiguousBareApplicationOverload displayIdent [] sp
+           Nothing -> ErrAmbiguousBareApplication sp
+
+    functionIdent :: Exp Ann -> Maybe Identifier
+    functionIdent e =
+      case e of
+        Var _ varName _ -> Just varName
+        _ -> Nothing
+
     headArities :: ParserState -> Exp Ann -> [Int]
     headArities pst fnExp =
       case fnExp of
@@ -3969,89 +3993,29 @@ isAmbiguousBareReplApp st expItem =
                   )
                   directIds
               ids = nub (directIds ++ strippedIds)
-              byIdent ident = fromMaybe Set.empty (M.lookup ident arityMap)
-              byName name =
-                foldl'
-                  Set.union
-                  Set.empty
-                  [ ars
-                  | ((_, keyName), ars) <- M.toList arityMap
-                  , keyName == name
-                  ]
-              aritySet =
-                foldl'
-                  Set.union
-                  Set.empty
-                  [ Set.union (byIdent ident) (byName (snd ident))
-                  | ident <- ids
-                  ]
-          in sort (Set.toList aritySet)
+          in aritiesForIds arityMap ids
         _ -> []
 
--- | Build a detailed ambiguity error when head function overloads by arity.
-mkAmbiguousBareError :: ParserState -> Exp Ann -> ParserError
-mkAmbiguousBareError st expItem =
-  let sp = annSpan (annExp expItem)
-  in
-  case overloadedHeadInfo st expItem of
-    Just (ident, arities) -> ErrAmbiguousBareApplicationOverload ident arities sp
-    Nothing ->
-      case headFunctionIdent expItem of
-        Just ident -> ErrAmbiguousBareApplicationOverload ident [] sp
-        Nothing -> ErrAmbiguousBareApplication sp
-  where
-    headFunctionIdent :: Exp Ann -> Maybe Identifier
-    headFunctionIdent e =
-      case e of
-        App _ fn _ ->
-          case fn of
-            Var _ varName _ -> Just varName
-            _ -> Nothing
-        _ -> Nothing
-
-    overloadedHeadInfo :: ParserState -> Exp Ann -> Maybe (Identifier, [Int])
-    overloadedHeadInfo pst e =
-      case e of
-        App _ fn _ ->
-          case fn of
-            Var _ varName varCandidates ->
-              let arityMap = parserFuncArities pst
-                  displayIdent =
-                    case stripBareCaseSuffix varName of
-                      Just (base, _) -> base
-                      Nothing -> varName
-                  directIds = varName : map fst varCandidates
-                  strippedIds =
-                    mapMaybe
-                      (\ident ->
-                        case stripBareCaseSuffix ident of
-                          Just (base, _) -> Just base
-                          Nothing -> Nothing
-                      )
-                      directIds
-                  ids = nub (directIds ++ strippedIds)
-                  byIdent ident = fromMaybe Set.empty (M.lookup ident arityMap)
-                  byName name =
-                    foldl'
-                      Set.union
-                      Set.empty
-                      [ ars
-                      | ((_, keyName), ars) <- M.toList arityMap
-                      , keyName == name
-                      ]
-                  aritySet =
-                    foldl'
-                      Set.union
-                      Set.empty
-                      [ Set.union (byIdent ident) (byName (snd ident))
-                      | ident <- ids
-                      ]
-                  arities = sort (Set.toList aritySet)
-              in if length arities > 1
-                   then Just (displayIdent, arities)
-                   else Nothing
-            _ -> Nothing
-        _ -> Nothing
+    aritiesForIds :: M.Map Identifier (Set.Set Int) -> [Identifier] -> [Int]
+    aritiesForIds arityMap ids =
+      let byIdent =
+            foldl'
+              Set.union
+              Set.empty
+              [ fromMaybe Set.empty (M.lookup ident arityMap)
+              | ident <- ids
+              ]
+          targetNames = Set.fromList (map snd ids)
+          byName =
+            foldl'
+              (\acc ((_, keyName), ars) ->
+                if Set.member keyName targetNames
+                  then Set.union acc ars
+                  else acc
+              )
+              Set.empty
+              (M.toList arityMap)
+      in sort (Set.toList (Set.union byIdent byName))
 
 -- | Parse a full file into statements.
 parseFromFile :: ParserState -- ^ Initial parser state.
