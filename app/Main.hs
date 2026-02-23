@@ -38,7 +38,7 @@ import System.Console.Chalk
 import Kip.Parser
 import Kip.AST
 import qualified Data.HashTable.IO as HT
-import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender)
+import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender, isRuntimeValue)
 import qualified Kip.Eval as Eval
 import Kip.TypeCheck
 import qualified Kip.TypeCheck as TC
@@ -1369,13 +1369,16 @@ main = do
                           emitMsgTCtx (MsgEvalError evalErr)
                           loop rs
                         Right (Right ((result, steps), evalSt')) -> do
-                          ctx <- ask
-                          let renderSteps exp = renderExpPreservingCase cache fsm' evalSt' exp >>= stripStepsCopulaTRmorph cache fsm'
-                              rInput = renderSteps
-                              rOutput = renderSteps . setTopCaseNom
-                          let rInputM = liftIO . rInput
-                              rOutputM = liftIO . rOutput
-                          formatStepsStreaming (rcUseColor ctx) rInputM rOutputM result steps (lift . outputStrLn)
+                          if isRuntimeValue evalSt' result
+                            then do
+                              ctx <- ask
+                              let renderSteps exp = renderExpPreservingCase cache fsm' evalSt' exp >>= stripStepsCopulaTRmorph cache fsm'
+                                  rInput = renderSteps
+                                  rOutput = renderSteps . setTopCaseNom
+                              let rInputM = liftIO . rInput
+                                  rOutputM = liftIO . rOutput
+                              formatStepsStreaming (rcUseColor ctx) rInputM rOutputM result steps (lift . outputStrLn)
+                            else emitMsgTCtx (MsgEvalError Eval.RuntimeTypeErrorNonValue)
                           loop rs
       | otherwise = do
           fsm <- runApp requireFsm
@@ -1464,8 +1467,11 @@ main = do
                           emitMsgTCtx (MsgEvalError evalErr)
                           loop rs
                         Right (Right (result, _)) -> do
-                          rendered <- liftIO (evalRender (replEvalState rs) (replEvalState rs) result)
-                          lift (outputStrLn rendered)
+                          if isRuntimeValue (replEvalState rs) result
+                            then do
+                              rendered <- liftIO (evalRender (replEvalState rs) (replEvalState rs) result)
+                              lift (outputStrLn rendered)
+                            else emitMsgTCtx (MsgEvalError Eval.RuntimeTypeErrorNonValue)
                           loop rs
       where
         -- | Infer and print a type for a REPL expression.

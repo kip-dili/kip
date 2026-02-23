@@ -163,12 +163,14 @@ renderEvalError lang evalErr =
         Eval.UnboundVariable name -> "Değerleme hatası: " <> T.pack (prettyIdent name) <> " tanımlı değil."
         Eval.NoMatchingFunction name -> "Değerleme hatası: " <> T.pack (prettyIdent name) <> " için uygun bir tanım bulunamadı."
         Eval.NoMatchingClause -> "Değerleme hatası: eşleşen bir dal bulunamadı."
+        Eval.RuntimeTypeErrorNonValue -> "Değerleme hatası: sonuç bir değer değil (çalışma zamanı tip hatası)."
     LangEn ->
       case evalErr of
         Eval.Unknown -> "Evaluation error: unknown error."
         Eval.UnboundVariable name -> "Evaluation error: " <> T.pack (prettyIdent name) <> " is not defined."
         Eval.NoMatchingFunction name -> "Evaluation error: no matching definition found for " <> T.pack (prettyIdent name) <> "."
         Eval.NoMatchingClause -> "Evaluation error: no matching clause found."
+        Eval.RuntimeTypeErrorNonValue -> "Evaluation error: result is not a value (runtime type error)."
 
 -- | Render a compiler message to text.
 renderMsg :: CompilerMsg -> RenderM Text

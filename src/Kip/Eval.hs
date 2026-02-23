@@ -68,6 +68,7 @@ data EvalError =
    | UnboundVariable Identifier
    | NoMatchingFunction Identifier
    | NoMatchingClause
+   | RuntimeTypeErrorNonValue
    deriving (Show, Eq, Generic, Binary)
 -- | Evaluator monad stack.
 type EvalM = StateT EvalState (ExceptT EvalError IO)
@@ -113,6 +114,45 @@ isResolvableInAppContext varCandidates st =
     Map.member ident (evalTyCons st) ||
     Map.member ident (evalCtors st)
   ) varCandidates
+
+-- | Check whether an evaluated expression is a runtime value.
+--
+-- REPL output must only print values. If evaluation yields a non-value
+-- (for example, an unresolved bare application), callers should surface a
+-- runtime type error instead of rendering the raw expression.
+isRuntimeValue :: EvalState -- ^ Current evaluator state.
+               -> Exp Ann -- ^ Evaluated expression.
+               -> Bool -- ^ True when expression is a value.
+isRuntimeValue st expr =
+  case expr of
+    IntLit {} -> True
+    FloatLit {} -> True
+    StrLit {} -> True
+    CharLit {} -> True
+    Var {varCandidates} ->
+      isRandomCandidate varCandidates ||
+      any (\(ident, _) ->
+        Map.member ident (evalVals st) ||
+        Map.member ident (evalFuncs st) ||
+        Map.member ident (evalPrimFuncs st) ||
+        Map.member ident (evalSelectors st) ||
+        Map.member ident (evalTyCons st) ||
+        Map.member ident (evalCtors st)
+      ) varCandidates
+    App {fn, args} ->
+      let (fnRoot, preAppliedArgs) = flattenApplied fn
+          allArgs = preAppliedArgs ++ args
+      in case fnRoot of
+           Var {varCandidates} ->
+             all isRuntimeArg allArgs && any (isSaturatedCtor allArgs . fst) varCandidates
+           _ -> False
+    _ -> False
+  where
+    isRuntimeArg = isRuntimeValue st
+    isSaturatedCtor allArgs ident =
+      case Map.lookup ident (evalCtors st) of
+        Just (argTys, _) -> length argTys == length allArgs
+        Nothing -> False
 
 -- | A single evaluation step for trampolining tail calls.
 -- | Done: final value.
