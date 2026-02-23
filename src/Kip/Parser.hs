@@ -237,6 +237,7 @@ data ParserState =
     , parserTyCons :: [(Identifier, Int)]
     , parserTyMods :: [(Identifier, [Identifier])]
     , parserPrimTypes :: [Identifier]
+    , parserFuncArities :: M.Map Identifier (Set.Set Int)
     , parserDefSpans :: M.Map Identifier [Span]
     , parserFilePath :: Maybe FilePath
     , parserUpsCache :: !MorphCache
@@ -319,7 +320,7 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty mFilePath upsCache <$> HT.new
+  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -328,7 +329,7 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
 newParserStateWithCaches fsm' =
-  MkParserState fsm' Set.empty [] [] [] [] [] M.empty
+  MkParserState fsm' Set.empty [] [] [] [] [] M.empty M.empty
 
 -- | Create a parser state with context and shared caches.
 newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
@@ -338,6 +339,7 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> [(Identifier, Int)] -- ^ Type constructor arities.
                                -> [(Identifier, [Identifier])] -- ^ Type modifiers.
                                -> [Identifier] -- ^ Primitive types.
+                               -> M.Map Identifier (Set.Set Int) -- ^ Known function arities.
                                -> M.Map Identifier [Span] -- ^ Definition spans.
                                -> Maybe FilePath -- ^ Optional file path for span tracking.
                                -> MorphCache -- ^ Shared ups cache.
@@ -363,6 +365,15 @@ modifyP = lift . modify
 recordDefSpan :: Identifier -> Span -> KipParser ()
 recordDefSpan ident sp =
   modifyP (\ps -> ps { parserDefSpans = M.insertWith (flip (<>)) ident [sp] (parserDefSpans ps) })
+
+-- | Track declared arities for functions seen by the parser.
+registerFuncArity :: Identifier -> Int -> KipParser ()
+registerFuncArity ident arity =
+  modifyP (\ps ->
+    ps
+      { parserFuncArities =
+          M.insertWith Set.union ident (Set.singleton arity) (parserFuncArities ps)
+      })
 
 -- | Parse an item and return it with a span.
 withSpan :: KipParser a -- ^ Parser to wrap.
@@ -1822,36 +1833,119 @@ parseExpWithCtx' useCtx allowMatch =
       case xs of
         [] -> customFailure (ErrInternal "Internal error: buildAppFrom called with empty list")
         [x] -> return x
-        first:_ ->
-          case reverse xs of
-            x:revRest ->
-              let rest = reverse revRest
-                  start = annSpan (annExp first)
-                  end = annSpan (annExp x)
-                  ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
-              in case x of
-                   Var {varCandidates} | isWriteCandidates varCandidates -> do
-                     case rest of
-                       [] -> return (App ann x [])
-                       [arg] -> do
-                         let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                         return (App ann' x [arg])
-                       _ ->
-                         case reverse rest of
-                           lastRest:_ ->
-                             case lastRest of
-                               Var {} -> do
-                                 arg <- buildAppFrom rest
-                                 let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                                 return (App ann' x [arg])
-                               App {} -> do
-                                 arg <- buildAppFrom rest
-                                 let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
-                                 return (App ann' x [arg])
-                               _ -> return (App ann x rest)
-                           [] -> return (App ann x rest)
-                   _ -> return (App ann x rest)
-            [] -> customFailure (ErrInternal "Internal error: buildAppFrom reverse returned empty")
+        _ -> do
+          mStrict <- buildStrictApp xs
+          case mStrict of
+            Just expStrict -> return expStrict
+            Nothing -> buildAppFromFallback xs
+      where
+        buildAppFromFallback ys =
+          case ys of
+            [] -> customFailure (ErrInternal "Internal error: buildAppFromFallback called with empty list")
+            [x] -> return x
+            first:_ ->
+              case reverse ys of
+                x:revRest ->
+                  let rest = reverse revRest
+                      start = annSpan (annExp first)
+                      end = annSpan (annExp x)
+                      ann = mkAnn (annCase (annExp x)) (mergeSpan start end)
+                  in case x of
+                       Var {varCandidates} | isWriteCandidates varCandidates -> do
+                         case rest of
+                           [] -> return (App ann x [])
+                           [arg] -> do
+                             let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                             return (App ann' x [arg])
+                           _ ->
+                             case reverse rest of
+                               lastRest:_ ->
+                                 case lastRest of
+                                   Var {} -> do
+                                     arg <- buildAppFrom rest
+                                     let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                                     return (App ann' x [arg])
+                                   App {} -> do
+                                     arg <- buildAppFrom rest
+                                     let ann' = mkAnn (annCase (annExp x)) (mergeSpan (annSpan (annExp arg)) (annSpan (annExp x)))
+                                     return (App ann' x [arg])
+                                   _ -> return (App ann x rest)
+                               [] -> return (App ann x rest)
+                       _ -> return (App ann x rest)
+                [] -> customFailure (ErrInternal "Internal error: buildAppFromFallback reverse returned empty")
+
+        buildStrictApp :: [Exp Ann] -> KipParser (Maybe (Exp Ann))
+        buildStrictApp ys = do
+          ps <- getP
+          let arityMap = parserFuncArities ps
+              results = parseStrict arityMap ys
+          return $
+            case nub results of
+              [e] -> Just e
+              _ -> Nothing
+
+        parseStrict :: M.Map Identifier (Set.Set Int) -> [Exp Ann] -> [Exp Ann]
+        parseStrict _ [e] = [e]
+        parseStrict arityMap ts =
+          case reverse ts of
+            fnExp:revRest ->
+              case uniqueKnownArity arityMap fnExp of
+                Just arity
+                  | arity > 0 ->
+                      let rest = reverse revRest
+                      in [ mkApp ts fnExp args
+                         | args <- splitArgs arityMap arity rest
+                         ]
+                _ -> []
+            [] -> []
+
+        splitArgs :: M.Map Identifier (Set.Set Int) -> Int -> [Exp Ann] -> [[Exp Ann]]
+        splitArgs arityMap arity tokens
+          | arity <= 0 = []
+          | length tokens < arity = []
+          | otherwise = go arity tokens
+          where
+            go n pool
+              | n == 0 =
+                  [[] | null pool]
+              | length pool < n = []
+              | otherwise =
+                  [ prevArgs ++ [arg]
+                  | splitAtIx <- [n - 1 .. length pool - 1]
+                  , let prefix = take splitAtIx pool
+                  , let chunk = drop splitAtIx pool
+                  , arg <- parseStrict arityMap chunk
+                  , prevArgs <- go (n - 1) prefix
+                  ]
+
+        uniqueKnownArity :: M.Map Identifier (Set.Set Int) -> Exp Ann -> Maybe Int
+        uniqueKnownArity arityMap expItem =
+          case expItem of
+            Var {varCandidates} ->
+              let arities =
+                    foldl'
+                      Set.union
+                      Set.empty
+                      [ fromMaybe Set.empty (M.lookup ident arityMap)
+                      | (ident, _) <- varCandidates
+                      ]
+              in case Set.toList arities of
+                   [n] -> Just n
+                   _ -> Nothing
+            _ -> Nothing
+
+        mkApp :: [Exp Ann] -> Exp Ann -> [Exp Ann] -> Exp Ann
+        mkApp ts fnExp args =
+          case ts of
+            first:_ ->
+              let ann =
+                    mkAnn
+                      (annCase (annExp fnExp))
+                      (mergeSpan (annSpan (annExp first)) (annSpan (annExp fnExp)))
+              in App ann fnExp args
+            [] ->
+              let ann = mkAnn (annCase (annExp fnExp)) (annSpan (annExp fnExp))
+              in App ann fnExp args
     -- | Attempt to reinterpret application as a type cast.
     tryApplyTypeCase :: Exp Ann -- ^ Candidate expression.
                      -> Exp Ann -- ^ Candidate type expression.
@@ -2401,6 +2495,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           case clauses of
             [Clause (PWildcard _) body] -> do
               modifyP (\ps -> ps {parserCtx = Set.insert fname (parserCtx ps)})
+              registerFuncArity fname 0
               return (Defn fname (TyString (mkAnn Nom NoSpan)) body)
             _ -> customFailure ErrDefinitionBodyMissing
         else do
@@ -2413,6 +2508,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             Just _ -> do
               st' <- getP
               putP (st' {parserCtx = Set.insert fname (parserCtx st)})
+              registerFuncArity fname (length args)
               return (PrimFunc fname args retTy isInfinitive)
             Nothing -> do
               isBindStart <- option False (try bindStartLookahead)
@@ -2422,6 +2518,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                   else try (parseBodyOnly argNames) <|> parseClauses argNames
               st' <- getP
               putP (st' {parserCtx = Set.insert fname (parserCtx st)})
+              registerFuncArity fname (length args)
               return (Function fname args retTy clauses isInfinitive)
     -- | Ensure newly defined names are recognized Turkish surface forms.
     -- For hyphenated identifiers, morphology applies to the head (last segment).

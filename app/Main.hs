@@ -62,6 +62,7 @@ data ReplState =
     , replTyCons :: [(Identifier, Int)]
     , replTyMods :: [(Identifier, [Identifier])]
     , replPrimTypes :: [Identifier]
+    , replFuncArities :: Map.Map Identifier (Set.Set Int)
     , replTCState :: TCState
     , replEvalState :: EvalState
     , replModuleDirs :: [FilePath]
@@ -1074,7 +1075,7 @@ main = do
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
           emitMsgIO renderCtx (MsgHeader title)
           emitMsgIO renderCtx (MsgSeparator title)
-          kipSettings >>= \s -> runInputT s (runReaderT (loop (ReplState (parserCtx preludePst) (parserCtors preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
+          kipSettings >>= \s -> runInputT s (runReaderT (loop (ReplState (parserCtx preludePst) (parserCtors preludePst) (parserTyParams preludePst) (parserTyCons preludePst) (parserTyMods preludePst) (parserPrimTypes preludePst) (parserFuncArities preludePst) preludeTC preludeEval moduleDirs preludeLoaded)) renderCtx)
         else do
           (preludePst, preludeTC, preludeEval, preludeLoaded) <-
             runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
@@ -1221,7 +1222,7 @@ main = do
           ctx <- ask
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty Nothing uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1263,7 +1264,7 @@ main = do
           (uCache, dCache) <- runApp requireParserCaches
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs)
                     (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs)
-                    Map.empty Nothing uCache dCache
+                    (replFuncArities rs) Map.empty Nothing uCache dCache
           -- Decide statement vs expression based on trailing period
           let isStmt = case dropWhile (== ' ') (reverse expr) of '.':_ -> True; _ -> False
           if isStmt
@@ -1287,7 +1288,7 @@ main = do
       | Just expr <- stripPrefix ":steps " input = do
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty Nothing uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1326,7 +1327,7 @@ main = do
       | otherwise = do
           fsm <- runApp requireFsm
           (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty Nothing uCache dCache
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
           -- If input ends with a period, parse as statement; otherwise parse as expression
           if case dropWhile (== ' ') (reverse input) of
                '.':_ -> True
@@ -1336,28 +1337,36 @@ main = do
                 Left err -> do
                   emitMsgTCtx (MsgParseError err)
                   loop rs
-                Right (stmt, MkParserState _ pctx pctors pty ptycons ptymods pprim _ _ _ _) -> do
+                Right (stmt, pst') -> do
                   case stmt of
                     Load dirPath name -> do
                       path <- runApp (resolveModulePath (replModuleDirs rs) dirPath name)
                       absPath <- liftIO (canonicalizePath path)
-                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) Map.empty (Just path) uCache dCache
+                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty (Just path) uCache dCache
                       if Set.member absPath (replLoaded rs)
                         then loop rs
                         else do
-                          (pst', tcSt', evalSt', loaded') <- runApp (runFile False False False (replModuleDirs rs) (loadPst, replTCState rs, replEvalState rs, replLoaded rs) path)
+                          (pstLoaded, tcSt', evalSt', loaded') <- runApp (runFile False False False (replModuleDirs rs) (loadPst, replTCState rs, replEvalState rs, replLoaded rs) path)
                           emitMsgTCtx (MsgLoaded name)
-                          loop (rs { replCtx = parserCtx pst'
-                                               , replCtors = parserCtors pst'
-                                               , replTyParams = parserTyParams pst'
-                                               , replTyCons = parserTyCons pst'
-                                               , replTyMods = parserTyMods pst'
-                                               , replPrimTypes = parserPrimTypes pst'
+                          loop (rs { replCtx = parserCtx pstLoaded
+                                               , replCtors = parserCtors pstLoaded
+                                               , replTyParams = parserTyParams pstLoaded
+                                               , replTyCons = parserTyCons pstLoaded
+                                               , replTyMods = parserTyMods pstLoaded
+                                               , replPrimTypes = parserPrimTypes pstLoaded
+                                               , replFuncArities = parserFuncArities pstLoaded
                                                , replTCState = tcSt'
                                                , replEvalState = evalSt'
                                                , replLoaded = loaded'
                                                })
                     _ -> do
+                      let pctx = parserCtx pst'
+                          pctors = parserCtors pst'
+                          pty = parserTyParams pst'
+                          ptycons = parserTyCons pst'
+                          ptymods = parserTyMods pst'
+                          pprim = parserPrimTypes pst'
+                          pfuncArities = parserFuncArities pst'
                       let paramTyCons = [name | (name, arity) <- ptycons, arity > 0]
                       liftIO (runTCM (tcStmt stmt) (replTCState rs)) >>= \case
                         Left tcErr -> do
@@ -1373,6 +1382,7 @@ main = do
                                                    , replTyCons = ptycons
                                                    , replTyMods = ptymods
                                                    , replPrimTypes = pprim
+                                                   , replFuncArities = pfuncArities
                                                    , replTCState = tcSt
                                                    , replEvalState = evalSt
                                                    })
@@ -1628,7 +1638,7 @@ main = do
              -> AppM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
       (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
+      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
     -- | Run a single file and update all states.
     runFile :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.

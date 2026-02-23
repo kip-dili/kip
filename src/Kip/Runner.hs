@@ -102,6 +102,7 @@ data ReplState =
     , replTyCons :: [(Identifier, Int)]
     , replTyMods :: [(Identifier, [Identifier])]
     , replPrimTypes :: [Identifier]
+    , replFuncArities :: Map.Map Identifier (Set.Set Int)
     , replTCState :: TCState
     , replEvalState :: EvalState
     , replModuleDirs :: [FilePath]
@@ -651,7 +652,7 @@ requireCacheFsm = do
 runFiles :: Bool -> Bool -> Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM ReplState
 runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
   (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-  return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') tcSt' evalSt' moduleDirs loaded')
+  return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
 
 -- | Run a single file and update all states.
 runFile :: Bool -> Bool -> Bool -> [FilePath] -> (ParserState, TCState, EvalState, Set FilePath) -> FilePath -> RenderM (ParserState, TCState, EvalState, Set FilePath)
