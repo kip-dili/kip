@@ -5,51 +5,44 @@ olabilir.
 (bu tam-sayının) işaret-tersi,
   0'la bunun farkıdır.
 
-(bu tam-sayı listesinin) (x tam-sayısını) içermesi,
+(bu tam-sayıyla) (şu tam-sayının) eşit-değilliği,
+  (bunla şunun eşitliğinin) tersidir.
+
+(bu tam-sayı listesinin) (a tam-sayısını) içermesi,
   bu boşsa,
     yanlış;
   ilkin devama ekiyse,
-    (ilkle x'in eşitliği) doğruysa,
+    (ilkle a'nın eşitliği) doğruysa,
       doğru;
     değilse,
-      devamın x'i içermesidir.
+      devamın a'yı içermesidir.
 
-(bu tam-sayı listesinden) (x tam-sayısının) ayıklanması,
-  bu boşsa,
-    boş;
-  ilkin devama ekiyse,
-    (ilkle x'in eşitliği) doğruysa,
-      devamdan x'in ayıklanmasıdır;
-    değilse,
-      ilkin (devamdan x'in ayıklanmasına) ekidir.
+(bu tam-sayı listesinden) (a tam-sayısının) ayıklanması,
+  bunun (a'nın eşit-değilliğiyle) filtresidir.
 
-(bu cümlenin) (x tam-sayısıyla) ayıklanmış-cümle-olasılığı,
+(bu cümlenin) (a tam-sayısıyla) ayıklanmış-cümle-olasılığı,
   bu sayıların durumuysa,
-    (sayıların x'i içermesi) doğruysa,
+    (sayıların a'yı içermesi) doğruysa,
       yokluk;
     değilse,
-      ((sayıların (x'in işaret-tersinin) ayıklanmasının) durumu) varlığıdır.
+      ((sayıların (a'nın işaret-tersinin) ayıklanmasının) durumu) varlığıdır.
 
-(bu cümle listesinden) (x tam-sayısının) ayıklanması,
+(bu cümle listesinden) (a tam-sayısının) ayıklanması,
   bu boşsa,
     boş;
   ilkin devama ekiyse,
-    (ilkin x'le ayıklanmış-cümle-olasılığı)
+    (ilkin a'yla ayıklanmış-cümle-olasılığı)
       yokluksa,
-        devamdan x'in ayıklanmasıdır;
+        devamdan a'nın ayıklanmasıdır;
       kalan-cümlenin varlığıysa,
-        kalan-cümlenin (devamdan x'in ayıklanmasına) ekidir.
+        kalan-cümlenin (devamdan a'nın ayıklanmasına) ekidir.
 
-(bu cümle listesinin) boş-cümle-içermesi,
-  bu boşsa,
-    yanlış;
-  ilk-cümlenin devama ekiyse,
-    (ilk-cümle)
-      sayılar durumuysa,
-        sayılar boşsa,
-          doğru;
-        değilse,
-          devamın boş-cümle-içermesidir.
+(bu cümlenin) boş-cümleliği,
+  bu sayıların durumuysa,
+    sayılar boşsa,
+      doğru;
+    değilse,
+      yanlıştır.
 
 (bu cümlenin) birimi,
   bu sayıların durumuysa,
@@ -70,21 +63,21 @@ olabilir.
       yokluksa,
         devamın birimidir.
 
-(bu cümlenin) (x tam-sayısını) içermesi,
+(bu cümlenin) (a tam-sayısını) içermesi,
   bu sayıların durumuysa,
-    sayıların x'i içermesidir.
+    sayıların a'yı içermesidir.
 
-(bu cümle listesinin) (x tam-sayısını) içermesi,
+(bu cümle listesinin) (a tam-sayısını) içermesi,
   bu boşsa,
     yanlış;
   ilkin devama ekiyse,
-    (ilkin x'i içermesi) doğruysa,
+    (ilkin a'yı içermesi) doğruysa,
       doğru;
     değilse,
-      devamın x'i içermesidir.
+      devamın a'yı içermesidir.
 
-(bu cümle listesinde) (x tam-sayısının) karşıtının-yokluğu,
-  (bunun (x'in işaret-tersini) içermesi) doğruysa,
+(bu cümle listesinde) (a tam-sayısının) karşıtının-yokluğu,
+  (bunun (a'nın işaret-tersini) içermesi) doğruysa,
     yanlış;
   değilse,
     doğrudur.
@@ -130,26 +123,31 @@ olabilir.
         devamdan seçimdir.
 
 (bu cümle listesinin) (karar doğruluğu),
+  (* Tüm cümleler tüketildiyse SAT. *)
   bu boşsa,
     doğru;
   değilse,
-    (bunun boş-cümle-içermesi) doğruysa,
+    (* Herhangi bir boş-cümle varsa çelişki oluştu UNSAT. *)
+    (bunun boş-cümlelikle herhangisi) doğruysa,
       yanlış;
     değilse,
+      (* unit propagation uygula (birim cümleyi zorunlu ata). *)
       (bunun birimi)
-        x'in varlığıysa,
-          (bundan x'in ayıklanmasının) kararı;
+        a'nın varlığıysa,
+          (bundan a'nın ayıklanmasının) kararı;
         yokluksa,
+          (* pure literal elimination uygula. *)
           (bunun bununla karşıtı-yokluğu-seçimi)
-            x'in varlığıysa,
-              (bundan x'in ayıklanmasının) kararı;
+            a'nın varlığıysa,
+              (bundan a'nın ayıklanmasının) kararı;
             yokluksa,
+              (* branching + backtracking (önce a, sonra ¬a). *)
               (bundan seçim)
-                x'in varlığıysa,
-                  (((bundan x'in ayıklanmasının) kararı) doğruysa,
+                a'nın varlığıysa,
+                  (((bundan a'nın ayıklanmasının) kararı) doğruysa,
                     doğru;
                   değilse,
-                    ((bundan (x'in işaret-tersinin) ayıklanmasının) kararı));
+                    ((bundan (a'nın işaret-tersinin) ayıklanmasının) kararı));
                 yokluksa,
                   doğru.
 
@@ -159,59 +157,106 @@ olabilir.
   yanlışsa,
     "UNSAT"tır.
 
-basit-problem,
-  durumuyla [
-              [-1, 3]
-            , [2, 3, -1]
-            ]'in eşlemidir.
-("basit-problem: "le ((basit-problem'in kararının) metninin) birleşimini) yaz.
+(bu dizgenin) yorum-satırlığı,
+  (bunun kelimeleri)
+    ilk-kelimenin kalan-kelimelere ekiyse,
+      (ilk-kelimeyle "c"nin eşitliğidir);
+    boşsa,
+      yanlıştır.
+      
+(bu dizgenin) problem-satırlığı,
+  (bunun yorum-satırlığının) tersidir.
 
-quinn-problem,
-  durumuyla [
-              [1, 2]
-            , [-2, -4]
-            , [3, 4]
-            , [-4, -5]
-            , [5, -6]
-            , [6, -7]
-            , [6, 7]
-            , [7, -16]
-            , [8, -9]
-            , [-8, -14]
-            , [9, 10]
-            , [9, -10]
-            , [-10, -11]
-            , [10, 12]
-            , [11, 12]
-            , [13, 14]
-            , [14, -15]
-            , [15, 16]
-            ]'in eşlemidir.
-("quinn-problem: "le ((quinn-problem'in kararının) metninin) birleşimini) yaz.
+(bu dizge listesinin) yorumları-atılmışı,
+  bunun problem-satırlığıyla filtresidir.
 
-güvercin-yuvası-problemi,
-  durumuyla [
-              [1, 2]
-            , [3, 4]
-            , [5, 6]
-            , [-1, -3]
-            , [-1, -5]
-            , [-3, -5]
-            , [-2, -4]
-            , [-2, -6]
-            , [-4, -6]
-            ]'in eşlemidir.
-("güvercin-yuvası-problemi: "yle ((güvercin-yuvası-problemi'nin kararının) metninin) birleşimini) yaz.
+(bu dizge listesinin) kelimeleşmiş-hali,
+  bu boşsa,
+    boş;
+  satırın devama ekiyse,
+    ((satırın kelimeleriyle) (devamın kelimeleşmiş-halinin) birleşimidir).
 
-üç-tüm-kombinasyonlar-problemi,
-  durumuyla [
-              [1, 2, 3]
-            , [1, -2, -3]
-            , [-1, 2, -3]
-            , [-1, -2, 3]
-            , [-1, -2, -3]
-            , [-1, 2, 3]
-            , [1, -2, 3]
-            , [1, 2, -3]
-            ]'in eşlemidir.
-("üç-tüm-kombinasyonlar-problemi: "yle ((üç-tüm-kombinasyonlar-problemi'nin kararının) metninin) birleşimini) yaz.
+(bu dizge listesinin) cnf-cümle-sayısı-sonrası,
+  bu boşsa,
+    yokluk;
+  cümle-sayısının kalan-kelimelere ekiyse,
+    ((cümle-sayısının tam-sayı-hali)
+      yokluksa,
+        yokluk;
+      sayının varlığıysa,
+        kalan-kelimelerin varlığı).
+
+(bu dizge listesinin) cnf-değişken-sayısı-sonrası,
+  bu boşsa,
+    yokluk;
+  değişken-sayısının kalan-kelimelere ekiyse,
+    ((değişken-sayısının tam-sayı-hali)
+      yokluksa,
+        yokluk;
+      sayının varlığıysa,
+        kalan-kelimelerin cnf-cümle-sayısı-sonrasıdır).
+
+(bu dizge listesinin) cnf-biçimi-sonrası,
+  bu boşsa,
+    yokluk;
+  biçimin kalan-kelimelere ekiyse,
+    (biçimle "cnf"nin eşitliği) doğruysa,
+      kalan-kelimelerin cnf-değişken-sayısı-sonrasıdır;
+    değilse,
+      yokluktur.
+
+(bu dizge listesinin) cnf-başlığı-sonrası,
+  bu boşsa,
+    yokluk;
+  ilk-kelimenin kalan-kelimelere ekiyse,
+    (ilk-kelimeyle "p"nin eşitliği) doğruysa,
+      kalan-kelimelerin cnf-biçimi-sonrasıdır;
+    değilse,
+      yokluktur.
+
+(bu cümlenin) (şu cümle listesinin) sonuna-eklenişi,
+  (şunla (bunun boşa ekinin) birleşimidir).
+
+(bu dizge listesinin) (literaller-tersi tam-sayı listesiyle) (birikmişler cümle listesiyle) cnf-cümle-birikimi,
+  bu boşsa,
+    (literaller-tersi boşsa,
+      birikmişlerin varlığı;
+    değilse,
+      (literaller-tersinin tersine) yeni-cümle dersek,
+      (((yeni-cümlenin durumunun) birikmişlerin sonuna-eklenişinin) varlığı));
+  kelimenin kalan-kelimelere ekiyse,
+    ((kelimenin tam-sayı-hali)
+      yokluksa,
+        yokluk;
+      sayının varlığıysa,
+        ((sayının 0'la eşitliği) doğruysa,
+          (literaller-tersinin tersine) yeni-cümle dersek,
+          (kalan-kelimelerin boşla ((yeni-cümlenin durumunun) birikmişlerin sonuna-eklenişiyle) cnf-cümle-birikimidir);
+        değilse,
+          (kalan-kelimelerin (sayının literaller-tersine ekiyle) birikmişlerle cnf-cümle-birikimidir))).
+
+(bu dizgenin) cnf-cümleleri,
+  (bunun satırlarına) satırlar dersek,
+  (satırların yorumları-atılmışına) temiz-satırlar dersek,
+  (temiz-satırların kelimeleşmiş-haline) kelimeler dersek,
+  (kelimelerin cnf-başlığı-sonrası)
+    yokluksa,
+      yokluk;
+    kalan-kelimelerin varlığıysa,
+      kalan-kelimelerin boşla boşla cnf-cümle-birikimidir.
+      
+(dosya-adı dizgesinden) okuyup-çözmek,
+  problem-cnf için dosya-adından okuyup,
+    problem-cnf yokluksa,
+      "DOSYA HATASI"yı yazmaktır;
+    içeriğin varlığıysa,
+      ((içeriğin cnf-cümleleri)
+        yokluksa,
+          "CNF HATASI"yı yazmaktır;
+        cümlelerin varlığıysa,
+          ((cümlelerin kararının) metnini) yazmaktır).
+
+"./tests/succeed/dpll-basit.cnf"den okuyup-çöz.
+"./tests/succeed/dpll-quinn.cnf"den okuyup-çöz.
+"./tests/succeed/dpll-guvercin-yuvasi.cnf"den okuyup-çöz.
+"./tests/succeed/dpll-uc-tum-kombinasyonlar.cnf"den okuyup-çöz.
