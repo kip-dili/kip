@@ -1,0 +1,11 @@
+c dpll.kip uc tum kombinasyonlar problemi
+c son clause bilerek 0 olmadan biter
+p cnf 3 8
+1 2 3 0
+1 -2 -3 0
+-1 2 -3 0
+-1 -2 3 0
+-1 -2 -3 0
+-1 2 3 0
+1 -2 3 0
+1 2 -3

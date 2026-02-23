@@ -1,15 +1,16 @@
 cümle tipi tanımlandı.
 (bu tam-sayının) işaret-tersi tanımlandı.
-(bu tam-sayı listesinin) (x tam-sayısını) içermesi tanımlandı.
-(bu tam-sayı listesinden) (x tam-sayısının) ayıklanması tanımlandı.
-(bu cümlenin) (x tam-sayısıyla) ayıklanmış-cümle-olasılığı tanımlandı.
-(bu cümle listesinden) (x tam-sayısının) ayıklanması tanımlandı.
-(bu cümle listesinin) boş-cümle-içermesi tanımlandı.
+(bu tam-sayıyla) (şu tam-sayının) eşit-değilliği tanımlandı.
+(bu tam-sayı listesinin) (a tam-sayısını) içermesi tanımlandı.
+(bu tam-sayı listesinden) (a tam-sayısının) ayıklanması tanımlandı.
+(bu cümlenin) (a tam-sayısıyla) ayıklanmış-cümle-olasılığı tanımlandı.
+(bu cümle listesinden) (a tam-sayısının) ayıklanması tanımlandı.
+(bu cümlenin) boş-cümleliği tanımlandı.
 (bu cümlenin) birimi tanımlandı.
 (bu cümle listesinin) birimi tanımlandı.
-(bu cümlenin) (x tam-sayısını) içermesi tanımlandı.
-(bu cümle listesinin) (x tam-sayısını) içermesi tanımlandı.
-(bu cümle listesinin) (x tam-sayısının) karşıtının-yokluğu tanımlandı.
+(bu cümlenin) (a tam-sayısını) içermesi tanımlandı.
+(bu cümle listesinin) (a tam-sayısını) içermesi tanımlandı.
+(bu cümle listesinin) (a tam-sayısının) karşıtının-yokluğu tanımlandı.
 (bu tam-sayı listesinin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi tanımlandı.
 (bu cümlenin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi tanımlandı.
 (bu cümle listesinin) (bütün-cümleler cümle listesiyle) karşıtı-yokluğu-seçimi tanımlandı.
@@ -17,11 +18,19 @@ cümle tipi tanımlandı.
 (bu cümle listesinden) seçimi tanımlandı.
 (bu cümle listesinin) kararı yüklendi.
 (bu doğruluğun) metni tanımlandı.
-basit-problem tanımlandı.
-basit-problem: SAT
-quinn-problem tanımlandı.
-quinn-problem: SAT
-güvercin-yuvası-problem tanımlandı.
-güvercin-yuvası-problemi: UNSAT
-üç-tüm-kombinasyonlar-problem tanımlandı.
-üç-tüm-kombinasyonlar-problemi: UNSAT
+(bu dizgenin) yorum-satırlığı tanımlandı.
+(bu dizgenin) problem-satırlığı tanımlandı.
+(bu dizge listesinin) yorumları-atılmışı tanımlandı.
+(bu dizge listesinin) kelimeleşmiş-hali tanımlandı.
+(bu dizge listesinin) cnf-cümle-sayısı-sonrası tanımlandı.
+(bu dizge listesinin) cnf-değişken-sayısı-sonrası tanımlandı.
+(bu dizge listesinin) cnf-biçimi-sonrası tanımlandı.
+(bu dizge listesinin) cnf-başlığı-sonrası tanımlandı.
+(bu cümlenin) (şu cümle listesinin) sonuna-eklenişi tanımlandı.
+(bu dizge listesinin) (literaller-tersi tam-sayı listesiyle) (birikmişler cümle listesiyle) cnf-cümle-birikimi tanımlandı.
+(bu dizgenin) cnf-cümleleri tanımlandı.
+(dosya-ad dizgesinden) okuyup-çözmek tanımlandı.
+SAT
+SAT
+UNSAT
+UNSAT
