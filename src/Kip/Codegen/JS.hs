@@ -653,11 +653,12 @@ definedJsNamesInProgram :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> 
 definedJsNamesInProgram resolvMap programStmts stmts =
   let ctx = buildCodegenCtx resolvMap programStmts
       merged = mergeCompatibleFunctions ctx stmts
-  in foldl' add [] (concatMap (stmtDefinedNames ctx) merged)
+      (revNames, _) = foldl' add ([], Set.empty) (concatMap (stmtDefinedNames ctx) merged)
+  in reverse revNames
   where
-    add acc name
-      | name `elem` acc = acc
-      | otherwise = acc ++ [name]
+    add (acc, seen) name
+      | Set.member name seen = (acc, seen)
+      | otherwise = (name : acc, Set.insert name seen)
 
 -- | Check if a statement is a function definition (including types).
 isFunctionDef :: Stmt Ann -> Bool
@@ -902,12 +903,12 @@ renderPatternBindings scrutinee pats startIdx =
   -- We keep patLen around so we can index from the end of scrutinee.args,
   -- which mirrors how nested patterns are aligned in the AST/typechecker.
   let patLen = length pats
-      (binds, idx, _) = foldl (collect patLen) ([], startIdx, []) pats
-  in (binds, idx)
+      (bindsRev, idx, _) = foldl' (collect patLen) ([], startIdx, Set.empty) pats
+  in (reverse bindsRev, idx)
   where
     collect patLen (acc, idx, seen) pat =
       let (binds, nextIdx, seen') = renderPatBinding scrutinee patLen idx seen pat
-      in (acc ++ binds, nextIdx, seen')
+      in (reverse binds ++ acc, nextIdx, seen')
 
     -- Bind variables by walking the pattern while keeping alignment consistent
     -- with right-anchored constructor arguments.
@@ -917,9 +918,9 @@ renderPatternBindings scrutinee pats startIdx =
         PVar n _ ->
           let name = toJsIdent n
               argAccess = patArgAccess scrut patLen idx
-          in if name `elem` seen
+          in if Set.member name seen
                then ([], idx + 1, seen)
-               else ([ "const " <> name <> " = " <> argAccess <> ";" ], idx + 1, name : seen)
+               else ([ "const " <> name <> " = " <> argAccess <> ";" ], idx + 1, Set.insert name seen)
         PCtor _ subPats ->
           let argAccess = patArgAccess scrut patLen idx
               (subBinds, _, seen') = renderPatternBindingsWithSeen argAccess subPats 0 seen
@@ -934,11 +935,12 @@ renderPatternBindings scrutinee pats startIdx =
       -- Each nested constructor has its own argument list length, so we
       -- recompute patLen for the subpattern list.
       let patLen = length pats
-      in foldl (collectWithSeen patLen) ([], idx, seen) pats
+          (bindsRev, nextIdx, seen') = foldl' (collectWithSeen patLen) ([], idx, seen) pats
+      in (reverse bindsRev, nextIdx, seen')
       where
         collectWithSeen patLen (acc, ix, seenAcc) p =
           let (binds, nextIx, seen') = renderPatBinding scrut patLen ix seenAcc p
-          in (acc ++ binds, nextIx, seen')
+          in (reverse binds ++ acc, nextIx, seen')
 
 -- | Lower a Kip @Match@ expression into an async IIFE expression.
 --

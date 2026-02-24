@@ -179,8 +179,8 @@ data DocState = DocState
   , dsFuncClauseIndex :: FuncClauseIndex
     -- | Per-document cache of rendered types (hash table for O(1) lookups).
   , dsTyRenderCache :: HT.BasicHashTable Text Text
-    -- | Per-document cache of token classifications (hash table for O(1) lookups).
-  , dsTokenCache :: HT.BasicHashTable Text (Maybe TokenAtPosition)
+    -- | Per-document cache of token classifications keyed by (line, column).
+  , dsTokenCache :: HT.BasicHashTable (UInt, UInt) (Maybe TokenAtPosition)
   }
 
 -- | LSP server configuration wrapper.
@@ -2373,7 +2373,7 @@ tokenAtPosition doc (Position line char) = do
 -- called frequently on the same cursor position.
 tokenAtPositionIO :: DocState -> Position -> IO (Maybe TokenAtPosition)
 tokenAtPositionIO doc pos = do
-  let key = T.pack (show pos)
+  let key = (pos ^. L.line, pos ^. L.character)
   existing <- HT.lookup (dsTokenCache doc) key
   case existing of
     Just token -> return token
@@ -2428,11 +2428,13 @@ findCtorInPattern pos doc =
 --
 -- This is used for go-to-definition when no resolved symbol is available.
 findDefinitionAt :: Position -> Map.Map Identifier Range -> Maybe (Identifier, [(Identifier, Case)])
-findDefinitionAt pos defSpans =
-  -- Find a definition whose range contains the cursor position
-  case [(ident, range) | (ident, range) <- Map.toList defSpans, positionInRange pos range] of
-    [] -> Nothing
-    (ident, _):_ -> Just (ident, [])
+findDefinitionAt pos =
+  Map.foldrWithKey
+    (\ident range acc ->
+        if positionInRange pos range
+          then Just (ident, [])
+          else acc)
+    Nothing
   where
     positionInRange (Position line char) (Range (Position startLine startChar) (Position endLine endChar))
       | line < startLine || line > endLine = False
@@ -2988,20 +2990,12 @@ lookupLatestTextByUri :: Uri -> LspState -> Maybe Text
 lookupLatestTextByUri uri st =
   case Map.lookup uri (lsLatestText st) of
     Just txt -> Just txt
-    Nothing ->
-      snd <$> listToMaybe
-        [ kv
-        | kv@(k, _) <- Map.toList (lsLatestText st)
-        , toNormalizedUri k == toNormalizedUri uri
-        ]
+    Nothing -> lookupByNormalizedUri uri (lsLatestText st)
 
 -- | Lookup a document by exact or normalized URI.
 lookupDocByUri :: Uri -> Map.Map Uri DocState -> Maybe Text
 lookupDocByUri uri docs =
-  fmap (dsText . snd) $
-    case lookupDocKeyByUri uri docs of
-      Just key -> Just (key, docs Map.! key)
-      Nothing -> Nothing
+  dsText <$> (lookupDocKeyByUri uri docs >>= (`Map.lookup` docs))
 
 -- | Find the map key for a URI using exact/normalized matching.
 lookupDocKeyByUri :: Uri -> Map.Map Uri DocState -> Maybe Uri
@@ -3009,11 +3003,25 @@ lookupDocKeyByUri uri docs =
   case Map.lookup uri docs of
     Just _ -> Just uri
     Nothing ->
-      fmap fst . listToMaybe $
-        [ kv
-        | kv@(k, _) <- Map.toList docs
-        , toNormalizedUri k == toNormalizedUri uri
-        ]
+      let norm = toNormalizedUri uri
+      in Map.foldrWithKey
+           (\k _ acc ->
+               if toNormalizedUri k == norm
+                 then Just k
+                 else acc)
+           Nothing
+           docs
+
+lookupByNormalizedUri :: Uri -> Map.Map Uri a -> Maybe a
+lookupByNormalizedUri uri mp =
+  let norm = toNormalizedUri uri
+  in Map.foldrWithKey
+       (\k v acc ->
+           if toNormalizedUri k == norm
+             then Just v
+             else acc)
+       Nothing
+       mp
 
 -- | Format document: trim trailing whitespace and ensure trailing newline.
 formatText :: Text -> Text
