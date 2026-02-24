@@ -1630,7 +1630,10 @@ missingVectors (t:ts) matrix = do
       && not (null (roots x1 `intersect` roots x2))
 
     roots txt =
-      nub (catMaybes [Just txt, dropTrailingVowel txt >>= dropTrailingSoftG])
+      case dropTrailingVowel txt >>= dropTrailingSoftG of
+        Just alt
+          | alt /= txt -> [txt, alt]
+        _ -> [txt]
 
     dropTrailingVowel txt =
       case T.unsnoc txt of
@@ -1713,7 +1716,10 @@ annotateMissingPattern scrutTy pat = do
       && not (null (roots x1 `intersect` roots x2))
 
     roots txt =
-      nub (catMaybes [Just txt, dropTrailingVowel txt >>= dropTrailingSoftG])
+      case dropTrailingVowel txt >>= dropTrailingSoftG of
+        Just alt
+          | alt /= txt -> [txt, alt]
+        _ -> [txt]
 
     dropTrailingVowel txt =
       case T.unsnoc txt of
@@ -1816,7 +1822,10 @@ isUseful tys matrix vec =
       && not (null (roots x1 `intersect` roots x2))
 
     roots txt =
-      nub (catMaybes [Just txt, dropTrailingVowel txt >>= dropTrailingSoftG])
+      case dropTrailingVowel txt >>= dropTrailingSoftG of
+        Just alt
+          | alt /= txt -> [txt, alt]
+        _ -> [txt]
 
     dropTrailingVowel txt =
       case T.unsnoc txt of

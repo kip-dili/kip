@@ -2022,9 +2022,9 @@ parseExpWithCtx' useCtx allowMatch =
         splitArgs arityMap arityNameMap arity tokens
           | arity <= 0 = return []
           | length tokens < arity = return []
-          | otherwise = go arity tokens
+          | otherwise = map reverse <$> goRev arity tokens
           where
-            go n pool
+            goRev n pool
               | n == 0 =
                   return ([[] | null pool])
               | length pool < n = return []
@@ -2035,8 +2035,8 @@ parseExpWithCtx' useCtx allowMatch =
                           let prefix = take splitAtIx pool
                               chunk = drop splitAtIx pool
                           argExps <- parseStrict arityMap arityNameMap chunk
-                          prevExpSets <- go (n - 1) prefix
-                          return [prevArgs ++ [arg] | arg <- argExps, prevArgs <- prevExpSets]
+                          prevExpSetsRev <- goRev (n - 1) prefix
+                          return [arg : prevArgsRev | arg <- argExps, prevArgsRev <- prevExpSetsRev]
                       )
                       [n - 1 .. length pool - 1]
 
