@@ -45,8 +45,10 @@ module Kip.Codegen.JS
   ) where
 
 import Data.Char (isAlphaNum, isLetter)
+import qualified Data.Foldable as F
 import Data.List (foldl', partition)
 import Data.Maybe (mapMaybe)
+import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as Map
@@ -684,7 +686,7 @@ data OverloadKey = OverloadKey
 -- This keeps codegen predictable while allowing multi-definition functions like
 -- @filtre@ in dpll to become one JS declaration with all clauses.
 mergeCompatibleFunctions :: CodegenCtx -> [Stmt Ann] -> [Stmt Ann]
-mergeCompatibleFunctions ctx stmts = snd (foldl step (Map.empty, []) stmts)
+mergeCompatibleFunctions ctx stmts = F.toList (snd (foldl' step (Map.empty, Seq.empty) stmts))
   where
     step (seen, acc) stmt =
       case stmt of
@@ -696,21 +698,20 @@ mergeCompatibleFunctions ctx stmts = snd (foldl step (Map.empty, []) stmts)
                   }
           in case Map.lookup key seen of
                Nothing ->
-                 let idx = length acc
-                 in (Map.insert key idx seen, acc ++ [stmt])
+                 let idx = Seq.length acc
+                 in (Map.insert key idx seen, acc Seq.|> stmt)
                Just idx ->
                  (seen, mergeAt idx clauses isInf acc)
         _ ->
-          (seen, acc ++ [stmt])
+          (seen, acc Seq.|> stmt)
 
     mergeAt idx newClauses isInf acc =
-      let (prefix, target:suffix) = splitAt idx acc
-      in case target of
-           Function name oldArgs oldTy oldClauses oldInf ->
-             let mergedInf = oldInf || isInf
-                 mergedStmt = Function name oldArgs oldTy (oldClauses ++ newClauses) mergedInf
-             in prefix ++ (mergedStmt : suffix)
-           _ -> acc
+      case Seq.lookup idx acc of
+        Just (Function name oldArgs oldTy oldClauses oldInf) ->
+          let mergedInf = oldInf || isInf
+              mergedStmt = Function name oldArgs oldTy (oldClauses ++ newClauses) mergedInf
+          in Seq.update idx mergedStmt acc
+        _ -> acc
 
 -- | JavaScript implementations of Kip primitives.
 -- Uses 'var' so user code can override with 'const'.
@@ -1224,22 +1225,20 @@ formatJsOutput src =
 
 -- | Attach lines containing only @;@ to the previous non-empty line.
 moveStandaloneSemicolons :: [Text] -> [Text]
-moveStandaloneSemicolons = foldl' step []
+moveStandaloneSemicolons = F.toList . foldl' step Seq.empty
   where
-    step [] line
-      | T.strip line == ";" = []
-      | otherwise = [line]
     step acc line
-      | T.strip line /= ";" = acc ++ [line]
+      | Seq.null acc
+      , T.strip line == ";" = Seq.empty
+      | Seq.null acc
+      = Seq.singleton line
+      | T.strip line /= ";" = acc Seq.|> line
       | otherwise =
-          case unsnocList acc of
-            Nothing -> acc
-            Just (prefix, lastLine)
+          case Seq.viewr acc of
+            Seq.EmptyR -> acc
+            prefix Seq.:> lastLine
               | T.null (T.strip lastLine) -> acc
-              | otherwise -> prefix ++ [T.stripEnd lastLine <> ";"]
-
-    unsnocList [] = Nothing
-    unsnocList xs = Just (init xs, last xs)
+              | otherwise -> prefix Seq.|> (T.stripEnd lastLine <> ";")
 
 -- | Remove blank lines that are immediately followed by a closing brace line.
 removeBlankBeforeClose :: [Text] -> [Text]
@@ -1261,13 +1260,14 @@ removeBlankAfterOpen (x:y:rest)
 
 -- | Collapse consecutive blank lines to a single blank line.
 collapseBlankRuns :: [Text] -> [Text]
-collapseBlankRuns = foldl' step []
+collapseBlankRuns =
+  F.toList . fst . foldl' step (Seq.empty, False)
   where
-    step [] line = [line]
-    step acc line
-      | T.null (T.strip line)
-      , T.null (T.strip (last acc)) = acc
-      | otherwise = acc ++ [line]
+    step (acc, prevBlank) line =
+      let blank = T.null (T.strip line)
+      in if blank && prevBlank
+           then (acc, True)
+           else (acc Seq.|> line, blank)
 
 -- | Trim leading and trailing blank lines.
 trimEdgeBlanks :: [Text] -> [Text]
