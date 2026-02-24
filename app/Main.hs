@@ -1061,7 +1061,10 @@ main = do
           let resolvMap = Map.fromList (tcResolvedSigs finalTC)
           cwd <- getCurrentDirectory
           entryAbs <- mapM canonicalizePathCached (optFiles opts)
-          let modulePaths = nub (map fst taggedStmts)
+          let modulePaths = reverse (snd (foldl' addModulePath (Set.empty, []) (map fst taggedStmts)))
+              addModulePath (seen, acc) path
+                | Set.member path seen = (seen, acc)
+                | otherwise = (Set.insert path seen, path : acc)
               allStmts = map snd taggedStmts
               moduleDefs =
                 [ (p, definedJsNamesInProgram resolvMap allStmts [s | (p', s) <- taggedStmts, p' == p, not (isLoadStmt s)])
@@ -1069,10 +1072,12 @@ main = do
                 ]
               allDefs = concatMap snd moduleDefs
               runtimeDefs = runtimeGlobalNames
-              providers = foldl' addProvider [] [(name, p) | (p, names) <- moduleDefs, name <- names]
-              addProvider acc (name, p)
-                | any (\(n, _) -> n == name) acc = acc
-                | otherwise = acc ++ [(name, p)]
+              providerPairs = [(name, p) | (p, names) <- moduleDefs, name <- names]
+              (_, providersRev) = foldl' addProvider (Set.empty, []) providerPairs
+              providers = reverse providersRev
+              addProvider (seen, acc) (name, p)
+                | Set.member name seen = (seen, acc)
+                | otherwise = (Set.insert name seen, (name, p) : acc)
           TIO.writeFile (outDirAbs </> "__kip_runtime.mjs") codegenRuntime
           forM_ modulePaths $ \modulePath -> do
             let rel = makeRelative cwd modulePath
@@ -1096,7 +1101,7 @@ main = do
                   "import { " <> T.intercalate ", " runtimeImports <> " } from './"
                     <> importRelPath moduleOut (outDirAbs </> "__kip_runtime.mjs") <> "';"
                 depImports =
-                  [ "import { " <> T.intercalate ", " (nub names) <> " } from './"
+                  [ "import { " <> T.intercalate ", " names <> " } from './"
                       <> importRelPath moduleOut (outDirAbs </> replaceExtension (makeRelative cwd p) "mjs")
                       <> "';"
                   | (p, names) <- Map.toList importByModule
@@ -2238,8 +2243,20 @@ main = do
     -- | Resolve build targets from file or directory inputs.
     resolveBuildTargets :: [FilePath] -- ^ Input paths.
                         -> IO [FilePath] -- ^ `.kip` files to build.
-    resolveBuildTargets paths = fmap nub (concat <$> mapM expandPath paths)
+    resolveBuildTargets paths = do
+      (_, accRev) <- foldM collectPath (Set.empty, []) paths
+      return (reverse accRev)
       where
+        collectPath :: (Set FilePath, [FilePath]) -> FilePath -> IO (Set FilePath, [FilePath])
+        collectPath (seen, accRev) p = do
+          expanded <- expandPath p
+          return (foldl' insertUnique (seen, accRev) expanded)
+
+        insertUnique :: (Set FilePath, [FilePath]) -> FilePath -> (Set FilePath, [FilePath])
+        insertUnique (seen, accRev) p
+          | Set.member p seen = (seen, accRev)
+          | otherwise = (Set.insert p seen, p : accRev)
+
         -- | Expand a directory into .kip files or keep a file path.
         expandPath :: FilePath -- ^ Input path.
                    -> IO [FilePath] -- ^ Expanded paths.

@@ -2471,10 +2471,10 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
         then customFailure yaDaErrorMsg
         else do
           firstCtor <- ctorWithArgs
-          parseMore [firstCtor]
+          reverse <$> parseMore [firstCtor]
       where
-        -- | Parse additional constructors separated by "ya".
-        parseMore :: [Ctor Ann] -- ^ Accumulated constructors.
+        -- | Parse additional constructors separated by "ya" (reverse accumulator).
+        parseMore :: [Ctor Ann] -- ^ Reverse-accumulated constructors.
                   -> KipParser [Ctor Ann] -- ^ Parsed constructors.
         parseMore acc = do
           msep <- optional (try parseSep)
@@ -2486,9 +2486,9 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                 then do
                   msep2 <- optional (try parseSep)
                   case msep2 of
-                    Nothing -> return (acc ++ [ctor])
+                    Nothing -> return (ctor : acc)
                     Just _ -> customFailure yaDaErrorMsg
-                else parseMore (acc ++ [ctor])
+                else parseMore (ctor : acc)
         -- | Parse a constructor separator and track "ya da".
         parseSep :: KipParser Bool -- ^ True when the separator is "ya da".
         parseSep = do
@@ -3129,7 +3129,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                   return (name `elem` tyNames || name `elem` parserTyParams || name `elem` primNames)
                 Nothing -> return False
         let -- Collect all type identifiers greedily, validating arity at the end
-            collectArgsLoop soFar = do
+            collectArgsLoopRev soFarRev = do
               mNext <- optional (try (do
                 arg <- identifierNotKeyword
                 ws
@@ -3143,11 +3143,11 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                   Nothing -> empty
                 ))
               case mNext of
-                Just arg -> collectArgsLoop (soFar ++ [arg])
-                Nothing -> return soFar
+                Just arg -> collectArgsLoopRev (arg : soFarRev)
+                Nothing -> return (reverse soFarRev)
         -- Try to parse as a type application, with arity validation inside try
         mTypeApp <- optional . try $ do
-              collected <- collectArgsLoop []
+              collected <- collectArgsLoopRev []
               guard (not (null collected))
               (rawIdent, sp) <- withSpan identifierNotKeyword
               (name, cas) <- resolveTypeCandidatePreferCtx rawIdent

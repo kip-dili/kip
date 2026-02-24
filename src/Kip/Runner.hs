@@ -44,7 +44,7 @@ module Kip.Runner
   , breakOn
   ) where
 
-import Control.Monad (forM, when, unless, filterM)
+import Control.Monad (forM, when, unless, filterM, foldM)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
 import Data.List (intercalate, isPrefixOf, nub, tails, findIndex, foldl')
@@ -1051,8 +1051,20 @@ resolveModulePath dirs dirPath name@(xs, x) = do
 
 -- | Resolve build targets from file or directory inputs.
 resolveBuildTargets :: [FilePath] -> IO [FilePath]
-resolveBuildTargets paths = fmap nub (concat <$> mapM expandPath paths)
+resolveBuildTargets paths = do
+  (_, accRev) <- foldM collectPath (Set.empty, []) paths
+  return (reverse accRev)
   where
+    collectPath :: (Set FilePath, [FilePath]) -> FilePath -> IO (Set FilePath, [FilePath])
+    collectPath (seen, accRev) p = do
+      expanded <- expandPath p
+      return (foldl' insertUnique (seen, accRev) expanded)
+
+    insertUnique :: (Set FilePath, [FilePath]) -> FilePath -> (Set FilePath, [FilePath])
+    insertUnique (seen, accRev) p
+      | Set.member p seen = (seen, accRev)
+      | otherwise = (Set.insert p seen, p : accRev)
+
     expandPath :: FilePath -> IO [FilePath]
     expandPath p = do
       isDir <- doesDirectoryExist p
