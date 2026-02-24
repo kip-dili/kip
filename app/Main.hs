@@ -1008,7 +1008,7 @@ main = do
         downsCache <- HT.new
         let renderCache = mkRenderCache upsCache downsCache
         moduleDirs <- internModuleRoots (libDir : optIncludeDirs opts)
-        let moduleDirs' = nub moduleDirs
+        let moduleDirs' = uniquePreserve moduleDirs
             renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm) (Just upsCache) (Just downsCache)
         return (renderCtx, moduleDirs', renderCache, fsm, upsCache, downsCache)
   case optMode opts of
@@ -1061,10 +1061,7 @@ main = do
           let resolvMap = Map.fromList (tcResolvedSigs finalTC)
           cwd <- getCurrentDirectory
           entryAbs <- mapM canonicalizePathCached (optFiles opts)
-          let modulePaths = reverse (snd (foldl' addModulePath (Set.empty, []) (map fst taggedStmts)))
-              addModulePath (seen, acc) path
-                | Set.member path seen = (seen, acc)
-                | otherwise = (Set.insert path seen, path : acc)
+          let modulePaths = uniquePreserve (map fst taggedStmts)
               allStmts = map snd taggedStmts
               moduleDefs =
                 [ (p, definedJsNamesInProgram resolvMap allStmts [s | (p', s) <- taggedStmts, p' == p, not (isLoadStmt s)])
@@ -1127,8 +1124,8 @@ main = do
         die . T.unpack =<< runReaderT (render MsgNeedFileOrDir) basicCtx
       (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
       buildTargets <- resolveBuildTargets (optFiles opts)
-      let extraDirs = nub (concatMap takeDirectories buildTargets)
-          buildModuleDirs = nub (moduleDirs ++ extraDirs)
+      let extraDirs = uniquePreserve (concatMap takeDirectories buildTargets)
+          buildModuleDirs = uniquePreserve (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
         runReaderT (loadPreludeState (optNoPrelude opts) buildModuleDirs renderCache fsm upsCache downsCache) renderCtx
       _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
@@ -1898,7 +1895,7 @@ main = do
                       -- Save to cache
                       let depStmts = [(dp, n) | Load dp n <- stmts]
                       depPathsRaw <- mapM (uncurry (resolveModulePath moduleDirs)) depStmts
-                      depPaths <- liftIO (mapM canonicalizePathCached depPathsRaw)
+                      depPaths <- liftIO (uniquePreserve <$> mapM canonicalizePathCached depPathsRaw)
                       depHashes <- liftIO $ mapM (\p -> do
                         mFp <- fileFingerprint p
                         case mFp of
@@ -2280,6 +2277,14 @@ main = do
     takeDirectories :: FilePath -- ^ Path to split.
                     -> [FilePath] -- ^ Parent directories.
     takeDirectories path = [takeDirectory path]
+
+    -- | Remove duplicates while preserving first occurrence order.
+    uniquePreserve :: Ord a => [a] -> [a]
+    uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
+      where
+        go (seen, acc) x
+          | Set.member x seen = (seen, acc)
+          | otherwise = (Set.insert x seen, x : acc)
 
     isExpStmt :: Stmt Ann -> Bool
     isExpStmt ExpStmt {} = True

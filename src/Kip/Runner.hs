@@ -774,7 +774,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                     foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
                   let typedStmts = reverse typedStmtsRev
                       depPathsRaw = reverse depPathsRawRev
-                  depPaths <- liftIO (nub <$> mapM canonicalizePathCached depPathsRaw)
+                  depPaths <- liftIO (uniquePreserve <$> mapM canonicalizePathCached depPathsRaw)
                   depHashes <- liftIO $ mapM (\p -> do
                     mFp <- fileFingerprint p
                     case mFp of
@@ -1082,6 +1082,14 @@ listKipFilesRecursive dir = do
     if isDir
       then listKipFilesRecursive path
       else return [path | takeExtension path == ".kip"]
+
+-- | Remove duplicates while preserving first occurrence order.
+uniquePreserve :: Ord a => [a] -> [a]
+uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
+  where
+    go (seen, acc) x
+      | Set.member x seen = (seen, acc)
+      | otherwise = (Set.insert x seen, x : acc)
 
 -- | Load the prelude module into parser/type/eval states unless disabled.
 loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> MorphCache -> MorphCache -> RenderM (ParserState, TCState, EvalState, Set FilePath)
