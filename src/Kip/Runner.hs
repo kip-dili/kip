@@ -914,6 +914,10 @@ runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath _paramTyCons _ty
             Right (_, evalSt') -> return (pst, tcSt, evalSt', loaded)
 
 -- | Run a single statement while collecting type-checked statements for caching.
+--
+-- ==== Performance note (Optimization: reverse cache accumulators)
+-- Both typed statements and dependency paths are accumulated in reverse and
+-- normalized once per file, avoiding repeated append allocation.
 runStmtCollect :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath]) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath])
 runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAcc, depPathsAcc) stmt =
   case stmt of
@@ -951,6 +955,10 @@ runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons ty
                 Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
 
 -- | Collect non-infinitive primitive references from statements.
+--
+-- ==== Performance note (Optimization: set-based reference collection)
+-- Uses a strict set accumulator through the AST walk instead of list
+-- concatenation and end-of-pass dedupe.
 collectNonInfinitiveRefs :: [Stmt Ann] -> [Identifier]
 collectNonInfinitiveRefs stmts =
   Set.toList (foldl' stmtRefs Set.empty stmts)
@@ -1050,6 +1058,10 @@ resolveModulePath dirs dirPath name@(xs, x) = do
       liftIO (die (T.unpack msg))
 
 -- | Resolve build targets from file or directory inputs.
+--
+-- ==== Performance note (Optimization: fused expansion and dedupe)
+-- Performs path expansion and uniqueness filtering in one fold, avoiding
+-- temporary flattened lists and quadratic @nub@ work.
 resolveBuildTargets :: [FilePath] -> IO [FilePath]
 resolveBuildTargets paths = do
   (_, accRev) <- foldM collectPath (Set.empty, []) paths
@@ -1084,6 +1096,10 @@ listKipFilesRecursive dir = do
       else return [path | takeExtension path == ".kip"]
 
 -- | Remove duplicates while preserving first occurrence order.
+--
+-- ==== Performance note (Optimization: strict stable dedupe)
+-- Set-backed dedupe preserves deterministic output ordering while avoiding
+-- the O(n^2) behavior of repeated list scans.
 uniquePreserve :: Ord a => [a] -> [a]
 uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
   where

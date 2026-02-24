@@ -651,6 +651,10 @@ definedJsNames resolvMap stmts =
   definedJsNamesInProgram resolvMap stmts stmts
 
 -- | List JS definition names for a subset under full-program context.
+--
+-- ==== Performance note (Optimization: strict dedupe fold)
+-- Names are deduplicated via a set while folding, avoiding a second-pass
+-- @nub@ and reducing allocation for large statement groups.
 definedJsNamesInProgram :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> [Stmt Ann] -> [Text]
 definedJsNamesInProgram resolvMap programStmts stmts =
   let ctx = buildCodegenCtx resolvMap programStmts
@@ -685,6 +689,10 @@ data OverloadKey = OverloadKey
 --
 -- This keeps codegen predictable while allowing multi-definition functions like
 -- @filtre@ in dpll to become one JS declaration with all clauses.
+--
+-- ==== Performance note (Optimization: indexed `Seq` merge)
+-- Uses an index map + sequence updates instead of repeated list splitting,
+-- reducing merge cost when many overload clauses are present.
 mergeCompatibleFunctions :: CodegenCtx -> [Stmt Ann] -> [Stmt Ann]
 mergeCompatibleFunctions ctx stmts = F.toList (snd (foldl' step (Map.empty, Seq.empty) stmts))
   where
@@ -1224,6 +1232,10 @@ formatJsOutput src =
   in T.unlines ls5
 
 -- | Attach lines containing only @;@ to the previous non-empty line.
+--
+-- ==== Performance note (Optimization: sequence builder)
+-- Uses a single strict `Seq` fold to avoid repeated list concatenation and
+-- end-of-list rewrites during formatting normalization.
 moveStandaloneSemicolons :: [Text] -> [Text]
 moveStandaloneSemicolons = F.toList . foldl' step Seq.empty
   where
@@ -1259,6 +1271,10 @@ removeBlankAfterOpen (x:y:rest)
   | otherwise = x : removeBlankAfterOpen (y : rest)
 
 -- | Collapse consecutive blank lines to a single blank line.
+--
+-- ==== Performance note (Optimization: strict state fold)
+-- Tracks prior-blank state in one pass and emits directly to a sequence,
+-- avoiding multi-pass blank-run cleanup.
 collapseBlankRuns :: [Text] -> [Text]
 collapseBlankRuns =
   F.toList . fst . foldl' step (Seq.empty, False)

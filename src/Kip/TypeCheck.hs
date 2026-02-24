@@ -701,6 +701,10 @@ data UniqueMatch
 
 -- | Match provided argument cases to expected signature cases for partial application.
 -- Returns expected argument indices matched by each provided argument, in order.
+--
+-- ==== Performance note (Optimization: uniqueness scan state machine)
+-- Matching uses a small strict state machine (`NoMatch/OneMatch/ManyMatches`)
+-- with an `IntSet` of used indices, avoiding intermediate candidate lists.
 matchPartialCaseIndices :: [Case] -> [Case] -> Maybe [Int]
 matchPartialCaseIndices expectedCases = go IntSet.empty
   where
@@ -1630,6 +1634,8 @@ missingVectors (t:ts) matrix = do
       && not (null (roots x1 `intersect` roots x2))
 
     roots txt =
+      -- | Fast path: at most two variants are possible here (original root and
+      -- | softened-g variant), so we skip generic list construction + `nub`.
       case dropTrailingVowel txt >>= dropTrailingSoftG of
         Just alt
           | alt /= txt -> [txt, alt]
@@ -1716,6 +1722,8 @@ annotateMissingPattern scrutTy pat = do
       && not (null (roots x1 `intersect` roots x2))
 
     roots txt =
+      -- | Fast path: at most two variants are possible here (original root and
+      -- | softened-g variant), so we skip generic list construction + `nub`.
       case dropTrailingVowel txt >>= dropTrailingSoftG of
         Just alt
           | alt /= txt -> [txt, alt]
@@ -1822,6 +1830,8 @@ isUseful tys matrix vec =
       && not (null (roots x1 `intersect` roots x2))
 
     roots txt =
+      -- | Fast path: at most two variants are possible here (original root and
+      -- | softened-g variant), so we skip generic list construction + `nub`.
       case dropTrailingVowel txt >>= dropTrailingSoftG of
         Just alt
           | alt /= txt -> [txt, alt]

@@ -1735,6 +1735,10 @@ main = do
       return (finalTC, reverse stmtsRev)
 
     -- | Collect statements from a single file (recursively handles Load).
+    --
+    -- ==== Performance note (Optimization: reverse accumulator)
+    -- Statement collection uses reverse accumulation to avoid repeated
+    -- @acc ++ [x]@ allocation in recursive load/typecheck traversal.
     collectFileStmts :: [FilePath] -- ^ Module search paths.
                      -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                      -> FilePath -- ^ File to process.
@@ -2094,6 +2098,10 @@ main = do
                 Right (_, evalSt') -> return (pst, tcSt, evalSt', loaded)
 
     -- | Run a single statement while collecting type-checked statements for caching.
+    --
+    -- ==== Performance note (Optimization: cache-builder consing)
+    -- Typechecked statements are accumulated with cons and reversed once at
+    -- the end of file processing, avoiding per-statement list append cost.
     runStmtCollect :: Bool -- ^ Whether to show definitions.
                    -> Bool -- ^ Whether to show load messages.
                    -> Bool -- ^ Whether to build-only.
@@ -2158,6 +2166,10 @@ main = do
                     Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
 
     -- | Collect non-infinitive primitive references from statements.
+    --
+    -- ==== Performance note (Optimization: Set-backed dedupe)
+    -- This walk accumulates references in a strict set instead of building
+    -- intermediate lists and deduplicating afterward.
     collectNonInfinitiveRefs :: [Stmt Ann] -- ^ Statements to inspect.
                          -> [Identifier] -- ^ Referenced identifiers.
     collectNonInfinitiveRefs stmts =
@@ -2238,6 +2250,10 @@ main = do
 
 
     -- | Resolve build targets from file or directory inputs.
+    --
+    -- ==== Performance note (Optimization: one-pass expansion+dedupe)
+    -- Expands paths and deduplicates in a single fold to avoid
+    -- @concat <$> mapM ...@ followed by @nub@.
     resolveBuildTargets :: [FilePath] -- ^ Input paths.
                         -> IO [FilePath] -- ^ `.kip` files to build.
     resolveBuildTargets paths = do
@@ -2279,6 +2295,10 @@ main = do
     takeDirectories path = [takeDirectory path]
 
     -- | Remove duplicates while preserving first occurrence order.
+    --
+    -- ==== Performance note (Optimization: strict order-preserving dedupe)
+    -- Set-membership dedupe avoids quadratic @nub@ behavior on large module
+    -- and dependency lists while keeping deterministic first-seen order.
     uniquePreserve :: Ord a => [a] -> [a]
     uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
       where

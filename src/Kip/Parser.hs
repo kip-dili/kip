@@ -2019,6 +2019,10 @@ parseExpWithCtx' useCtx allowMatch =
                   -> Int
                   -> [Exp Ann]
                   -> KipParser [[Exp Ann]]
+        --
+        -- ==== Performance note (Optimization: reverse argument builders)
+        -- Candidate argument vectors are built with cons and reversed once to
+        -- avoid nested @prevArgs ++ [arg]@ allocations in split enumeration.
         splitArgs arityMap arityNameMap arity tokens
           | arity <= 0 = return []
           | length tokens < arity = return []
