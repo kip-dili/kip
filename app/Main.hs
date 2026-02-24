@@ -1729,22 +1729,22 @@ main = do
                        -> [FilePath]
                        -> AppM (TCState, [TaggedStmt])
     codegenFilesTagged basePst baseTC moduleDirs loaded files = do
-      (_, finalTC, stmts, _) <- foldM' (collectFileStmts moduleDirs) (basePst, baseTC, [], loaded) files
-      return (finalTC, stmts)
+      (_, finalTC, stmtsRev, _) <- foldM' (collectFileStmts moduleDirs) (basePst, baseTC, [], loaded) files
+      return (finalTC, reverse stmtsRev)
 
     -- | Collect statements from a single file (recursively handles Load).
     collectFileStmts :: [FilePath] -- ^ Module search paths.
-                     -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state.
+                     -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                      -> FilePath -- ^ File to process.
                      -> AppM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
-    collectFileStmts moduleDirs (pst, tcSt, accStmts, loaded) path = do
+    collectFileStmts moduleDirs (pst, tcSt, accStmtsRev, loaded) path = do
       exists <- liftIO (doesFileExist path)
       unless exists $ do
         msg <- renderMsg (MsgFileNotFound path)
         liftIO (die (T.unpack msg))
       absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
-        then return (pst, tcSt, accStmts, loaded)
+        then return (pst, tcSt, accStmtsRev, loaded)
         else do
           (uCache, dCache) <- requireParserCaches
           (_, fsm) <- requireCacheFsm
@@ -1756,9 +1756,9 @@ main = do
               let loaded' = Set.insert absPath loaded
                   tcCached = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                   stmts = cachedTypedStmts cached
-              (_, _, newStmts, loaded'') <-
+              (_, _, newStmtsRev, loaded'') <-
                 foldM' (collectCachedStmt moduleDirs absPath) (pstCached, tcCached, [], loaded') stmts
-              return (pstCached, tcCached, accStmts ++ newStmts, loaded'')
+              return (pstCached, tcCached, newStmtsRev ++ accStmtsRev, loaded'')
             Nothing -> do
               input <- liftIO (TIO.readFile path)
               liftIO (parseFromFile pst input) >>= \case
@@ -1775,9 +1775,9 @@ main = do
                       liftIO (die (T.unpack msg))
                     Right (_, tcStWithDecls) -> do
                       -- Type-check each statement
-                      (pst'', tcSt'', newStmts, loaded') <- foldM' (collectStmt moduleDirs absPath paramTyCons (parserTyMods pst') input)
+                      (pst'', tcSt'', newStmtsRev, loaded') <- foldM' (collectStmt moduleDirs absPath paramTyCons (parserTyMods pst') input)
                         (pst', tcStWithDecls, [], Set.insert absPath loaded) stmts
-                      return (pst'', tcSt'', accStmts ++ newStmts, loaded')
+                      return (pst'', tcSt'', newStmtsRev ++ accStmtsRev, loaded')
 
     -- | Collect a single statement, recursively loading modules.
     collectStmt :: [FilePath] -- ^ Module search paths.
@@ -1785,17 +1785,17 @@ main = do
                 -> [Identifier] -- ^ Type parameter names for error messages.
                 -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
                 -> Text -- ^ Source input.
-                -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state.
+                -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                 -> Stmt Ann -- ^ Statement to process.
                 -> AppM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
-    collectStmt moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, accStmts, loaded) stmt =
+    collectStmt moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, accStmtsRev, loaded) stmt =
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
           absPath <- liftIO (canonicalizePathCached path)
           if Set.member absPath loaded
-            then return (pst, tcSt, accStmts ++ [(currentPath, stmt)], loaded)
-            else collectFileStmts moduleDirs (pst, tcSt, accStmts ++ [(currentPath, stmt)], loaded) path
+            then return (pst, tcSt, (currentPath, stmt) : accStmtsRev, loaded)
+            else collectFileStmts moduleDirs (pst, tcSt, (currentPath, stmt) : accStmtsRev, loaded) path
         _ -> do
           -- Type-check the statement
           liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
@@ -1803,21 +1803,21 @@ main = do
               msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') ->
-              return (pst, tcSt', accStmts ++ [(currentPath, stmt')], loaded)
+              return (pst, tcSt', (currentPath, stmt') : accStmtsRev, loaded)
 
     -- | Collect a cached statement, expanding Load statements without re-typechecking.
     collectCachedStmt :: [FilePath] -- ^ Module search paths.
                       -> FilePath -- ^ Current module file path.
-                      -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state.
+                      -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                       -> Stmt Ann -- ^ Statement to process.
                       -> AppM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
-    collectCachedStmt moduleDirs currentPath (pst, tcSt, accStmts, loaded) stmt =
+    collectCachedStmt moduleDirs currentPath (pst, tcSt, accStmtsRev, loaded) stmt =
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
-          collectFileStmts moduleDirs (pst, tcSt, accStmts ++ [(currentPath, stmt)], loaded) path
+          collectFileStmts moduleDirs (pst, tcSt, (currentPath, stmt) : accStmtsRev, loaded) path
         _ ->
-          return (pst, tcSt, accStmts ++ [(currentPath, stmt)], loaded)
+          return (pst, tcSt, (currentPath, stmt) : accStmtsRev, loaded)
 
     -- | Run multiple files through parsing, type checking, and evaluation.
     runFiles :: Bool -- ^ Whether to show definitions.
@@ -1886,8 +1886,9 @@ main = do
                       liftIO (die (T.unpack msg))
                     Right (_, tcStWithDecls) -> do
                       let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded, [])
-                      (pstFinal, tcSt', evalSt', loaded', typedStmts) <-
+                      (pstFinal, tcSt', evalSt', loaded', typedStmtsRev) <-
                         foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
+                      let typedStmts = reverse typedStmtsRev
 
                       -- Save to cache
                       let depStmts = [(dp, n) | Load dp n <- stmts]
@@ -2100,10 +2101,10 @@ main = do
                    -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
                    -> [Identifier] -- ^ Non-infinitive primitive refs.
                    -> Text -- ^ Source input.
-                   -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Current states.
+                   -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Current states with reverse typed statement accumulator.
                    -> Stmt Ann -- ^ Statement to run.
                    -> AppM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Updated states.
-    runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAcc) stmt =
+    runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAccRev) stmt =
       case stmt of
         Load dirPath name -> do
           path <- resolveModulePath moduleDirs dirPath name
@@ -2112,12 +2113,12 @@ main = do
             then do
               when showLoad $
                 emitMsgIOCtx (MsgLoaded name)
-              return (pst, tcSt, evalSt, loaded, typedAcc ++ [stmt])
+              return (pst, tcSt, evalSt, loaded, stmt : typedAccRev)
             else do
               (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
               when showLoad $
                 emitMsgIOCtx (MsgLoaded name)
-              return (pst', tcSt', evalSt', loaded', typedAcc ++ [stmt])
+              return (pst', tcSt', evalSt', loaded', stmt : typedAccRev)
         _ ->
           liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
             Left tcErr -> do
@@ -2140,67 +2141,73 @@ main = do
               if buildOnly
                 then
                   case stmt' of
-                    ExpStmt _ -> return (pst, tcSt', evalSt, loaded, typedAcc ++ [stmt'])
+                    ExpStmt _ -> return (pst, tcSt', evalSt, loaded, stmt' : typedAccRev)
                     _ ->
                       liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
                         Left evalErr -> do
                           msg <- renderMsg (MsgEvalError evalErr)
                           liftIO (die (T.unpack msg))
-                        Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, typedAcc ++ [stmt'])
+                        Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
                 else
                   liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
                     Left evalErr -> do
                       msg <- renderMsg (MsgEvalError evalErr)
                       liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, typedAcc ++ [stmt'])
+                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
 
     -- | Collect non-infinitive primitive references from statements.
     collectNonInfinitiveRefs :: [Stmt Ann] -- ^ Statements to inspect.
                          -> [Identifier] -- ^ Referenced identifiers.
     collectNonInfinitiveRefs stmts =
-      nub (concatMap (stmtRefs []) stmts)
+      Set.toList (foldl' stmtRefs Set.empty stmts)
       where
-        -- | Collect references from a statement.
-        stmtRefs :: [Identifier] -- ^ Bound identifiers.
+        -- | Collect references from a statement into a set.
+        stmtRefs :: Set Identifier -- ^ Accumulated references.
                  -> Stmt Ann -- ^ Statement to inspect.
-                 -> [Identifier] -- ^ Referenced identifiers.
-        stmtRefs bound stmt =
+                 -> Set Identifier -- ^ Updated references.
+        stmtRefs acc stmt =
           case stmt of
             Defn name _ body ->
-              expRefs (name : bound) body
+              expRefs (Set.singleton name) body acc
             Function _ args _ clauses _ ->
-              concatMap (clauseRefs (map argIdent args ++ bound)) clauses
+              let bound = Set.fromList (map argIdent args)
+              in foldl' (clauseRefs bound) acc clauses
             ExpStmt e ->
-              expRefs bound e
-            _ -> []
-        -- | Collect references from a clause.
-        clauseRefs :: [Identifier] -- ^ Bound identifiers.
+              expRefs Set.empty e acc
+            _ -> acc
+        -- | Collect references from a clause into a set.
+        clauseRefs :: Set Identifier -- ^ Bound identifiers.
+                   -> Set Identifier -- ^ Accumulated references.
                    -> Clause Ann -- ^ Clause to inspect.
-                   -> [Identifier] -- ^ Referenced identifiers.
-        clauseRefs bound (Clause _ body) = expRefs bound body
-        -- | Collect references from an expression.
-        expRefs :: [Identifier] -- ^ Bound identifiers.
+                   -> Set Identifier -- ^ Updated references.
+        clauseRefs bound acc (Clause _ body) = expRefs bound body acc
+        -- | Collect references from an expression into a set.
+        expRefs :: Set Identifier -- ^ Bound identifiers.
                 -> Exp Ann -- ^ Expression to inspect.
-                -> [Identifier] -- ^ Referenced identifiers.
-        expRefs bound exp =
+                -> Set Identifier -- ^ Accumulated references.
+                -> Set Identifier -- ^ Updated references.
+        expRefs bound exp acc =
           case exp of
             Var {varCandidates} ->
-              if any (\(ident, _) -> ident `elem` bound) varCandidates
-                then []
-                else map fst varCandidates
-            Bind {bindName, bindExp} ->
-              expRefs bound bindExp
-            App {fn, args} -> expRefs bound fn ++ concatMap (expRefs bound) args
+              foldl'
+                (\acc' (ident, _) ->
+                  if Set.member ident bound then acc' else Set.insert ident acc')
+                acc
+                varCandidates
+            Bind {bindExp} ->
+              expRefs bound bindExp acc
+            App {fn, args} ->
+              foldl' (flip (expRefs bound)) (expRefs bound fn acc) args
             Match {scrutinee, clauses} ->
-              expRefs bound scrutinee ++ concatMap (clauseRefs bound) clauses
+              foldl' (clauseRefs bound) (expRefs bound scrutinee acc) clauses
             Seq {first, second} ->
               case first of
                 Bind {bindName, bindExp} ->
-                  expRefs bound bindExp ++ expRefs (bindName : bound) second
-                _ -> expRefs bound first ++ expRefs bound second
+                  expRefs (Set.insert bindName bound) second (expRefs bound bindExp acc)
+                _ -> expRefs bound second (expRefs bound first acc)
             Let {varName, body} ->
-              expRefs (varName : bound) body
-            _ -> []
+              expRefs (Set.insert varName bound) body acc
+            _ -> acc
 
     -- | Check whether an identifier refers to the write primitive.
     isWritePrim :: Identifier -- ^ Identifier to inspect.

@@ -770,8 +770,10 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                     Left _ -> return tcStWithDecls
                     Right (_, tcStDefs) -> return tcStDefs
                   let startState = (pst', tcStWithDefs, evalSt, Set.insert absPath loaded, [], [])
-                  (pstFinal, tcSt', evalSt', loaded', typedStmts, depPathsRaw) <-
+                  (pstFinal, tcSt', evalSt', loaded', typedStmtsRev, depPathsRawRev) <-
                     foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
+                  let typedStmts = reverse typedStmtsRev
+                      depPathsRaw = reverse depPathsRawRev
                   depPaths <- liftIO (nub <$> mapM canonicalizePathCached depPathsRaw)
                   depHashes <- liftIO $ mapM (\p -> do
                     mFp <- fileFingerprint p
@@ -919,11 +921,11 @@ runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons ty
       path <- resolveModulePath moduleDirs dirPath name
       absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
-        then return (pst, tcSt, evalSt, loaded, typedAcc ++ [stmt], depPathsAcc ++ [path])
+        then return (pst, tcSt, evalSt, loaded, stmt : typedAcc, path : depPathsAcc)
         else do
           (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
           when showLoad $ return ()
-          return (pst', tcSt', evalSt', loaded', typedAcc ++ [stmt], depPathsAcc ++ [path])
+          return (pst', tcSt', evalSt', loaded', stmt : typedAcc, path : depPathsAcc)
     _ ->
       liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
         Left tcErr -> do
@@ -934,57 +936,61 @@ runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons ty
           if buildOnly
             then
               case stmt' of
-                ExpStmt _ -> return (pst, tcSt', evalSt, loaded, typedAcc ++ [stmt'], depPathsAcc)
+                ExpStmt _ -> return (pst, tcSt', evalSt, loaded, stmt' : typedAcc, depPathsAcc)
                 _ ->
                   liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
                     Left evalErr -> do
                       msg <- renderMsg (MsgEvalError evalErr)
                       liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, typedAcc ++ [stmt'], depPathsAcc)
+                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
             else
               liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
                 Left evalErr -> do
                   msg <- renderMsg (MsgEvalError evalErr)
                   liftIO (die (T.unpack msg))
-                Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, typedAcc ++ [stmt'], depPathsAcc)
+                Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
 
 -- | Collect non-infinitive primitive references from statements.
 collectNonInfinitiveRefs :: [Stmt Ann] -> [Identifier]
 collectNonInfinitiveRefs stmts =
-  nub (concatMap (stmtRefs []) stmts)
+  Set.toList (foldl' stmtRefs Set.empty stmts)
   where
-    stmtRefs :: [Identifier] -> Stmt Ann -> [Identifier]
-    stmtRefs bound stmt =
+    stmtRefs :: Set Identifier -> Stmt Ann -> Set Identifier
+    stmtRefs acc stmt =
       case stmt of
         Defn name _ body ->
-          expRefs (name : bound) body
+          expRefs (Set.singleton name) body acc
         Function _ args _ clauses _ ->
-          concatMap (clauseRefs (map argIdent args ++ bound)) clauses
+          let bound = Set.fromList (map argIdent args)
+          in foldl' (clauseRefs bound) acc clauses
         ExpStmt e ->
-          expRefs bound e
-        _ -> []
-    clauseRefs :: [Identifier] -> Clause Ann -> [Identifier]
-    clauseRefs bound (Clause _ body) = expRefs bound body
-    expRefs :: [Identifier] -> Exp Ann -> [Identifier]
-    expRefs bound expr =
+          expRefs Set.empty e acc
+        _ -> acc
+    clauseRefs :: Set Identifier -> Set Identifier -> Clause Ann -> Set Identifier
+    clauseRefs bound acc (Clause _ body) = expRefs bound body acc
+    expRefs :: Set Identifier -> Exp Ann -> Set Identifier -> Set Identifier
+    expRefs bound expr acc =
       case expr of
         Var {varCandidates} ->
-          if any (\(ident, _) -> ident `elem` bound) varCandidates
-            then []
-            else map fst varCandidates
+          foldl'
+            (\acc' (ident, _) ->
+              if Set.member ident bound then acc' else Set.insert ident acc')
+            acc
+            varCandidates
         Bind {bindExp} ->
-          expRefs bound bindExp
-        App {fn, args} -> expRefs bound fn ++ concatMap (expRefs bound) args
+          expRefs bound bindExp acc
+        App {fn, args} ->
+          foldl' (flip (expRefs bound)) (expRefs bound fn acc) args
         Match {scrutinee, clauses} ->
-          expRefs bound scrutinee ++ concatMap (clauseRefs bound) clauses
+          foldl' (clauseRefs bound) (expRefs bound scrutinee acc) clauses
         Seq {first, second} ->
           case first of
             Bind {bindName, bindExp} ->
-              expRefs bound bindExp ++ expRefs (bindName : bound) second
-            _ -> expRefs bound first ++ expRefs bound second
+              expRefs (Set.insert bindName bound) second (expRefs bound bindExp acc)
+            _ -> expRefs bound second (expRefs bound first acc)
         Let {varName, body} ->
-          expRefs (varName : bound) body
-        _ -> []
+          expRefs (Set.insert varName bound) body acc
+        _ -> acc
 
 -- | Filter parser definition spans to those introduced by the given statements.
 defSpansFromStmts :: [Stmt Ann] -> Map.Map Identifier [Span] -> Map.Map Identifier Span
