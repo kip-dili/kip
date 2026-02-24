@@ -1567,8 +1567,7 @@ applyContentChange oldText (TextDocumentContentChangeEvent change) =
 -- | Apply a ranged text edit to a UTF-16 position-based document.
 applyRangeEdit :: Text -> Range -> Text -> Text
 applyRangeEdit txt (Range startPos endPos) replacement =
-  let startOff = offsetAtPosition txt startPos
-      endOff = offsetAtPosition txt endPos
+  let (startOff, endOff) = offsetsAtRange txt startPos endPos
       prefix = T.take startOff txt
       suffix = T.drop endOff txt
   in prefix <> replacement <> suffix
@@ -1578,37 +1577,100 @@ applyRangeEdit txt (Range startPos endPos) replacement =
 -- LSP positions are UTF-16 line/character pairs. This scanner handles both
 -- LF and CRLF line endings and clamps to end-of-line/file when needed.
 offsetAtPosition :: Text -> Position -> Int
-offsetAtPosition txt (Position line0 col0) =
-  go 0 0 0 (T.unpack txt)
-  where
-    targetLine = max 0 (fromIntegral line0)
-    targetCol = max 0 (fromIntegral col0)
+offsetAtPosition txt pos = fst (offsetsAtRange txt pos pos)
 
-    go :: Int -> Int -> Int -> String -> Int
-    go off line col chars
-      | line > targetLine = off
-      | line == targetLine && col >= targetCol = off
-      | otherwise =
-          case chars of
-            [] -> off
-            '\r':'\n':rest ->
-              if line == targetLine
-                then off
-                else go (off + 2) (line + 1) 0 rest
-            '\r':rest ->
-              if line == targetLine
-                then off
-                else go (off + 1) (line + 1) 0 rest
-            '\n':rest ->
-              if line == targetLine
-                then off
-                else go (off + 1) (line + 1) 0 rest
-            c:rest ->
-              let w = utf16Width c
-                  nextCol = col + w
-              in if line == targetLine && nextCol > targetCol
-                  then off
-                  else go (off + 1) line nextCol rest
+-- | Convert start/end positions to byte offsets in one text scan.
+--
+-- For range edits we need two offsets from the same source text. Doing this
+-- in one pass avoids repeated traversal/allocation in incremental edit paths.
+offsetsAtRange :: Text -> Position -> Position -> (Int, Int)
+offsetsAtRange txt startPos endPos
+  | (startLine, startCol) <= (endLine, endCol) =
+      go 0 0 0 Nothing Nothing txt
+  | otherwise =
+      let (endOff, startOff) = offsetsAtRange txt endPos startPos
+      in (startOff, endOff)
+  where
+    startLine = max 0 (fromIntegral (startPos ^. L.line))
+    startCol = max 0 (fromIntegral (startPos ^. L.character))
+    endLine = max 0 (fromIntegral (endPos ^. L.line))
+    endCol = max 0 (fromIntegral (endPos ^. L.character))
+
+    reached :: Int -> Int -> Int -> Int -> Bool
+    reached line col targetL targetC =
+      line > targetL || (line == targetL && col >= targetC)
+
+    stepMatch :: Int -> Int -> Int -> Int -> Int -> Maybe Int -> Maybe Int
+    stepMatch off line col targetL targetC m =
+      case m of
+        Just _ -> m
+        Nothing ->
+          if reached line col targetL targetC
+            then Just off
+            else Nothing
+
+    finish :: Int -> Maybe Int -> Maybe Int -> (Int, Int)
+    finish off mStart mEnd =
+      let startOff = fromMaybe off mStart
+          endOff = fromMaybe off mEnd
+      in (startOff, endOff)
+
+    go :: Int -> Int -> Int -> Maybe Int -> Maybe Int -> Text -> (Int, Int)
+    go !off !line !col !mStart !mEnd !restTxt =
+      let !mStart' = stepMatch off line col startLine startCol mStart
+          !mEnd' = stepMatch off line col endLine endCol mEnd
+      in case mStart' of
+           Just startOff ->
+             case mEnd' of
+               Just endOff -> (startOff, endOff)
+               Nothing ->
+                 case T.uncons restTxt of
+                   Nothing -> finish off mStart' mEnd'
+                   Just (c, rest1)
+                     | c == '\r' ->
+                         case T.uncons rest1 of
+                           Just ('\n', rest2) ->
+                             if line == endLine
+                               then (startOff, off)
+                               else go (off + 2) (line + 1) 0 mStart' mEnd' rest2
+                           _ ->
+                             if line == endLine
+                               then (startOff, off)
+                               else go (off + 1) (line + 1) 0 mStart' mEnd' rest1
+                     | c == '\n' ->
+                         if line == endLine
+                           then (startOff, off)
+                           else go (off + 1) (line + 1) 0 mStart' mEnd' rest1
+                     | otherwise ->
+                         let !w = utf16Width c
+                             !nextCol = col + w
+                         in if line == endLine && nextCol > endCol
+                              then (startOff, off)
+                              else go (off + 1) line nextCol mStart' mEnd' rest1
+           Nothing ->
+             case T.uncons restTxt of
+               Nothing -> finish off mStart' mEnd'
+               Just (c, rest1)
+                 | c == '\r' ->
+                     case T.uncons rest1 of
+                       Just ('\n', rest2) ->
+                         if line == startLine
+                           then finish off mStart' mEnd'
+                           else go (off + 2) (line + 1) 0 mStart' mEnd' rest2
+                       _ ->
+                         if line == startLine
+                           then finish off mStart' mEnd'
+                           else go (off + 1) (line + 1) 0 mStart' mEnd' rest1
+                 | c == '\n' ->
+                     if line == startLine
+                       then finish off mStart' mEnd'
+                       else go (off + 1) (line + 1) 0 mStart' mEnd' rest1
+                 | otherwise ->
+                     let !w = utf16Width c
+                         !nextCol = col + w
+                     in if line == startLine && nextCol > startCol
+                          then finish off mStart' mEnd'
+                          else go (off + 1) line nextCol mStart' mEnd' rest1
 
     utf16Width :: Char -> Int
     utf16Width c =

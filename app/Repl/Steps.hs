@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE TupleSections #-}
 
 module Repl.Steps
@@ -480,14 +481,14 @@ pickStep current _currentText _renderInput steps =
     Nothing -> findFirstApplicable 0 steps
   where
     findFirstApplicable _ [] = Nothing
-    findFirstApplicable i (s:ss) =
+    findFirstApplicable !i (s:ss) =
       let (changed, next) = substituteFirstChild (tsInput s) (tsOutput s) current
       in if changed
            then Just (i, s, next)
            else findFirstApplicable (i + 1) ss
 
     findMatchingNextTop _ _ [] = Nothing
-    findMatchingNextTop i nextTop (s:ss) =
+    findMatchingNextTop !i nextTop (s:ss) =
       let (changed, next) = substituteFirstChild (tsInput s) (tsOutput s) current
       in if changed && eqTraceExp next nextTop
            then Just (i, s, next)

@@ -694,6 +694,11 @@ applyTypeCase cas exp =
       CharLit (setAnnCase ann cas) c
     _ -> exp
 
+data UniqueMatch
+  = NoMatch
+  | OneMatch !Int
+  | ManyMatches
+
 -- | Match provided argument cases to expected signature cases for partial application.
 -- Returns expected argument indices matched by each provided argument, in order.
 matchPartialCaseIndices :: [Case] -> [Case] -> Maybe [Int]
@@ -701,15 +706,22 @@ matchPartialCaseIndices expectedCases = go IntSet.empty
   where
     go _ [] = Just []
     go used (pc:pcs) =
-      let matches =
-            [ i
-            | (i, ec) <- zip [0..] expectedCases
-            , ec == pc
-            , not (IntSet.member i used)
-            ]
-      in case matches of
-           [i] -> (i :) <$> go (IntSet.insert i used) pcs
-           _ -> Nothing
+      case uniqueMatchIndex used pc of
+        OneMatch i -> (i :) <$> go (IntSet.insert i used) pcs
+        _ -> Nothing
+
+    uniqueMatchIndex :: IntSet.IntSet -> Case -> UniqueMatch
+    uniqueMatchIndex used pc = scan 0 NoMatch expectedCases
+      where
+        scan idx acc [] = acc
+        scan idx acc (ec:rest)
+          | ec /= pc = scan (idx + 1) acc rest
+          | IntSet.member idx used = scan (idx + 1) acc rest
+          | otherwise =
+              case acc of
+                NoMatch -> scan (idx + 1) (OneMatch idx) rest
+                OneMatch _ -> ManyMatches
+                ManyMatches -> ManyMatches
 
 -- | Resolve a variable by candidates, arity, and scope.
 resolveVar :: Ann -- ^ Annotation of the variable occurrence.
