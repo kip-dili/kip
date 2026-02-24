@@ -78,6 +78,7 @@ library
     , filepath
     , directory
     , random
+    , vector
   default-language: Haskell2010
 
 executable kip
@@ -111,6 +112,7 @@ executable kip
     , cryptohash-sha256
     , mtl
     , time
+    , vector
   default-language: Haskell2010
 
 executable kip-playground
@@ -197,6 +199,7 @@ executable kip-lsp
     , binary
     , cryptohash-sha256
     , mtl
+    , vector
   default-language: Haskell2010
 
 test-suite kip-tests

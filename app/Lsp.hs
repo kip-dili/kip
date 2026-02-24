@@ -44,6 +44,8 @@ import qualified Data.HashMap.Strict as HM
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U
 import Data.Row.Records ((.!))
 import System.Directory (doesFileExist, listDirectory, doesDirectoryExist)
 import System.Environment (getExecutablePath)
@@ -139,6 +141,10 @@ data BinderInfo = BinderInfo
 data DocState = DocState
   { -- | Raw document text for this version.
     dsText :: !Text
+    -- | Pre-split lines for fast line-indexed lookups.
+  , dsLines :: !(V.Vector Text)
+    -- | Start offsets of each line in the raw text.
+  , dsLineStarts :: !(U.Vector Int)
     -- | Parser state used for this document.
   , dsParser :: !ParserState
     -- | Typechecker state used for this document.
@@ -1496,7 +1502,7 @@ onFormatting req respond = do
       if formatted == dsText doc
         then respond (Right (InL []))
         else do
-          let endPos = posFromText (dsText doc) (T.length (dsText doc))
+          let endPos = posFromDoc doc
               range = Range (Position 0 0) endPos
           respond (Right (InL [TextEdit range formatted]))
 
@@ -1648,6 +1654,8 @@ processDocument uri text publish = do
 -- Returns diagnostics so the caller can publish them.
 analyzeDocument :: LspState -> Uri -> Text -> IO (DocState, [Diagnostic])
 analyzeDocument st uri text = do
+  let !docLines = V.fromList (T.lines text)
+      !docLineStarts = buildLineStarts text
   mCached <- loadCachedDoc st uri text
   case mCached of
     Just (pstCached, tcCached, stmts) -> do
@@ -1666,7 +1674,7 @@ analyzeDocument st uri text = do
           (expIndex, varIndex, patVarIndex, ctorIndex, matchClauseIndex, funcClauseIndex) = buildDocIndices stmts
       tyRenderCache <- HT.new
       tokenCache <- HT.new
-      let doc = DocState text pstCached tcCached stmts [] defSpans resolved resolvedSigs resolvedTypes binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
+      let doc = DocState text docLines docLineStarts pstCached tcCached stmts [] defSpans resolved resolvedSigs resolvedTypes binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
       return (doc, [])
     Nothing -> do
       let basePst = lsBaseParser st
@@ -1679,7 +1687,7 @@ analyzeDocument st uri text = do
           tokenCache <- HT.new
           let emptySpanIndex = SpanIndex HM.empty []
               emptyPosIndex = posIndexFromEntries []
-              doc = DocState text basePst baseTC [] [diag] Map.empty Map.empty Map.empty Map.empty [] emptySpanIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex tyRenderCache tokenCache
+              doc = DocState text docLines docLineStarts basePst baseTC [] [diag] Map.empty Map.empty Map.empty Map.empty [] emptySpanIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex tyRenderCache tokenCache
           return (doc, [diag])
         Right (stmts, pst') -> do
           -- Compute these once, early, and reuse throughout
@@ -1693,7 +1701,7 @@ analyzeDocument st uri text = do
               let spanIndex = buildSpanIndex Map.empty Map.empty Map.empty binderSpans
               tyRenderCache <- HT.new
               tokenCache <- HT.new
-              let doc = DocState text pst' baseTC stmts [diag] defSpans Map.empty Map.empty Map.empty binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
+              let doc = DocState text docLines docLineStarts pst' baseTC stmts [diag] defSpans Map.empty Map.empty Map.empty binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
               return (doc, [diag])
             Right (_, tcStWithDecls) -> do
               tcStWithDefs <- case uriToFilePath uri of
@@ -1717,7 +1725,7 @@ analyzeDocument st uri text = do
                   !spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
               tyRenderCache <- HT.new
               tokenCache <- HT.new
-              let doc = DocState text pst' tcStFinal stmts diags defSpans resolved resolvedSigs resolvedTypes binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
+              let doc = DocState text docLines docLineStarts pst' tcStFinal stmts diags defSpans resolved resolvedSigs resolvedTypes binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
               return (doc, diags)
 
 -- | Attempt to load a cached document if the on-disk cache matches the
@@ -2292,7 +2300,7 @@ keywords = ["ya", "var", "için", "olarak", "dersek"]
 -- Returns 'Nothing' for whitespace or out-of-range positions.
 tokenAtPosition :: DocState -> Position -> Maybe TokenAtPosition
 tokenAtPosition doc (Position line char) = do
-  word <- wordAtPosition (dsText doc) (fromIntegral line) (fromIntegral char)
+  word <- wordAtPosition doc (fromIntegral line) (fromIntegral char)
   if word `elem` keywords
     then Just (TokenKeyword word)
     else Just (TokenIdent word)
@@ -2327,9 +2335,9 @@ firstJustM (action:rest) = do
 --
 -- The word definition includes letters, digits, hyphen and apostrophes to
 -- accommodate Kip’s identifiers and possessive forms.
-wordAtPosition :: Text -> Int -> Int -> Maybe Text
-wordAtPosition txt lineIdx colIdx = do
-  line <- safeIndex (T.lines txt) lineIdx
+wordAtPosition :: DocState -> Int -> Int -> Maybe Text
+wordAtPosition doc lineIdx colIdx = do
+  line <- safeIndexVec (dsLines doc) lineIdx
   if colIdx < 0 || colIdx > T.length line
     then Nothing
     else
@@ -2339,10 +2347,12 @@ wordAtPosition txt lineIdx colIdx = do
           word = leftWord <> rightWord
       in if T.null word then Nothing else Just word
   where
-    safeIndex xs i =
-      if i < 0 || i >= length xs then Nothing else Just (xs !! i)
-    isWordChar c =
-      isAlphaNum c || c == '-' || c == '\'' || c == '’'
+    isWordChar c = isAlphaNum c || c == '-' || c == '\'' || c == '’'
+
+safeIndexVec :: V.Vector a -> Int -> Maybe a
+safeIndexVec vec i
+  | i < 0 || i >= V.length vec = Nothing
+  | otherwise = Just (vec V.! i)
 
 -- | Find a constructor in a pattern at the given position.
 --
@@ -2871,13 +2881,30 @@ locationScore (Location uri _) =
 -- | Convert an offset into (line, column) coordinates.
 offsetToPos :: Text -> (UInt, UInt)
 offsetToPos prefix =
-  let ls = T.splitOn "\n" prefix
-      lineInt = max 0 (length ls - 1)
-      colInt =
-        case reverse ls of
-          [] -> 0
-          lastLine:_ -> T.length lastLine
+  let (!lineInt, !colInt) =
+        T.foldl'
+          (\(!ln, !col) c ->
+              if c == '\n'
+                then (ln + 1, 0)
+                else (ln, col + 1))
+          (0, 0)
+          prefix
   in (fromIntegral lineInt, fromIntegral colInt)
+
+-- | Compute line start offsets for quick line-based lookups.
+buildLineStarts :: Text -> U.Vector Int
+buildLineStarts txt =
+  U.fromList (reverse startsRev)
+  where
+    (startsRev, _) =
+      T.foldl'
+        (\(acc, !off) c ->
+            let !off' = off + 1
+            in if c == '\n'
+                 then (off' : acc, off')
+                 else (acc, off'))
+        ([0], 0)
+        txt
 
 -- | Resolve previous document text for incremental didChange handling.
 --
@@ -2932,11 +2959,14 @@ formatText txt =
   let trimmed = T.unlines (map T.stripEnd (T.lines txt))
   in if T.null trimmed || T.last trimmed == '\n' then trimmed else trimmed <> "\n"
 
--- | Compute the final position at the end of the given text.
-posFromText :: Text -> Int -> Position
-posFromText txt _ =
-  let ls = T.lines txt
-  in Position (fromIntegral (max 0 (length ls - 1))) (fromIntegral (T.length (if null ls then "" else last ls)))
+-- | Compute the final position at the end of the current document.
+posFromDoc :: DocState -> Position
+posFromDoc doc =
+  if V.null ls
+    then Position 0 0
+    else Position (fromIntegral (V.length ls - 1)) (fromIntegral (T.length (V.last ls)))
+  where
+    ls = dsLines doc
 
 -- | Convert an identifier to a completion item.
 completionItem :: Identifier -> CompletionItem

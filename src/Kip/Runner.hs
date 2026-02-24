@@ -53,6 +53,7 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Data.Vector as V
 import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
 import Data.Text.Encoding (encodeUtf8)
@@ -607,13 +608,13 @@ renderSpanSnippet source sp =
   case sp of
     NoSpan -> ""
     Span start end _ ->
-      let ls = T.lines source
+      let ls = V.fromList (T.lines source)
           sLine = unPos (sourceLine start)
           sCol = unPos (sourceColumn start)
           eLine = unPos (sourceLine end)
           eCol = unPos (sourceColumn end)
           getLine n =
-            if n > 0 && n <= length ls then ls !! (n - 1) else ""
+            fromMaybe "" (safeIndexVec ls (n - 1))
           caretLine lineText fromCol toCol =
             let len = max 1 (toCol - fromCol)
                 prefix = T.replicate (max 0 (fromCol - 1)) " "
@@ -625,6 +626,11 @@ renderSpanSnippet source sp =
              let first = caretLine (getLine sLine) sCol (T.length (getLine sLine) + 1)
                  lastLine = caretLine (getLine eLine) 1 eCol
              in T.concat [first, "\n", lastLine]
+  where
+    safeIndexVec :: V.Vector Text -> Int -> Maybe Text
+    safeIndexVec vec i
+      | i < 0 || i >= V.length vec = Nothing
+      | otherwise = Just (vec V.! i)
 
 -- | Render a span snippet with Megaparsec-style location and gutter lines.
 renderLocatedSpanSnippet :: Text -> Text -> Span -> Text

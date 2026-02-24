@@ -246,30 +246,34 @@ inferSimpleTy exp' =
 -- | Check whether a signature position matches an inferred coarse type.
 sigMatchesHint :: [Ty Ann] -> Int -> SimpleTy -> Bool
 sigMatchesHint sig idx hint
-  | idx < 0 || idx >= length sig = False
+  | idx < 0 = False
   | otherwise =
-      case (sig !! idx, hint) of
-        (TyInt {}, SimpleInt) -> True
-        (TyFloat {}, SimpleFloat) -> True
-        (TyString {}, SimpleString) -> True
-        (TyChar {}, SimpleChar) -> True
+      case (listIndex sig idx, hint) of
+        (Just TyInt {}, SimpleInt) -> True
+        (Just TyFloat {}, SimpleFloat) -> True
+        (Just TyString {}, SimpleString) -> True
+        (Just TyChar {}, SimpleChar) -> True
         _ -> False
+  where
+    listIndex [] _ = Nothing
+    listIndex (x:_) 0 = Just x
+    listIndex (_:xs) n = listIndex xs (n - 1)
 
 -- | Deduplicate target pairs while preserving order.
 uniqTargets :: [([Ty Ann], Text)] -> [([Ty Ann], Text)]
-uniqTargets = foldl' add []
+uniqTargets = reverse . fst . foldl' add ([], Set.empty)
   where
-    add acc item
-      | item `elem` acc = acc
-      | otherwise = acc ++ [item]
+    add (acc, seen) item
+      | Set.member item seen = (acc, seen)
+      | otherwise = (item : acc, Set.insert item seen)
 
 -- | Deduplicate identifier candidates while preserving order.
 uniqIdents :: [Identifier] -> [Identifier]
-uniqIdents = foldl' add []
+uniqIdents = reverse . fst . foldl' add ([], Set.empty)
   where
-    add acc ident
-      | ident `elem` acc = acc
-      | otherwise = acc ++ [ident]
+    add (acc, seen) ident
+      | Set.member ident seen = (acc, seen)
+      | otherwise = (ident : acc, Set.insert ident seen)
 
 -- | Identifier equality that tolerates missing namespace qualification.
 identMatches :: Identifier -> Identifier -> Bool

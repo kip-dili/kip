@@ -146,15 +146,17 @@ formatStepsReplayStreaming useColor renderInput renderOutput steps emit = do
         return (Just lastLine)
   case mStartIdx of
     Just i ->
-      let top = steps !! i
-          before = take i steps
-          after = drop (i + 1) steps
-          isSeq = case tsInput top of { Seq {} -> True; _ -> False }
-      in if isSeq && not (null before)
-           then replay (tsInput top) (before ++ after)  -- Seq: start from input, replay all
-         else if not (null after) then replay (tsOutput top) after    -- expansion (e.g. factorial)
-         else if not (null before) then replay (tsInput top) before  -- sub-eval (e.g. nested sum)
-         else return Nothing                                          -- simple one-step result
+      let (before, topAndAfter) = splitAt i steps
+      in case topAndAfter of
+           [] -> return Nothing
+           top:after ->
+             let isSeq = case tsInput top of { Seq {} -> True; _ -> False }
+             in
+             if isSeq && not (null before)
+               then replay (tsInput top) (before ++ after)  -- Seq: start from input, replay all
+               else if not (null after) then replay (tsOutput top) after    -- expansion (e.g. factorial)
+               else if not (null before) then replay (tsInput top) before  -- sub-eval (e.g. nested sum)
+               else return Nothing                                          -- simple one-step result
     Nothing -> case steps of
       s : _ -> replay (tsInput s) steps
 

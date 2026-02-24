@@ -115,6 +115,7 @@ import Data.List (find, foldl', intersect, nub, zipWith4)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust, maybeToList, listToMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
+import qualified Data.IntSet as IntSet
 import System.FilePath (FilePath)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -696,13 +697,18 @@ applyTypeCase cas exp =
 -- | Match provided argument cases to expected signature cases for partial application.
 -- Returns expected argument indices matched by each provided argument, in order.
 matchPartialCaseIndices :: [Case] -> [Case] -> Maybe [Int]
-matchPartialCaseIndices expectedCases = go []
+matchPartialCaseIndices expectedCases = go IntSet.empty
   where
     go _ [] = Just []
     go used (pc:pcs) =
-      let matches = [i | (i, ec) <- zip [0..] expectedCases, ec == pc, i `notElem` used]
+      let matches =
+            [ i
+            | (i, ec) <- zip [0..] expectedCases
+            , ec == pc
+            , not (IntSet.member i used)
+            ]
       in case matches of
-           [i] -> (i :) <$> go (i : used) pcs
+           [i] -> (i :) <$> go (IntSet.insert i used) pcs
            _ -> Nothing
 
 -- | Resolve a variable by candidates, arity, and scope.
