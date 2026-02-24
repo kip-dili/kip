@@ -87,7 +87,7 @@ executable kip
       Repl.Steps
   hs-source-dirs:
       app
-  ghc-options: -O2 -split-sections -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -O2 -split-sections -threaded -rtsopts "-with-rtsopts=-N -A64m"
   if os(wasi)
     buildable: False
   if os(darwin)
@@ -122,7 +122,7 @@ executable kip-playground
   if os(wasi)
     ghc-options: -rtsopts
   else
-    ghc-options: -split-sections -threaded -rtsopts -with-rtsopts=-N
+    ghc-options: -split-sections -threaded -rtsopts "-with-rtsopts=-N -A64m"
   if os(darwin)
     ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   build-depends:
@@ -172,7 +172,7 @@ executable kip-lsp
       Paths_kip
   hs-source-dirs:
       app
-  ghc-options: -split-sections -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -split-sections -threaded -rtsopts "-with-rtsopts=-N -A64m"
   if os(wasi)
     buildable: False
   if os(darwin)

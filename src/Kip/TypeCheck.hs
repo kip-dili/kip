@@ -114,6 +114,7 @@ import Control.Monad.IO.Class
 import Data.List (find, foldl', intersect, nub, zipWith4)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust, maybeToList, listToMaybe)
 import qualified Data.Map.Strict as Map
+import qualified Data.HashMap.Strict as HM
 import System.FilePath (FilePath)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -155,8 +156,13 @@ data TCState =
     -- ==== Performance note (Optimization: overload candidate pruning)
     -- Call checking repeatedly requests "signatures of name N with arity K".
     -- Keeping this index avoids filtering every signature list on each call.
-    , tcFuncSigsByArity :: !(Map.Map (Identifier, Int) [[Arg Ann]])
+    , tcFuncSigsByArity :: !(HM.HashMap (Identifier, Int) [[Arg Ann]])
     , tcFuncSigRets :: !(Map.Map (Identifier, [Ty Ann]) (Ty Ann)) -- ^ Function return types by arg types.
+    -- | Return-type index grouped by function name.
+    --
+    -- Speeds up fallback overload matching by avoiding full scans over
+    -- 'tcFuncSigRets' for every candidate function name.
+    , tcFuncRetByName :: !(HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann)))
     , tcVarTys :: ![(Identifier, Ty Ann)] -- ^ Variable type bindings (list for shadowing).
     , tcVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings for inlining.
     , tcCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
@@ -215,11 +221,12 @@ instance Binary TCState where
     defLocs <- B.get
     funcSigLocs <- B.get
     let byArity = buildFuncSigsByArity funcSigs
-    return (MkTCState ctx funcs funcSigs byArity funcSigRets varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
+    let retByName = buildFuncRetByName funcSigRets
+    return (MkTCState ctx funcs funcSigs byArity funcSigRets retByName varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState Set.empty Map.empty Map.empty Map.empty Map.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
+emptyTCState = MkTCState Set.empty Map.empty Map.empty HM.empty Map.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
 
 -- | Prepend a single value to the list stored under a key in a 'Map.Map'.
 --
@@ -233,13 +240,30 @@ mmInsert k v = Map.insertWith (++) k [v]
 -- This is rebuilt when loading cached state and then maintained
 -- incrementally by 'insertFuncSig'.
 buildFuncSigsByArity :: Map.Map Identifier [[Arg Ann]]
-                    -> Map.Map (Identifier, Int) [[Arg Ann]]
+                    -> HM.HashMap (Identifier, Int) [[Arg Ann]]
 buildFuncSigsByArity sigs =
-  Map.fromListWith (++)
+  HM.fromListWith (++)
     [ ((name, length args), [args])
     | (name, sigList) <- Map.toList sigs
     , args <- sigList
     ]
+
+-- | Build a function-name grouped index for return types.
+buildFuncRetByName :: Map.Map (Identifier, [Ty Ann]) (Ty Ann)
+                  -> HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann))
+buildFuncRetByName sigRets =
+  HM.fromListWith Map.union
+    [ (name, Map.singleton argTys retTy)
+    | ((name, argTys), retTy) <- Map.toList sigRets
+    ]
+
+-- | Insert one function return type into both return-type indices.
+insertFuncRet :: Identifier -> [Ty Ann] -> Ty Ann -> TCState -> TCState
+insertFuncRet name argTys retTy st =
+  st
+    { tcFuncSigRets = Map.insert (name, argTys) retTy (tcFuncSigRets st)
+    , tcFuncRetByName = HM.insertWith Map.union name (Map.singleton argTys retTy) (tcFuncRetByName st)
+    }
 
 -- | Insert one function signature into both signature indices.
 --
@@ -250,7 +274,7 @@ insertFuncSig name args st =
   let argsNorm = map (Bifunctor.second normalizePrimTy) args
   in st
       { tcFuncSigs = mmInsert name argsNorm (tcFuncSigs st)
-      , tcFuncSigsByArity = mmInsert (name, length argsNorm) argsNorm (tcFuncSigsByArity st)
+      , tcFuncSigsByArity = HM.insertWith (++) (name, length argsNorm) [argsNorm] (tcFuncSigsByArity st)
       }
 
 -- | Insert one function declaration into function-arity and signature indices.
@@ -418,7 +442,7 @@ tcExp1With allowEffect e =
                   exactSigs =
                     [ (n, sig)
                     | n <- fnNames
-                    , sig <- Map.findWithDefault [] (n, length allArgs) tcFuncSigsByArity
+                    , sig <- fromMaybe [] (HM.lookup (n, length allArgs) tcFuncSigsByArity)
                     ]
                   partialSigs =
                     [ (n, sig)
@@ -899,12 +923,11 @@ tcStmt stmt =
                 _ -> fromMaybe ty mRet
             retTy = if explicit then ty else inferredRet
             s' = insertFuncDecl name args s
+            s'' = insertFuncRet name (map (normalizePrimTy . snd) args) (normalizePrimTy retTy) s'
         in invalidateInferMemo
-             (s'
-               { tcCtx = Set.insert name (tcCtx s')
-               , tcFuncSigRets =
-                   Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy retTy) (tcFuncSigRets s')
-               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+             (s''
+               { tcCtx = Set.insert name (tcCtx s'')
+               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s'') else tcInfinitives s''
                }))
       return (Function name args ty body' isInfinitive)
     PrimFunc name args ty isInfinitive -> do
@@ -919,11 +942,11 @@ tcStmt stmt =
         lift (throwE (UnimplementedPrimitive name args NoSpan))
       modify (\s ->
         let s' = insertFuncDecl name args s
+            s'' = insertFuncRet name (map (normalizePrimTy . snd) args) (normalizePrimTy ty) s'
         in invalidateInferMemo
-             (s'
-               { tcCtx = Set.insert name (tcCtx s')
-               , tcFuncSigRets = Map.insert (name, map (normalizePrimTy . snd) args) (normalizePrimTy ty) (tcFuncSigRets s')
-               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
+             (s''
+               { tcCtx = Set.insert name (tcCtx s'')
+               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s'') else tcInfinitives s''
                }))
       return (PrimFunc name args ty isInfinitive)
     Load dirPath name ->
@@ -1098,22 +1121,24 @@ lookupFuncRet tyCons env candidates argTys =
 
 -- | Lookup a function return type by candidates and argument types (Map version).
 lookupFuncRetMap :: Map.Map Identifier Int -- ^ Type constructor arities for type comparison.
-                 -> Map.Map (Identifier, [Ty Ann]) (Ty Ann) -- ^ Return types by identifier and arg types.
+                 -> HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann)) -- ^ Return types grouped by identifier.
                  -> [(Identifier, Case)] -- ^ Candidate identifiers.
                  -> [Ty Ann] -- ^ Argument types to match.
                  -> Maybe (Ty Ann) -- ^ Matching return type.
 lookupFuncRetMap tyCons env candidates argTys =
-  let names = map fst candidates
-      tyConsList = Map.toList tyCons
-  in go names tyConsList
+  let tyConsList = Map.toList tyCons
+  in go (map fst candidates) tyConsList
   where
     go :: [Identifier] -- ^ Remaining candidate names.
        -> [(Identifier, Int)] -- ^ Type constructor arities as list.
        -> Maybe (Ty Ann) -- ^ Matching return type.
     go [] _ = Nothing
     go (n:ns) tcList =
-      case find (\((name, sigArgTys), _) -> name == n && matchArgTypes tcList sigArgTys) (Map.toList env) of
-        Just (_, retTy) -> Just retTy
+      case HM.lookup n env of
+        Just sigRets ->
+          case find (matchArgTypes tcList . fst) (Map.toList sigRets) of
+            Just (_, retTy) -> Just retTy
+            Nothing -> go ns tcList
         Nothing -> go ns tcList
     matchArgTypes tcList sigArgTys =
       length sigArgTys == length argTys &&
@@ -1154,7 +1179,7 @@ inferType e = inferTypeUncached
         App {fn, args} ->
           case fn of
             Var {annExp = annFn, varCandidates} -> do
-              MkTCState{tcCtors, tcTyCons, tcFuncSigRets, tcCtx, tcFuncSigs, tcFuncSigsByArity, tcVarTys} <- get
+              MkTCState{tcCtors, tcTyCons, tcFuncSigRets, tcFuncRetByName, tcCtx, tcFuncSigs, tcFuncSigsByArity, tcVarTys} <- get
               case lookupByCandidates tcVarTys varCandidates of
                 Just fnTy@(Arr {}) ->
                   case applyFunTy (length args) fnTy of
@@ -1178,7 +1203,7 @@ inferType e = inferTypeUncached
                       let fnNames = map fst varCandidates
                           argCount = length args
                           -- Exact overload retrieval is indexed by (name, arity).
-                          exactSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] (n, argCount) tcFuncSigsByArity]
+                          exactSigs = [(n, sig) | n <- fnNames, sig <- fromMaybe [] (HM.lookup (n, argCount) tcFuncSigsByArity)]
                           partialSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig > argCount]
                           matchExactSig (name, argsSig) =
                             let tys = map snd argsSig
@@ -1205,7 +1230,7 @@ inferType e = inferTypeUncached
                         [] ->
                           -- Fallback: try to find any matching return type
                           let actuals = catMaybes argTys
-                          in case lookupFuncRetMap tcTyCons tcFuncSigRets varCandidates actuals of
+                          in case lookupFuncRetMap tcTyCons tcFuncRetByName varCandidates actuals of
                             Just retTy -> return (Just retTy)
                             Nothing ->
                               let inCtx = any (\(ident, _) -> Set.member ident tcCtx) varCandidates
@@ -1276,9 +1301,9 @@ withFuncRet :: Identifier -- ^ Function name.
 withFuncRet _ _ Nothing m = m
 withFuncRet name argTys (Just ty) m = do
   st <- get
-  put (invalidateInferMemo (st { tcFuncSigRets = Map.insert (name, argTys) ty (tcFuncSigRets st) }))
+  put (invalidateInferMemo (insertFuncRet name argTys ty st))
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcFuncSigRets = tcFuncSigRets st }))
+  modify (\s -> invalidateInferMemo (s { tcFuncSigRets = tcFuncSigRets st, tcFuncRetByName = tcFuncRetByName st }))
   return res
 
 -- | Run a computation with a function signature in scope.

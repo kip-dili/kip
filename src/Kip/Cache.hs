@@ -31,7 +31,7 @@ import qualified Data.HashTable.IO as HT
 
 import Kip.AST
 import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
-import Kip.TypeCheck (TCState(..))
+import Kip.TypeCheck (TCState(..), buildFuncSigsByArity, buildFuncRetByName)
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import Kip.Render (RenderCache, renderExpValue)
@@ -209,10 +209,15 @@ fromCachedTCState ::
   CachedTCState -- ^ Cached state wrapper.
   -> TCState -- ^ Restored type checker state.
 fromCachedTCState (CachedTCState s) =
-  s
-    { tcFuncs = fmap reverse (tcFuncs s)
-    , tcFuncSigs = fmap reverse (tcFuncSigs s)
-    }
+  let funcs' = fmap reverse (tcFuncs s)
+      sigs' = fmap reverse (tcFuncSigs s)
+      sigRets' = tcFuncSigRets s
+  in s
+      { tcFuncs = funcs'
+      , tcFuncSigs = sigs'
+      , tcFuncSigsByArity = buildFuncSigsByArity sigs'
+      , tcFuncRetByName = buildFuncRetByName sigRets'
+      }
 
 -- | Serialized evaluator state without closures.
 data CachedEvalState = CachedEvalState

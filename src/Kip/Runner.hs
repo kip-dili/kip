@@ -810,6 +810,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
 mergeTCState :: TCState -> TCState -> TCState
 mergeTCState cur cached =
   let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
+      mergedRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
       -- Rebuild derived signature indices after merge so overload lookups
       -- stay fast and deterministic for subsequent checks.
   in emptyTCState
@@ -817,7 +818,8 @@ mergeTCState cur cached =
        , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
        , tcFuncSigs = mergedSigs
        , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
-       , tcFuncSigRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
+       , tcFuncSigRets = mergedRets
+       , tcFuncRetByName = buildFuncRetByName mergedRets
        , tcVarTys = tcVarTys cached ++ tcVarTys cur
        , tcVals = Map.union (tcVals cached) (tcVals cur)
        , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
