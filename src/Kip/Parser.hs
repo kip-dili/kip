@@ -359,6 +359,9 @@ turkishCaseSuffixes =
   , ("'de", Loc), ("'da", Loc), ("'te", Loc), ("'ta", Loc)
   ]
 
+turkishCaseSuffixesTxt :: [Text]
+turkishCaseSuffixesTxt = map (T.pack . fst) turkishCaseSuffixes
+
 -- | Pre-populate a morphology cache with common Turkish demonstrative pronouns.
 -- These are pattern variables that TRmorph may not analyze correctly.
 -- Entries are stored in TRmorph format: "base<case_tag>"
@@ -1728,8 +1731,10 @@ parseExpWithCtx' useCtx allowMatch =
           let ann'' = mkAnn (pickCase False candidates) sp''
           MkParserState{parserPrimTypes, parserTyConsNames} <- getP
           let tyNames = parserTyConsNames
-              isPrim ident = ident `elem` parserPrimTypes
-              knownCandidate = find (`elem` tyNames) (map fst candidates)
+              primSet = Set.fromList parserPrimTypes
+              tySet = Set.fromList tyNames
+              isPrim ident = ident `Set.member` primSet
+              knownCandidate = find (`Set.member` tySet) (map fst candidates)
               resolvedName = fromMaybe rawIdent knownCandidate
           case resolvedName of
             ident
@@ -1787,8 +1792,10 @@ parseExpWithCtx' useCtx allowMatch =
           let ann' = mkAnn (pickCase False candidates) sp'
           MkParserState{parserPrimTypes, parserTyConsNames} <- getP
           let tyNames = parserTyConsNames
-              isPrim ident = ident `elem` parserPrimTypes
-              knownCandidate = find (`elem` tyNames) (map fst candidates)
+              primSet = Set.fromList parserPrimTypes
+              tySet = Set.fromList tyNames
+              isPrim ident = ident `Set.member` primSet
+              knownCandidate = find (`Set.member` tySet) (map fst candidates)
               resolvedName = fromMaybe rawIdent knownCandidate
           case resolvedName of
             ident
@@ -1796,7 +1803,7 @@ parseExpWithCtx' useCtx allowMatch =
               | isPrim ident && isFloatType ident -> return (TyFloat ann')
               | isPrim ident && isStringType ident -> return (TyString ann')
               | isPrim ident && isCharType ident -> return (TyChar ann')
-              | ident `elem` tyNames -> return (TyInd ann' ident)
+              | ident `Set.member` tySet -> return (TyInd ann' ident)
               | otherwise -> return (TyInd ann' ident)
     -- | Parse comma-separated sequence expressions.
     seqExp :: KipParser (Exp Ann) -- ^ Parsed sequence expression.
@@ -1810,7 +1817,17 @@ parseExpWithCtx' useCtx allowMatch =
         Just _ ->
           if allowMatch && useCtx
             then do
-              mMatch <- optional (try (parseMatchFromApp e1))
+              let shouldTryMatch =
+                    case e1 of
+                      App _ fnExp (_:_) ->
+                        case fnExp of
+                          Var _ (_, name) _ -> isJust (stripSuffixAny condSuffixesTxt name)
+                          _ -> False
+                      _ -> False
+              mMatch <-
+                if shouldTryMatch
+                  then optional (try (parseMatchFromApp e1))
+                  else return Nothing
               case mMatch of
                 Just match -> return match
                 Nothing -> parseSeqOrReturn e1
@@ -3003,12 +3020,17 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
         let tyNames = parserTyConsNames
             primNames = parserPrimTypes
             typeScope = tyNames ++ parserTyParams ++ primNames
+            !tyNamesSet = Set.fromList tyNames
+            !tyParamsSet = Set.fromList parserTyParams
+            !primNamesSet = Set.fromList primNames
+            !typeScopeSet = Set.fromList typeScope
+            !tyArityMap = M.fromList parserTyCons
         let
             -- | Require a type identifier to be in scope.
             requireInCtx :: Identifier -- ^ Type identifier to check.
                          -> KipParser () -- ^ No result.
             requireInCtx name =
-              if name `elem` tyNames || name `elem` parserTyParams || name `elem` primNames
+              if name `Set.member` typeScopeSet
                 then return ()
                 else case findMatchingTypeParam name of
                   Just _ -> return ()  -- Base-form matches a type parameter
@@ -3025,12 +3047,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             genitiveBase :: Identifier -- ^ Surface identifier.
                          -> Maybe Identifier -- ^ Base identifier without genitive.
             genitiveBase (mods, word) =
-              let suffixes = ["nın", "nin", "nun", "nün", "ın", "in", "un", "ün"]
-                  tryStrip suf =
-                    case T.stripSuffix suf word of
-                      Just base -> Just (mods, base)
-                      Nothing -> Nothing
-              in foldr ((<|>) . tryStrip) Nothing suffixes
+              fmap (mods,) (stripSuffixAny genSuffixesNoApostropheTxt word)
             {- | Strip Turkish case suffixes to get base form of an identifier.
 
             This is a simple heuristic for matching type parameters that appear
@@ -3062,16 +3079,16 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             stripCaseSuffix :: Identifier -> Identifier
             stripCaseSuffix (mods, word) =
               let lowerWord = T.toLower word
-                  suffixes = map fst turkishCaseSuffixes
-                  tryStrip [] = word
-                  tryStrip (suff:rest) =
-                    if T.pack suff `T.isSuffixOf` lowerWord
-                      then let len = length suff
-                           in if T.length word > len
-                                then T.take (T.length word - len) word
-                                else tryStrip rest
-                      else tryStrip rest
-              in (mods, tryStrip suffixes)
+                  mBase = stripSuffixAny turkishCaseSuffixesTxt lowerWord
+                  stripped =
+                    case mBase of
+                      Just baseLower ->
+                        let len = T.length baseLower
+                        in if T.length word > len
+                             then T.take len word
+                             else word
+                      Nothing -> word
+              in (mods, stripped)
 
             {- | Find a type parameter that matches the identifier by base form.
 
@@ -3120,17 +3137,17 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                   -- If no type param match, try normal resolution
                   mResolved <- optional (resolveTypeCandidatePreferCtx ident)
                   let pickTy name cas
-                        | name `elem` primNames && isIntType name = TyInt (mkAnn cas NoSpan)
-                        | name `elem` primNames && isFloatType name = TyFloat (mkAnn cas NoSpan)
-                        | name `elem` primNames && isStringType name = TyString (mkAnn cas NoSpan)
-                        | name `elem` primNames && isCharType name = TyChar (mkAnn cas NoSpan)
-                        | name `elem` primNames = TyInd (mkAnn cas NoSpan) name  -- Other primitives like boolean
-                        | name `elem` tyNames = TyInd (mkAnn cas NoSpan) name
-                        | name `elem` parserTyParams = TyVar (mkAnn cas NoSpan) name
+                        | name `Set.member` primNamesSet && isIntType name = TyInt (mkAnn cas NoSpan)
+                        | name `Set.member` primNamesSet && isFloatType name = TyFloat (mkAnn cas NoSpan)
+                        | name `Set.member` primNamesSet && isStringType name = TyString (mkAnn cas NoSpan)
+                        | name `Set.member` primNamesSet && isCharType name = TyChar (mkAnn cas NoSpan)
+                        | name `Set.member` primNamesSet = TyInd (mkAnn cas NoSpan) name  -- Other primitives like boolean
+                        | name `Set.member` tyNamesSet = TyInd (mkAnn cas NoSpan) name
+                        | name `Set.member` tyParamsSet = TyVar (mkAnn cas NoSpan) name
                         | otherwise = TyVar (mkAnn cas NoSpan) name
                   case mResolved of
                     Just (name, cas) ->
-                      if name `elem` parserTyParams
+                      if name `Set.member` tyParamsSet
                         then return (TyVar (mkAnn cas NoSpan) name)
                         else return (pickTy name cas)
                     Nothing ->
@@ -3142,7 +3159,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               m <- optional (resolveTypeCandidatePreferCtx ident)
               case m of
                 Just (name, _) ->
-                  return (name `elem` tyNames || name `elem` parserTyParams || name `elem` primNames)
+                  return (name `Set.member` typeScopeSet)
                 Nothing -> return False
         let -- Collect all type identifiers greedily, validating arity at the end
             collectArgsLoopRev soFarRev = do
@@ -3153,7 +3170,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                 mNextResolved <- optional (resolveTypeCandidatePreferCtx nextIdent)
                 case mNextResolved of
                   Just (nextName, _) -> do
-                    let isNextType = nextName `elem` tyNames || nextName `elem` parserTyParams || nextName `elem` primNames
+                    let isNextType = nextName `Set.member` typeScopeSet
                     guard isNextType
                     return arg
                   Nothing -> empty
@@ -3171,21 +3188,25 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               -- Validate arity: check if this type constructor accepts the right number of arguments
               let numArgs = length collected
                   mArity = lookup name parserTyCons
+                  mArityFast = M.lookup name tyArityMap
                   arityMatches = case mArity of
                     Just expectedArity -> numArgs == expectedArity
                     Nothing ->
                       -- Primitives have arity 0, type params shouldn't appear as constructors here
-                      (name `elem` primNames) && (numArgs == 0)
-              guard arityMatches  -- Allow backtracking if arity doesn't match
+                      (name `Set.member` primNamesSet) && (numArgs == 0)
+                  arityMatchesFast = case mArityFast of
+                    Just expectedArity -> numArgs == expectedArity
+                    Nothing -> (name `Set.member` primNamesSet) && (numArgs == 0)
+              guard (arityMatches && arityMatchesFast)  -- Allow backtracking if arity doesn't match
               let cas' = preferSurfaceCase rawIdent cas
                   ann = mkAnn cas' sp
-              if name `elem` primNames && isIntType name
+              if name `Set.member` primNamesSet && isIntType name
                 then return (TyInt ann)
-                else if name `elem` primNames && isFloatType name
+                else if name `Set.member` primNamesSet && isFloatType name
                   then return (TyFloat ann)
-                else if name `elem` primNames && isStringType name
+                else if name `Set.member` primNamesSet && isStringType name
                     then return (TyString ann)
-                else if name `elem` primNames && isCharType name
+                else if name `Set.member` primNamesSet && isCharType name
                     then return (TyChar ann)
                     else do
                       argTys <- mapM argTy collected
@@ -3197,7 +3218,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             case rawIdent of
               (xs, xraw) | not (null xs) -> do
                 (baseName, cas) <- resolveTypeCandidatePreferCtx ([], xraw)
-                if baseName `elem` tyNames
+                if baseName `Set.member` tyNamesSet
                   then do
                     let cas' = preferSurfaceCase rawIdent cas
                         ann = mkAnn cas' sp
@@ -3211,30 +3232,30 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                     (name, cas') <- resolveTypeCandidatePreferCtx rawIdent
                     requireInCtx name
                     let cas'' = preferSurfaceCase rawIdent cas'
-                    if name `elem` primNames && isIntType name
+                    if name `Set.member` primNamesSet && isIntType name
                       then return (TyInt (mkAnn cas'' sp))
-                      else if name `elem` primNames && isFloatType name
+                      else if name `Set.member` primNamesSet && isFloatType name
                         then return (TyFloat (mkAnn cas'' sp))
-                        else if name `elem` primNames && isStringType name
+                        else if name `Set.member` primNamesSet && isStringType name
                           then return (TyString (mkAnn cas'' sp))
-                          else if name `elem` primNames && isCharType name
+                          else if name `Set.member` primNamesSet && isCharType name
                             then return (TyChar (mkAnn cas'' sp))
-                            else if name `elem` parserTyParams
+                            else if name `Set.member` tyParamsSet
                               then return (TyVar (mkAnn cas'' sp) name)
                               else return (TyInd (mkAnn cas'' sp) name)
               _ -> do
                 (name, cas) <- resolveTypeCandidatePreferCtx rawIdent
                 requireInCtx name
                 let cas' = preferSurfaceCase rawIdent cas
-                if name `elem` primNames && isIntType name
+                if name `Set.member` primNamesSet && isIntType name
                   then return (TyInt (mkAnn cas' sp))
-                  else if name `elem` primNames && isFloatType name
+                  else if name `Set.member` primNamesSet && isFloatType name
                     then return (TyFloat (mkAnn cas' sp))
-                    else if name `elem` primNames && isStringType name
+                    else if name `Set.member` primNamesSet && isStringType name
                       then return (TyString (mkAnn cas' sp))
-                      else if name `elem` primNames && isCharType name
+                      else if name `Set.member` primNamesSet && isCharType name
                         then return (TyChar (mkAnn cas' sp))
-                        else if name `elem` parserTyParams
+                        else if name `Set.member` tyParamsSet
                           then return (TyVar (mkAnn cas' sp) name)
                           else return (TyInd (mkAnn cas' sp) name)
     -- | Parse a type name with a modifier prefix.
@@ -3831,21 +3852,22 @@ selectCondNameInCtors :: [Identifier] -- ^ Constructor identifiers.
                       -> [(Identifier, Case)] -- ^ Candidate identifiers.
                       -> Maybe Identifier -- ^ Selected constructor.
 selectCondNameInCtors ctors candidates =
-  case [name | (name, cas) <- candidates, cas == Cond, name `elem` ctors] of
+  case [name | (name, cas) <- candidates, cas == Cond, name `Set.member` ctorSet] of
     n:_ -> Just n
     [] ->
-      case [name | (name, _) <- candidates, name `elem` ctors] of
+      case [name | (name, _) <- candidates, name `Set.member` ctorSet] of
         n:_ -> Just n
         [] ->
           case strippedCondMatches of
             n:_ -> Just n
             [] -> Nothing
   where
+    ctorSet = Set.fromList ctors
     strippedCondMatches =
       [ base
       | (name, _) <- candidates
       , Just base <- [stripCondSuffixIdent name]
-      , base `elem` ctors
+      , base `Set.member` ctorSet
       ]
     stripCondSuffixIdent (mods, word) = do
       base <- stripCondSuffix word

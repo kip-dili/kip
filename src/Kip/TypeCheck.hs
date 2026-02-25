@@ -151,6 +151,7 @@ data TCState =
     -- do not accumulate thunk chains across parser/typechecker bootstrap.
     { tcCtx :: !(Set.Set Identifier) -- ^ Names in scope.
     , tcFuncs :: !(Map.Map Identifier [Int]) -- ^ Known function arities (list for overloading).
+    , tcFuncNamesByArity :: !(HM.HashMap Int (Set.Set Identifier)) -- ^ Function names grouped by arity.
     , tcFuncSigs :: !(Map.Map Identifier [[Arg Ann]]) -- ^ Function argument signatures (list for overloading).
     -- | Exact-arity signature index for overload resolution.
     --
@@ -223,11 +224,12 @@ instance Binary TCState where
     funcSigLocs <- B.get
     let byArity = buildFuncSigsByArity funcSigs
     let retByName = buildFuncRetByName funcSigRets
-    return (MkTCState ctx funcs funcSigs byArity funcSigRets retByName varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
+    let namesByArity = buildFuncNamesByArity funcs
+    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState Set.empty Map.empty Map.empty HM.empty Map.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
+emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
 
 -- | Prepend a single value to the list stored under a key in a 'Map.Map'.
 --
@@ -287,7 +289,10 @@ insertFuncSig name args st =
 insertFuncDecl :: Identifier -> [Arg Ann] -> TCState -> TCState
 insertFuncDecl name args st =
   let st' = insertFuncSig name args st
-  in st' { tcFuncs = mmInsert name (length args) (tcFuncs st') }
+      arity = length args
+      funcs' = mmInsert name arity (tcFuncs st')
+      namesByArity' = HM.insertWith Set.union arity (Set.singleton name) (tcFuncNamesByArity st')
+  in st' { tcFuncs = funcs', tcFuncNamesByArity = namesByArity' }
 
 -- | Invalidate inferType memo after any environment-affecting state change.
 --
@@ -734,7 +739,7 @@ resolveVar :: Ann -- ^ Annotation of the variable occurrence.
            -> [(Identifier, Case)] -- ^ Candidate identifiers and cases.
            -> TCM (Exp Ann) -- ^ Resolved variable expression.
 resolveVar annExp originalName mArity candidates = do
-  MkTCState{tcCtx, tcFuncs} <- get
+  MkTCState{tcCtx, tcFuncNamesByArity} <- get
   let filtered = filter (\(ident, _) -> Set.member ident tcCtx) candidates
   if null filtered
     then
@@ -747,9 +752,9 @@ resolveVar annExp originalName mArity candidates = do
             case mArity of
               Nothing -> filtered
               Just arity ->
-                let names = nub [name | (name, ars) <- Map.toList tcFuncs, ar <- ars, arity == ar]
-                    narrowed = filter (\(ident, _) -> ident `elem` names) filtered
-                in if null names || null narrowed
+                let names = fromMaybe Set.empty (HM.lookup arity tcFuncNamesByArity)
+                    narrowed = filter (\(ident, _) -> ident `Set.member` names) filtered
+                in if Set.null names || null narrowed
                      then filtered
                      else narrowed
           caseFiltered = filter (\(_, cas) -> cas == annCase annExp) arityFiltered
@@ -841,7 +846,9 @@ withCtx :: [Identifier] -- ^ Identifiers to add to context.
         -> TCM a -- ^ Result of the computation.
 withCtx idents m = do
   st <- get
-  put (invalidateInferMemo (st { tcCtx = Set.union (Set.fromList idents) (tcCtx st) }))
+  let added = Set.fromList idents
+      ctx' = Set.union added (tcCtx st)
+  put (invalidateInferMemo (st { tcCtx = ctx' }))
   res <- m
   modify (\s -> invalidateInferMemo (s { tcCtx = tcCtx st }))
   return res
@@ -1151,6 +1158,7 @@ lookupFuncRetMap tyCons env candidates argTys =
   let tyConsList = Map.toList tyCons
   in go (map fst candidates) tyConsList
   where
+    argTysNorm = map normalizePrimTy argTys
     go :: [Identifier] -- ^ Remaining candidate names.
        -> [(Identifier, Int)] -- ^ Type constructor arities as list.
        -> Maybe (Ty Ann) -- ^ Matching return type.
@@ -1158,9 +1166,12 @@ lookupFuncRetMap tyCons env candidates argTys =
     go (n:ns) tcList =
       case HM.lookup n env of
         Just sigRets ->
-          case find (matchArgTypes tcList . fst) (Map.toList sigRets) of
-            Just (_, retTy) -> Just retTy
-            Nothing -> go ns tcList
+          case Map.lookup argTysNorm sigRets of
+            Just retTy -> Just retTy
+            Nothing ->
+              case find (matchArgTypes tcList . fst) (Map.toList sigRets) of
+                Just (_, retTy) -> Just retTy
+                Nothing -> go ns tcList
         Nothing -> go ns tcList
     matchArgTypes tcList sigArgTys =
       length sigArgTys == length argTys &&
@@ -1337,7 +1348,7 @@ withFuncSig name args m = do
   st <- get
   put (invalidateInferMemo (insertFuncDecl name args st))
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st }))
+  modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncNamesByArity = tcFuncNamesByArity st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st }))
   return res
 
 -- | Run a computation with variable types in scope.
@@ -2080,26 +2091,38 @@ isCharIdent :: Identifier -- ^ Identifier to inspect.
 isCharIdent (mods, name) = null mods && name == T.pack "karakter"
 
 -- | Unify expected and actual types to produce substitutions.
+type Subst = Map.Map Identifier (Ty Ann)
+
+occursInType :: Identifier -> Ty Ann -> Bool
+occursInType needle = go
+  where
+    go ty =
+      case ty of
+        TyVar _ ident -> ident == needle
+        Arr _ d i -> go d || go i
+        TyApp _ ctor args -> go ctor || any go args
+        _ -> False
+
 unifyTypes :: [(Identifier, Int)] -- ^ Type constructor arities.
            -> [Ty Ann] -- ^ Expected types.
            -> [Ty Ann] -- ^ Actual types.
-           -> Maybe [(Identifier, Ty Ann)] -- ^ Substitution when unification succeeds.
+           -> Maybe Subst -- ^ Substitution when unification succeeds.
 unifyTypes tyCons expected actual =
-  foldl' go (Just []) (zip expected actual)
+  foldl' go (Just Map.empty) (zip expected actual)
   where
     -- | Fold step for unification.
-    go :: Maybe [(Identifier, Ty Ann)] -- ^ Current substitution.
+    go :: Maybe Subst -- ^ Current substitution.
        -> (Ty Ann, Ty Ann) -- ^ Expected and actual types.
-       -> Maybe [(Identifier, Ty Ann)] -- ^ Updated substitution.
+       -> Maybe Subst -- ^ Updated substitution.
     go Nothing _ = Nothing
     go (Just subst) (e, a) =
       unifyOne subst (normalizeTy tyCons e) (normalizeTy tyCons a)
 
     -- | Unify a single expected/actual pair.
-    unifyOne :: [(Identifier, Ty Ann)] -- ^ Current substitution.
+    unifyOne :: Subst -- ^ Current substitution.
              -> Ty Ann -- ^ Expected type.
              -> Ty Ann -- ^ Actual type.
-             -> Maybe [(Identifier, Ty Ann)] -- ^ Updated substitution.
+             -> Maybe Subst -- ^ Updated substitution.
     unifyOne subst e a =
       case e of
         TyInt _ ->
@@ -2111,15 +2134,21 @@ unifyTypes tyCons expected actual =
             TyFloat _ -> Just subst
             _ -> Nothing
         TyVar _ name ->
-          case lookup name subst of
+          case Map.lookup name subst of
             Just bound ->
               if tyEq tyCons bound a
                 then Just subst
                 else Nothing
             Nothing ->
               case a of
+                TyVar _ name' | name == name' -> Just subst
                 Arr {} -> Nothing  -- Type variables cannot unify with function types
-                _ -> Just ((name, a) : subst)
+                _ ->
+                  if occursInType name a
+                    then Nothing
+                    else
+                      let subst' = Map.insert name a subst
+                      in Just subst'
         TySkolem _ name ->
           case a of
             TySkolem _ name' | name == name' -> Just subst
@@ -2152,13 +2181,13 @@ unifyTypes tyCons expected actual =
             _ -> Nothing
 
 -- | Apply a substitution to a type.
-applySubst :: [(Identifier, Ty Ann)] -- ^ Substitution bindings.
+applySubst :: Subst -- ^ Substitution bindings.
            -> Ty Ann -- ^ Type to rewrite.
            -> Ty Ann -- ^ Rewritten type.
 applySubst subst ty =
   case ty of
     TyVar ann name ->
-      case lookup name subst of
+      case Map.lookup name subst of
         Just t -> t
         Nothing -> TyVar ann name
     TySkolem {} -> ty
@@ -2249,3 +2278,15 @@ registerForwardDecls stmts = do
                                                , tcTyCons = Map.insert name 0 (tcTyCons s)
                                                }))
         _ -> return ()
+-- | Build a function-name index grouped by function arity.
+buildFuncNamesByArity :: Map.Map Identifier [Int]
+                     -> HM.HashMap Int (Set.Set Identifier)
+buildFuncNamesByArity =
+  Map.foldlWithKey'
+    (\acc ident arities ->
+      foldl'
+        (\acc' arity -> HM.insertWith Set.union arity (Set.singleton ident) acc')
+        acc
+        arities
+    )
+    HM.empty
