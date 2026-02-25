@@ -2103,15 +2103,39 @@ type Subst = Map.Map Identifier (Ty Ann)
 --
 -- This mirrors 'Ty Ann' but replaces flexible type-variable identifiers with
 -- compact integer ids, so UF operations can use unboxed mutable vectors.
+--
+-- Design notes:
+--
+-- * Only flexible variables are interned to 'Int' ('ITyVar').
+-- * Rigid skolems remain identifier-based ('ITySkolem') so rigidity checks stay
+--   semantically identical to the source-level unifier.
+-- * Constructors, primitives, and arrows keep their shape to preserve matching
+--   and occurs-check behavior.
+--
+-- Performance notes:
+--
+-- * UF operations (find/union/bind) can now index contiguous vectors by `Int`
+--   instead of repeatedly traversing tree maps keyed by 'Identifier'.
+-- * Equality short-circuits in 'unifyOne' become cheaper because `ITyVar`
+--   compares by machine integers.
 data ITy
+  -- | Built-in integer type.
   = ITyInt !Ann
+  -- | Built-in floating-point type.
   | ITyFloat !Ann
+  -- | Flexible type variable represented as an interned UF node id.
   | ITyVar !Ann !Int
+  -- | Rigid skolem variable (never unioned as a UF node).
   | ITySkolem !Ann !Identifier
+  -- | Type constructor identifier.
   | ITyInd !Ann !Identifier
+  -- | Built-in string type.
   | ITyString !Ann
+  -- | Built-in character type.
   | ITyChar !Ann
+  -- | Function type.
   | IArr !Ann !ITy !ITy
+  -- | Type application.
   | ITyApp !Ann !ITy ![ITy]
   deriving (Eq)
 
@@ -2135,9 +2159,18 @@ unifyTypes tyCons expected actual = runST $ do
     then Just <$> freezeSubst ixToVar parent rank binds
     else return Nothing
   where
+    -- | Collect all flexible variables participating in unification.
+    --
+    -- The resulting set defines the intern table for this unification run.
+    -- We intentionally scope interning per call to keep the implementation
+    -- allocation-light and avoid global mutable state.
     collectPairVars :: Set.Set Identifier -> (Ty Ann, Ty Ann) -> Set.Set Identifier
     collectPairVars acc (a, b) = collectTyVars (collectTyVars acc a) b
 
+    -- | Collect flexible type variables from a type tree.
+    --
+    -- Only 'TyVar' nodes are interned as UF nodes; skolems and constructors are
+    -- kept as-is.
     collectTyVars :: Set.Set Identifier -> Ty Ann -> Set.Set Identifier
     collectTyVars acc ty =
       case ty of
@@ -2146,9 +2179,14 @@ unifyTypes tyCons expected actual = runST $ do
         TyApp _ ctor args -> foldl' collectTyVars (collectTyVars acc ctor) args
         _ -> acc
 
+    -- | Convert a type pair from source representation to int-indexed form.
     toPairITy :: Map.Map Identifier Int -> (Ty Ann, Ty Ann) -> (ITy, ITy)
     toPairITy varToIx (a, b) = (toITy varToIx a, toITy varToIx b)
 
+    -- | Convert a source type to int-indexed unifier type.
+    --
+    -- Invariant: every 'TyVar' referenced here must exist in @varToIx@, because
+    -- we collect all vars from normalized input pairs before conversion.
     toITy :: Map.Map Identifier Int -> Ty Ann -> ITy
     toITy varToIx ty =
       case ty of
@@ -2165,6 +2203,10 @@ unifyTypes tyCons expected actual = runST $ do
         Arr ann d i -> IArr ann (toITy varToIx d) (toITy varToIx i)
         TyApp ann ctor args -> ITyApp ann (toITy varToIx ctor) (map (toITy varToIx) args)
 
+    -- | Convert back to surface 'Ty' for the final substitution map.
+    --
+    -- This is used only at freeze time, so we keep the UF core in 'ITy' until
+    -- the very end to avoid repeated conversion overhead.
     fromITy :: V.Vector Identifier -> ITy -> Ty Ann
     fromITy ixToVar ty =
       case ty of
@@ -2178,6 +2220,9 @@ unifyTypes tyCons expected actual = runST $ do
         IArr ann d i -> Arr ann (fromITy ixToVar d) (fromITy ixToVar i)
         ITyApp ann ctor args -> TyApp ann (fromITy ixToVar ctor) (map (fromITy ixToVar) args)
 
+    -- | Initialize parent links to identity.
+    --
+    -- Each node starts as its own singleton set.
     initParents :: MUV.MVector s Int -> Int -> Int -> ST s ()
     initParents parent !i !n
       | i >= n = return ()
@@ -2185,6 +2230,7 @@ unifyTypes tyCons expected actual = runST $ do
           MUV.write parent i i
           initParents parent (i + 1) n
 
+    -- | Unify a list of expected/actual pairs with short-circuiting on failure.
     unifyPairs :: MUV.MVector s Int
                -> MUV.MVector s Int
                -> MV.MVector s (Maybe ITy)
@@ -2197,6 +2243,13 @@ unifyTypes tyCons expected actual = runST $ do
           ok <- unifyOne parent rank binds e a
           if ok then go rest else return False
 
+    -- | Unify two types.
+    --
+    -- Hot-path structure:
+    --
+    -- * prune both sides to weak head normal form;
+    -- * fast-path exact equality;
+    -- * otherwise dispatch to structural / UF binding logic.
     unifyOne :: MUV.MVector s Int
              -> MUV.MVector s Int
              -> MV.MVector s (Maybe ITy)
@@ -2210,6 +2263,10 @@ unifyTypes tyCons expected actual = runST $ do
         then return True
         else unifyPruned parent rank binds e a
 
+    -- | Structural unification after WHNF pruning.
+    --
+    -- Variable cases are delegated to 'bindVar', while constructors/arrows/apps
+    -- recurse structurally and preserve previous semantics.
     unifyPruned :: MUV.MVector s Int
                 -> MUV.MVector s Int
                 -> MV.MVector s (Maybe ITy)
@@ -2261,6 +2318,10 @@ unifyTypes tyCons expected actual = runST $ do
                   if okHead then unifyTyLists parent rank binds as1 as2 else return False
             _ -> return False
 
+    -- | Unify two parallel type argument lists.
+    --
+    -- Implemented as an explicit tail-recursive loop to avoid intermediate
+    -- zipped allocations in this hot path.
     unifyTyLists :: MUV.MVector s Int
                  -> MUV.MVector s Int
                  -> MV.MVector s (Maybe ITy)
@@ -2278,6 +2339,11 @@ unifyTypes tyCons expected actual = runST $ do
     sameLength (_:xs) (_:ys) = sameLength xs ys
     sameLength _ _ = False
 
+    -- | Find canonical representative with path-halving compression.
+    --
+    -- Path-halving updates every other node on the traversed path. This gives
+    -- near-constant amortized complexity while reducing write traffic compared
+    -- to full path rewriting on every step.
     findRoot :: MUV.MVector s Int -> Int -> ST s Int
     findRoot parent = go
       where
@@ -2290,6 +2356,9 @@ unifyTypes tyCons expected actual = runST $ do
               when (gp /= p) (MUV.write parent i gp)
               go p
 
+    -- | Occurs check against the current UF/binding state.
+    --
+    -- Prevents constructing cyclic bindings such as @a ~ List a@.
     occursIn :: MUV.MVector s Int
              -> MV.MVector s (Maybe ITy)
              -> Int
@@ -2312,6 +2381,11 @@ unifyTypes tyCons expected actual = runST $ do
     -- ==== Performance note (Optimization: shallow prune in hot path)
     -- Most unification checks only need head-normal form. Deep recursive prune
     -- is kept for final substitution freezing and binding canonicalization.
+    --
+    -- Semantics:
+    --
+    -- * Compresses variable chains and resolves bound variables one step.
+    -- * Does not recursively rebuild compound nodes unless required.
     pruneWhnf :: MUV.MVector s Int
               -> MV.MVector s (Maybe ITy)
               -> ITy
@@ -2329,6 +2403,10 @@ unifyTypes tyCons expected actual = runST $ do
               return t'
         _ -> return ty
 
+    -- | Deep prune used in non-hot paths that require fully normalized trees.
+    --
+    -- Called when freezing output substitutions and when canonicalizing merged
+    -- bindings in union operations.
     pruneDeep :: MUV.MVector s Int
               -> MV.MVector s (Maybe ITy)
               -> ITy
@@ -2354,6 +2432,14 @@ unifyTypes tyCons expected actual = runST $ do
           return (ITyApp ann ctor' args')
         _ -> return ty
 
+    -- | Bind a UF variable root to a type or union it with another variable.
+    --
+    -- Steps:
+    --
+    -- * Canonicalize the variable root.
+    -- * Prune RHS to WHNF.
+    -- * If RHS is a variable, union the sets.
+    -- * Otherwise perform occurs-check and record a root binding.
     bindVar :: MUV.MVector s Int
             -> MUV.MVector s Int
             -> MV.MVector s (Maybe ITy)
@@ -2381,6 +2467,10 @@ unifyTypes tyCons expected actual = runST $ do
                   MV.write binds root (Just ty')
                   return True
 
+    -- | Union two variable roots by rank and merge any existing bindings.
+    --
+    -- If both roots already carry concrete bindings, those bindings are
+    -- unified recursively; failure aborts the whole unification.
     unionRoots :: MUV.MVector s Int
                -> MUV.MVector s Int
                -> MV.MVector s (Maybe ITy)
@@ -2415,6 +2505,15 @@ unifyTypes tyCons expected actual = runST $ do
                   return True
                 else return False
 
+    -- | Build the final substitution map from interned UF state.
+    --
+    -- For each interned variable id:
+    --
+    -- * if its root has a concrete binding, emit that type;
+    -- * otherwise emit alias-to-root entries for non-root ids only.
+    --
+    -- This preserves the previous substitution behavior while using a linear
+    -- index walk without `Set`/`Map.keys` reconstruction overhead.
     freezeSubst :: V.Vector Identifier
                 -> MUV.MVector s Int
                 -> MUV.MVector s Int
@@ -2442,6 +2541,7 @@ unifyTypes tyCons expected actual = runST $ do
                           aliasTy = TyVar (mkAnn Nom NoSpan) rootIdent
                       in go (i + 1) (Map.insert ident aliasTy subst)
 
+    -- | Monadic `any` with short-circuiting.
     anyM :: (a -> ST s Bool) -> [a] -> ST s Bool
     anyM _ [] = return False
     anyM p (x:xs) = do
