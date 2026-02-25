@@ -418,7 +418,8 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx ctors tyParams tyCons (map fst tyCons) tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
+  let !tyConsNames = map fst tyCons
+  MkParserState fsm' ctx ctors tyParams tyCons tyConsNames tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -448,17 +449,19 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> MorphCache -- ^ Shared downs cache.
                                -> ParserState -- ^ Parser state.
 newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities =
-  MkParserState
+  let !tyConsNames = map fst tyCons
+      !arityByName = funcAritiesNameIndex funcArities
+  in MkParserState
     fsm'
     ctx
     ctors
     tyParams
     tyCons
-    (map fst tyCons)
+    tyConsNames
     tyMods
     primTypes
     funcArities
-    (funcAritiesNameIndex funcArities)
+    arityByName
 
 -- | Get the current parser state.
 getP :: KipParser ParserState -- ^ Current parser state.
@@ -501,9 +504,9 @@ registerFuncArity ident arity =
 -- overload grouping.
 funcAritiesNameIndex :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int)
 funcAritiesNameIndex =
-  M.fromListWith Set.union
-    . map (\((_, name), arities) -> (name, arities))
-    . M.toList
+  M.foldlWithKey'
+    (\acc (_, name) arities -> M.insertWith Set.union name arities acc)
+    M.empty
 
 -- | Parse an item and return it with a span.
 withSpan :: KipParser a -- ^ Parser to wrap.
@@ -782,7 +785,7 @@ estimateCandidates useCtx (ss, s) = do
             Just match -> return [match]
             Nothing -> do
               possBase <- normalizePossessive (ss, s)
-              (candidates0, filtered0) <- candidatesForWithAnalyses s parserCtx sAnalyses
+              candidates0 <- candidatesForWithAnalyses s parserCtx sAnalyses
               -- If we see a bare case suffix, synthesize candidates that are
               -- likely in-scope without relying on morphology: this helps
               -- disambiguate P3s vs Acc for forms like "varlığı".
@@ -798,7 +801,6 @@ estimateCandidates useCtx (ss, s) = do
                   -- when morphology doesn't provide a case.
                   candidates0' = addSurfaceCaseCandidate s candidates0
                   candidates0'' = ordNubAppend (ordNub candidates0') bareCaseCandidates
-                  hasCond = any (\(_, cas) -> cas == Cond) candidates0'
               -- Conditional (-sa/-se) gets special casing to avoid losing
               -- constructor matches when morphology is ambiguous.
               condExtra0 <- condCandidatesM s
@@ -854,7 +856,7 @@ estimateCandidates useCtx (ss, s) = do
                                 Just (_, analyses) -> return analyses
                                 Nothing -> upsCached stripped
                               possBase1 <- normalizePossessive (ss, stripped)
-                              (candidates1, filtered1) <- candidatesForWithAnalyses stripped parserCtx strippedAnalyses
+                              candidates1 <- candidatesForWithAnalyses stripped parserCtx strippedAnalyses
                               -- Same bare-case synthesis for the copula-stripped
                               -- variant; this keeps P3s/Acc ambiguity visible.
                               let bareCaseCandidates1 =
@@ -867,7 +869,6 @@ estimateCandidates useCtx (ss, s) = do
                                       _ -> []
                                   candidates1' = addSurfaceCaseCandidate stripped candidates1
                                   candidates1'' = ordNubAppend (ordNub candidates1') bareCaseCandidates1
-                                  hasCond1 = any (\(_, cas) -> cas == Cond) candidates1'
                               condExtra1 <- condCandidatesM stripped
                               let candidates' = ordNubAppend candidates1'' condExtra1
                                   filtered1 = filter (\(ident, _) -> ident `Set.member` parserCtx) candidates'
@@ -933,38 +934,49 @@ estimateCandidates useCtx (ss, s) = do
         _ -> return Nothing  -- Zero or multiple matches: fall through to full enumeration
       where
         collectAllMatches :: [Text] -> KipParser [(Identifier, Case)]
-        collectAllMatches [] = return []
-        collectAllMatches (analysis:rest) =
-          case getPossibleCase analysis of
-            Nothing -> collectAllMatches rest
-            Just (baseRoot, cas) -> do
-              let direct = (mods, baseRoot)
-              directMatches <- if direct `Set.member` ctx
-                then return [(direct, cas)]
-                else do
-                  let stem = stripCaseTags analysis
-                  forms <- downsCached stem
-                  p3sForms <-
-                    if "<p3s>" `T.isInfixOf` analysis && cas /= P3s
-                      then downsCached (stem <> "<p3s>")
-                      else return []
-                  let roots = ordNub (forms ++ p3sForms ++ [baseRoot])
-                      matches = filter (`Set.member` ctx) [(mods, root) | root <- roots]
-                  return [(match, cas) | match <- matches]
-              restMatches <- collectAllMatches rest
-              return (ordNub (directMatches ++ restMatches))
+        collectAllMatches xs = do
+          (_, revAcc) <- foldM collectOne (Set.empty, []) xs
+          return (reverse revAcc)
+          where
+            addUnique :: (Set.Set (Identifier, Case), [(Identifier, Case)])
+                      -> (Identifier, Case)
+                      -> (Set.Set (Identifier, Case), [(Identifier, Case)])
+            addUnique (!seen, revAcc) candidate
+              | candidate `Set.member` seen = (seen, revAcc)
+              | otherwise =
+                  let !seen' = Set.insert candidate seen
+                  in (seen', candidate : revAcc)
+            addMany :: (Set.Set (Identifier, Case), [(Identifier, Case)])
+                    -> [(Identifier, Case)]
+                    -> (Set.Set (Identifier, Case), [(Identifier, Case)])
+            addMany = foldl' addUnique
+            collectOne :: (Set.Set (Identifier, Case), [(Identifier, Case)])
+                       -> Text
+                       -> KipParser (Set.Set (Identifier, Case), [(Identifier, Case)])
+            collectOne acc analysis =
+              case getPossibleCase analysis of
+                Nothing -> return acc
+                Just (baseRoot, cas) -> do
+                  let direct = (mods, baseRoot)
+                  matches <-
+                    if direct `Set.member` ctx
+                      then return [(direct, cas)]
+                      else do
+                        let stem = stripCaseTags analysis
+                        forms <- downsCached stem
+                        p3sForms <-
+                          if "<p3s>" `T.isInfixOf` analysis && cas /= P3s
+                            then downsCached (stem <> "<p3s>")
+                            else return []
+                        let roots = ordNub (forms ++ p3sForms ++ [baseRoot])
+                            rootsInCtx = filter (`Set.member` ctx) [(mods, root) | root <- roots]
+                        return [(rootInCtx, cas) | rootInCtx <- rootsInCtx]
+                  return $! addMany acc matches
     allCases = [Nom, Acc, Dat, Gen, Loc, Abl, Ins, Cond, P3s]
-    candidatesFor :: Text -- ^ Surface form.
-                  -> Set.Set Identifier -- ^ Context identifiers.
-                  -> KipParser ([(Identifier, Case)], [(Identifier, Case)]) -- ^ All candidates and context-filtered ones.
-    candidatesFor surface ctx = do
-      morphAnalyses <- upsCached surface
-      candidatesForWithAnalyses surface ctx morphAnalyses
-
     candidatesForWithAnalyses :: Text -- ^ Surface form.
                               -> Set.Set Identifier -- ^ Context identifiers.
                               -> [Text] -- ^ Morphology analyses.
-                              -> KipParser ([(Identifier, Case)], [(Identifier, Case)]) -- ^ All candidates and context-filtered ones.
+                              -> KipParser [(Identifier, Case)] -- ^ Candidate identifiers.
     candidatesForWithAnalyses _surface ctx morphAnalyses = do
       let stems = map stripCaseTags morphAnalyses
           uniqueStems = ordNub stems
@@ -1030,8 +1042,7 @@ estimateCandidates useCtx (ss, s) = do
                 let (p3s, rest) = partition (\(_, cas) -> cas == P3s) candidatesDedup
                 in if null p3s then candidatesDedup else p3s ++ rest
               else candidatesDedup
-          filtered = filter (\(ident, _) -> ident `Set.member` ctx) candidates
-      return (candidates, filtered)
+      return candidates
     -- | Conditional suffix candidates are generated outside morphology to
     -- keep "ise" variants available even when analyses are missing.
     condCandidatesM :: Text -- ^ Surface form.
@@ -2825,11 +2836,11 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       where
         hasRepeatedArgPattern :: [Identifier] -> Exp Ann -> Bool
         hasRepeatedArgPattern names expItem =
-          let names' = argNameVariants names
-              inNames ident = ident `elem` names'
+          let namesSet = Set.fromList (argNameVariants names)
+              inNames ident = ident `Set.member` namesSet
           in case expItem of
             Var _ (mods, name) _ ->
-              (inNames (mods, name) || any (\m -> ([], m) `elem` names') mods) &&
+              (inNames (mods, name) || any (\m -> ([], m) `Set.member` namesSet) mods) &&
               hasCondSuffix name
             App _ fn (Var _ n _ : _) | isCondFn fn -> inNames n
             _ -> False
@@ -2873,37 +2884,37 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     -- duplicating parser setup/allocation for each call site.
     checkRepeatedArgClauseStart :: [Identifier] -> KipParser ()
     checkRepeatedArgClauseStart names = do
-      startsRepeated <- clauseStartsWithRepeatedArg names
+      let !nameVariants = argNameVariants names
+          !nameVariantSet = Set.fromList nameVariants
+          !nameTokenSet = Set.fromList (map (T.toLower . identText) nameVariants)
+      startsRepeated <- clauseStartsWithRepeatedArg nameTokenSet
       when startsRepeated (customFailure ErrPatternArgNameRepeated)
-      mRepeated <- optional (try (lookAhead (repeatedArgPattern names)))
+      mRepeated <- optional (try (lookAhead (repeatedArgPattern nameVariantSet)))
       when (isJust mRepeated) (customFailure ErrPatternArgNameRepeated)
-      let names' = argNameVariants names
       mFirst <- optional (try (lookAhead (lexeme identifier)))
-      when (mFirst `elem` map Just names') (customFailure ErrPatternArgNameRepeated)
+      when (maybe False (`Set.member` nameVariantSet) mFirst) (customFailure ErrPatternArgNameRepeated)
     -- | Check if the next clause starts with a repeated argument name.
     -- This is a lightweight textual lookahead to catch "bu yanlışsa"
     -- style patterns before the main expression parser backtracks.
-    clauseStartsWithRepeatedArg :: [Identifier] -> KipParser Bool
-    clauseStartsWithRepeatedArg names = do
+    clauseStartsWithRepeatedArg :: Set.Set Text -> KipParser Bool
+    clauseStartsWithRepeatedArg nameTokens = do
       input <- getInput
       let tokens = take 2 (T.words (T.dropWhile isSpace input))
           stripPunct = T.dropWhileEnd (\c -> c == ',' || c == ';' || c == '.')
-          nameTokens = map (T.toLower . identText) (argNameVariants names)
       case tokens of
         (t1:t2:_) ->
           let t1' = T.toLower (stripPunct t1)
               t2' = T.toLower (stripPunct t2)
-          in return (t1' `elem` nameTokens && hasCondSuffix t2')
+          in return (t1' `Set.member` nameTokens && hasCondSuffix t2')
         _ -> return False
     -- | Detect repeated argument names in conditional patterns.
     -- This works on parsed identifiers, so it is robust to whitespace
     -- and punctuation variations in clause heads.
-    repeatedArgPattern :: [Identifier] -> KipParser ()
-    repeatedArgPattern names = do
-      let names' = argNameVariants names
+    repeatedArgPattern :: Set.Set Identifier -> KipParser ()
+    repeatedArgPattern nameSet = do
       ws
       (firstIdent, _) <- withSpan identifierNotKeyword
-      guard (firstIdent `elem` names')
+      guard (firstIdent `Set.member` nameSet)
       ws
       (secondIdent, _) <- withSpan identifierNotKeyword
       let (_, secondName) = secondIdent
@@ -2911,7 +2922,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     -- | Fail fast on repeated argument names in clause heads.
     repeatedArgClauseError :: [Identifier] -> KipParser a
     repeatedArgClauseError names = do
-      _ <- repeatedArgPattern names
+      _ <- repeatedArgPattern (Set.fromList (argNameVariants names))
       customFailure ErrPatternArgNameRepeated
     -- | Parse an expression for pattern contexts (no match parsing).
     -- We disable both match and sequence parsing so patterns don't
