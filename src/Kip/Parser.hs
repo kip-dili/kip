@@ -1606,10 +1606,10 @@ parseExpWithCtx' useCtx allowMatch =
     atom :: KipParser (Exp Ann) -- ^ Parsed atomic expression.
     atom =
       (if allowMatch then try matchExpr else empty)
-      <|> try listLiteral
-      <|> try charLiteral
-      <|> try stringLiteral
-      <|> try numberLiteral
+      <|> listLiteral
+      <|> charLiteral
+      <|> stringLiteral
+      <|> numberLiteral
       <|> try var
       <|> parens (parseExpWithCtx' useCtx allowMatch)
     -- | Parse a list literal like [1, 2, 3]'ü.
@@ -1786,7 +1786,7 @@ parseExpWithCtx' useCtx allowMatch =
     seqExp :: KipParser (Exp Ann) -- ^ Parsed sequence expression.
     seqExp = do
       e1 <- ascribeExp <|> bindExp <|> app <|> atom
-      mcomma <- optional (try (lookAhead (lexeme (char ','))))
+      mcomma <- optional (lookAhead (lexeme (char ',')))
       case mcomma of
         Nothing -> do
           failOnUnknownWordAfterExpr
@@ -1821,7 +1821,7 @@ parseExpWithCtx' useCtx allowMatch =
 
         failOnUnknownWordAfterExpr :: KipParser ()
         failOnUnknownWordAfterExpr = do
-          mWord <- optional (try (lookAhead parseWordAfterExpr))
+          mWord <- optional (lookAhead parseWordAfterExpr)
           case mWord of
             Nothing -> return ()
             Just (w, sp) -> do
@@ -2262,7 +2262,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       return (rawIdent, mkAnn cas sp)
     -- | Parse constructors without arguments.
     ctor :: KipParser (Ctor Ann) -- ^ Parsed constructor.
-    ctor = try ((, []) <$> ctorIdent)
+    ctor = (, []) <$> ctorIdent
     -- | Parse "ya" separator.
     ya :: KipParser Text -- ^ Parsed separator token.
     ya = lexeme (string "ya")
@@ -2497,7 +2497,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
         parseSep :: KipParser Bool -- ^ True when the separator is "ya da".
         parseSep = do
           _ <- ya
-          mda <- optional (try (lookAhead (string "da")))
+          mda <- optional (lookAhead (string "da"))
           case mda of
             Just _ -> da >> return True
             Nothing -> return False
@@ -2547,7 +2547,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           domTy <- try parseTypeWithCase <|> parseTypeLoose
           ws
           imgTy <- try parseTypeWithCase <|> parseTypeLoose
-          notFollowedBy (try (ws *> identifierNotKeyword))
+          notFollowedBy (ws *> identifierNotKeyword)
           let domCase = annCase (annTy domTy)
               imgCase = annCase (annTy imgTy)
               domLooksArrow = domCase == Gen
