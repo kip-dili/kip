@@ -222,6 +222,28 @@ TRmorph lookups are expensive, so we cache:
 -}
 type MorphCache = HT.BasicHashTable Text [Text]
 
+{-# INLINE stripSuffixAny #-}
+stripSuffixAny :: [Text] -> Text -> Maybe Text
+stripSuffixAny suffixes txt = go suffixes
+  where
+    go [] = Nothing
+    go (s:ss) =
+      case T.stripSuffix s txt of
+        Just base | not (T.null base) -> Just base
+        _ -> go ss
+
+condSuffixesTxt :: [Text]
+condSuffixesTxt = ["ysa", "yse", "sa", "se"]
+
+ipSuffixesTxt :: [Text]
+ipSuffixesTxt = ["ip", "ıp", "up", "üp"]
+
+copulaSuffixesTxt :: [Text]
+copulaSuffixesTxt = ["dir","dır","dur","dür","tir","tır","tur","tür"]
+
+genSuffixesNoApostropheTxt :: [Text]
+genSuffixesNoApostropheTxt = ["nın", "nin", "nun", "nün", "ın", "in", "un", "ün"]
+
 -- | Memoized possessive normalization roots for the current process.
 --
 -- ==== Performance note (Optimization: morphology normalization memo)
@@ -279,6 +301,9 @@ data ParserState =
     , parserCtors :: ![Identifier]
     , parserTyParams :: ![Identifier]
     , parserTyCons :: ![(Identifier, Int)]
+    -- | Cached type-constructor names to avoid rebuilding @map fst parserTyCons@
+    -- on hot lookup paths.
+    , parserTyConsNames :: ![Identifier]
     , parserTyMods :: ![(Identifier, [Identifier])]
     , parserPrimTypes :: ![Identifier]
     , parserFuncArities :: !(M.Map Identifier (Set.Set Int))
@@ -372,7 +397,7 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  MkParserState fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
+  MkParserState fsm' ctx ctors tyParams tyCons (map fst tyCons) tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -381,7 +406,7 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
 newParserStateWithCaches fsm' =
-  MkParserState fsm' Set.empty [] [] [] [] [] M.empty M.empty M.empty
+  MkParserState fsm' Set.empty [] [] [] [] [] [] M.empty M.empty M.empty
 
 -- | Create a parser state with context and shared caches.
 --
@@ -408,6 +433,7 @@ newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes f
     ctors
     tyParams
     tyCons
+    (map fst tyCons)
     tyMods
     primTypes
     funcArities
@@ -1028,56 +1054,28 @@ estimateCandidates useCtx (ss, s) = do
     surfaceCaseFromSuffix :: Text -- ^ Surface form.
                           -> Maybe (Text, Case) -- ^ Base and case.
     surfaceCaseFromSuffix surface =
-      let genSuffixes = ["nın", "nin", "nun", "nün", "ın", "in", "un", "ün"]
-          stripOne suf = do
-            base0 <- T.stripSuffix suf surface
+      let stripGen = do
+            base0 <- stripSuffixAny genSuffixesNoApostropheTxt surface
             let base = T.dropWhileEnd (== '\'') base0
             if T.null base then Nothing else Just (base, Gen)
           allow =
             T.any (== '\'') surface ||
-            maybe False ((<= 2) . T.length . fst) (foldr ((<|>) . stripOne) Nothing genSuffixes)
-          firstMatch = foldr ((<|>) . stripOne) Nothing genSuffixes
-      in if allow then firstMatch else Nothing
+            maybe False ((<= 2) . T.length . fst) stripGen
+      in if allow then stripGen else Nothing
     stripCondSuffix :: Text -- ^ Surface form.
                     -> Maybe Text -- ^ Stripped stem.
-    stripCondSuffix txt =
-      let suffixes = ["ysa", "yse", "sa", "se"]
-          match = find (`T.isSuffixOf` txt) suffixes
-      in case match of
-           Nothing -> Nothing
-           Just suff ->
-             let len = T.length suff
-             in if T.length txt > len
-                  then Just (T.take (T.length txt - len) txt)
-                  else Nothing
+    stripCondSuffix = stripSuffixAny condSuffixesTxt
     -- | Strip ip-converb suffixes like \"-ip\" from surface forms.
     stripIpSuffix :: Text -- ^ Surface form.
                   -> Maybe Text -- ^ Stripped stem.
-    stripIpSuffix txt =
-      let suffixes = ["ip", "ıp", "up", "üp"]
-          match = find (`T.isSuffixOf` txt) suffixes
-      in case match of
-           Nothing -> Nothing
-           Just suff ->
-             let len = T.length suff
-             in if T.length txt > len
-                  then Just (T.take (T.length txt - len) txt)
-                  else Nothing
+    stripIpSuffix = stripSuffixAny ipSuffixesTxt
 
 -- | Strip copula suffixes like \"-dir\" to recover the base noun.
+{-# INLINE stripCopulaSuffix #-}
 stripCopulaSuffix :: Text -- ^ Surface form.
                   -> Maybe Text -- ^ Stem without copula suffix.
 stripCopulaSuffix txt =
-  let lowerTxt = T.toLower txt
-      suffixes = ["dir","dır","dur","dür","tir","tır","tur","tür"]
-      match = find (`T.isSuffixOf` lowerTxt) suffixes
-  in case match of
-       Nothing -> Nothing
-       Just suff ->
-         let len = T.length suff
-         in if T.length txt > len
-              then Just (T.take (T.length txt - len) txt)
-              else Nothing
+  stripSuffixAny copulaSuffixesTxt (T.toLower txt)
 
 -- | Strip case tags from a morphology analysis string.
 -- INLINE reduces overhead in tight loops.
@@ -1219,8 +1217,8 @@ Current approach: Try exact match, then morphology with base-form matching.
 resolveTypeCandidatePreferCtx :: Identifier -- ^ Surface type identifier.
                               -> KipParser (Identifier, Case) -- ^ Resolved type identifier and case.
 resolveTypeCandidatePreferCtx ident = do
-  MkParserState{parserTyCons, parserTyParams, parserPrimTypes} <- getP
-  let tyNames = map fst parserTyCons ++ parserTyParams ++ parserPrimTypes
+  MkParserState{parserTyConsNames, parserTyParams, parserPrimTypes} <- getP
+  let tyNames = parserTyConsNames ++ parserTyParams ++ parserPrimTypes
   let normalizeCandidate (name, cas) = do
         base <- normalizeTypeHead name
         if base `elem` tyNames
@@ -1292,8 +1290,8 @@ normalizeTypeHead ident@(mods, word) =
 resolveTypeCandidateLoose :: Identifier -- ^ Surface type identifier.
                           -> KipParser (Identifier, Case) -- ^ Resolved type identifier and case.
 resolveTypeCandidateLoose ident = do
-  MkParserState{parserTyCons, parserTyParams, parserPrimTypes} <- getP
-  let tyNames = map fst parserTyCons ++ parserTyParams ++ parserPrimTypes
+  MkParserState{parserTyConsNames, parserTyParams, parserPrimTypes} <- getP
+  let tyNames = parserTyConsNames ++ parserTyParams ++ parserPrimTypes
       -- Check if identifier matches a primitive type pattern
       isPrimType base = isIntType base || isFloatType base || isStringType base || isCharType base
   -- First try morphology analysis to extract case if present
@@ -1710,8 +1708,8 @@ parseExpWithCtx' useCtx allowMatch =
           (rawIdent, sp'') <- withSpan identifierNotKeyword
           candidates <- estimateCandidates False rawIdent
           let ann'' = mkAnn (pickCase False candidates) sp''
-          MkParserState{parserPrimTypes, parserTyCons} <- getP
-          let tyNames = map fst parserTyCons
+          MkParserState{parserPrimTypes, parserTyConsNames} <- getP
+          let tyNames = parserTyConsNames
               isPrim ident = ident `elem` parserPrimTypes
               knownCandidate = find (`elem` tyNames) (map fst candidates)
               resolvedName = fromMaybe rawIdent knownCandidate
@@ -1769,8 +1767,8 @@ parseExpWithCtx' useCtx allowMatch =
           (rawIdent, sp') <- withSpan identifierNotKeyword
           candidates <- estimateCandidates False rawIdent
           let ann' = mkAnn (pickCase False candidates) sp'
-          MkParserState{parserPrimTypes, parserTyCons} <- getP
-          let tyNames = map fst parserTyCons
+          MkParserState{parserPrimTypes, parserTyConsNames} <- getP
+          let tyNames = parserTyConsNames
               isPrim ident = ident `elem` parserPrimTypes
               knownCandidate = find (`elem` tyNames) (map fst candidates)
               resolvedName = fromMaybe rawIdent knownCandidate
@@ -1870,16 +1868,7 @@ parseExpWithCtx' useCtx allowMatch =
               case expF of
                 Var _ (_, name) _ -> stripCondSuffix name
                 _ -> Nothing
-            stripCondSuffix txt =
-              let suffixes = ["ysa", "yse", "sa", "se"]
-                  match = find (`T.isSuffixOf` txt) suffixes
-              in case match of
-                   Nothing -> Nothing
-                   Just suff ->
-                     let len = T.length suff
-                     in if T.length txt > len
-                          then Just (T.take (T.length txt - len) txt)
-                          else Nothing
+            stripCondSuffix = stripSuffixAny condSuffixesTxt
             dropCondSuffixName :: Exp Ann -> Text -> Identifier
             dropCondSuffixName expF base =
               case expF of
@@ -2098,8 +2087,8 @@ parseExpWithCtx' useCtx allowMatch =
                      -> Exp Ann -- ^ Candidate type expression.
                      -> KipParser (Maybe (Exp Ann)) -- ^ Casted expression if possible.
     tryApplyTypeCase x y = do
-      MkParserState{parserTyParams, parserTyCons, parserPrimTypes, parserCtx} <- getP
-      let tyNames = map fst parserTyCons ++ parserTyParams ++ parserPrimTypes
+      MkParserState{parserTyParams, parserTyConsNames, parserPrimTypes, parserCtx} <- getP
+      let tyNames = parserTyConsNames ++ parserTyParams ++ parserPrimTypes
           preferCase :: [(Identifier, Case)] -- ^ Candidate identifiers.
                      -> Case -- ^ Preferred case.
                      -> [(Identifier, Case)] -- ^ Filtered candidates.
@@ -2281,6 +2270,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       period
       modifyP (\ps -> ps { parserCtx = Set.insert name (parserCtx ps)
                          , parserTyCons = (name, 0) : parserTyCons ps
+                         , parserTyConsNames = name : parserTyConsNames ps
                          , parserPrimTypes = name : parserPrimTypes ps
                          })
       return (PrimType name)
@@ -2360,6 +2350,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       modifyP (\ps -> ps { parserCtx = Set.insert n (Set.fromList paramIdents `Set.union` parserCtx ps)
                              , parserTyParams = paramIdents ++ parserTyParams ps
                              , parserTyCons = (n, length params) : parserTyCons ps
+                             , parserTyConsNames = n : parserTyConsNames ps
                              , parserTyMods =
                                  case mods of
                                    [] -> parserTyMods ps
@@ -2566,8 +2557,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             case candidates of
               (ident, _):_ -> ident
               [] -> rawIdent
-      MkParserState{parserPrimTypes, parserTyCons} <- getP
-      let tyNames = map fst parserTyCons
+      MkParserState{parserPrimTypes, parserTyConsNames} <- getP
+      let tyNames = parserTyConsNames
       -- Check if it's a known type directly
       case candidates of
         (ident, _):_
@@ -2649,7 +2640,10 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           st <- getP
           let argNames = map argIdent args
           putP (st {parserCtx = Set.insert fname (Set.fromList argNames `Set.union` parserCtx st)})
-          prim <- optional (try (lexeme (string "yerleşiktir") *> period))
+          hasPrim <- option False (lookAhead (lexeme (string "yerleşiktir") $> True))
+          prim <- if hasPrim
+            then Just <$> (lexeme (string "yerleşiktir") *> period)
+            else return Nothing
           let retTy = fromMaybe (TyString (mkAnn Nom NoSpan)) mRetTy
           case prim of
             Just _ -> do
@@ -2987,8 +2981,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     parseTypeWithCase :: KipParser (Ty Ann) -- ^ Parsed type.
     parseTypeWithCase =
       try (parens parseTypeWithCase) <|> try parseModifiedType <|> do
-        MkParserState{parserTyParams, parserTyCons, parserPrimTypes} <- getP
-        let tyNames = map fst parserTyCons
+        MkParserState{parserTyParams, parserTyCons, parserTyConsNames, parserPrimTypes} <- getP
+        let tyNames = parserTyConsNames
             primNames = parserPrimTypes
             typeScope = tyNames ++ parserTyParams ++ primNames
         let
@@ -3231,8 +3225,8 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       (firstIdent, sp1) <- withSpan identifierNotKeyword
       ws
       (secondIdent, sp2) <- withSpan identifierNotKeyword
-      MkParserState{parserTyCons} <- getP
-      let tyNames = map fst parserTyCons
+      MkParserState{parserTyConsNames} <- getP
+      let tyNames = parserTyConsNames
           prefix = fst firstIdent ++ [snd firstIdent]
           identMatches :: Identifier -- ^ Candidate identifier.
                        -> Identifier -- ^ Target identifier.
@@ -3492,34 +3486,29 @@ parseCharToken = do
   return (c, cas)
 
 -- | Map a case suffix to a grammatical case.
+{-# INLINE stringCaseFromSuffix #-}
 stringCaseFromSuffix :: Text -- ^ Suffix string.
                      -> Case -- ^ Case enum.
 stringCaseFromSuffix suff =
   case T.toLower suff of
     s
-      | s `elem` accSuffixes -> Acc
-      | s `elem` datSuffixes -> Dat
-      | s `elem` locSuffixes -> Loc
-      | s `elem` ablSuffixes -> Abl
-      | s `elem` genSuffixes -> Gen
-      | s `elem` insSuffixes -> Ins
-      | s `elem` condSuffixes -> Cond
+      | s `elem` accSuffixesTxt -> Acc
+      | s `elem` datSuffixesTxt -> Dat
+      | s `elem` locSuffixesTxt -> Loc
+      | s `elem` ablSuffixesTxt -> Abl
+      | s `elem` genSuffixesTxt -> Gen
+      | s `elem` insSuffixesTxt -> Ins
+      | s `elem` condCaseSuffixesTxt -> Cond
       | otherwise -> Nom
-  where
-    -- | Accusative suffixes.
-    accSuffixes = ["i","ı","u","ü","yi","yı","yu","yü"]
-    -- | Dative suffixes.
-    datSuffixes = ["e","a","ye","ya"]
-    -- | Locative suffixes.
-    locSuffixes = ["de","da","te","ta"]
-    -- | Ablative suffixes.
-    ablSuffixes = ["den","dan","ten","tan"]
-    -- | Genitive suffixes.
-    genSuffixes = ["in","ın","un","ün","nin","nın","nun","nün"]
-    -- | Instrumental suffixes.
-    insSuffixes = ["le","la","yle","yla"]
-    -- | Conditional suffixes.
-    condSuffixes = ["se","sa"]
+
+accSuffixesTxt, datSuffixesTxt, locSuffixesTxt, ablSuffixesTxt, genSuffixesTxt, insSuffixesTxt, condCaseSuffixesTxt :: [Text]
+accSuffixesTxt = ["i","ı","u","ü","yi","yı","yu","yü"]
+datSuffixesTxt = ["e","a","ye","ya"]
+locSuffixesTxt = ["de","da","te","ta"]
+ablSuffixesTxt = ["den","dan","ten","tan"]
+genSuffixesTxt = ["in","ın","un","ün","nin","nın","nun","nün"]
+insSuffixesTxt = ["le","la","yle","yla"]
+condCaseSuffixesTxt = ["se","sa"]
 
 -- | Prefer surface genitive over nominative when inflection is explicit.
 preferSurfaceCase :: Identifier -- ^ Surface identifier.
@@ -3531,12 +3520,13 @@ preferSurfaceCase ident cas =
     _ -> cas
 
 -- | Infer a case hint from a surface identifier.
+{-# INLINE surfaceCaseHint #-}
 surfaceCaseHint :: Identifier -- ^ Surface identifier.
                 -> Maybe Case -- ^ Suggested case.
 surfaceCaseHint (_, word) =
-  let lowerWord = T.toLower word
-      genSuffixes = ["nın", "nin", "nun", "nün", "ın", "in", "un", "ün"]
-  in if any (`T.isSuffixOf` lowerWord) genSuffixes then Just Gen else Nothing
+  if isJust (stripSuffixAny genSuffixesNoApostropheTxt (T.toLower word))
+    then Just Gen
+    else Nothing
 
 -- | Strip a bare case suffix (no apostrophe) from an identifier.
 -- This is used to detect surface-only case clues in ambiguous forms
@@ -3555,27 +3545,31 @@ stripBareCaseSuffix (mods, word) =
         , ("i", Acc), ("ı", Acc), ("u", Acc), ("ü", Acc)
         ]
       tryStrip (suf, cas) =
-        case T.stripSuffix (T.pack suf) word of
+        case T.stripSuffix suf word of
           Just base | T.length base > 1 -> Just ((mods, base), cas)
           _ -> Nothing
   in foldr (\s acc -> acc <|> tryStrip s) Nothing suffixes
 
 -- | Check whether an identifier names the integer type.
+{-# INLINE isIntType #-}
 isIntType :: Identifier -- ^ Identifier to inspect.
           -> Bool -- ^ True when identifier names the integer type.
 isIntType (xs, x) = xs == [T.pack "tam"] && x == T.pack "sayı"
 
 -- | Check whether an identifier names the floating-point type.
+{-# INLINE isFloatType #-}
 isFloatType :: Identifier -- ^ Identifier to inspect.
             -> Bool -- ^ True when identifier names the floating-point type.
 isFloatType (xs, x) = xs == [T.pack "ondalık"] && x == T.pack "sayı"
 
 -- | Check whether an identifier names the string type.
+{-# INLINE isStringType #-}
 isStringType :: Identifier -- ^ Identifier to inspect.
              -> Bool -- ^ True when identifier names the string type.
 isStringType (xs, x) = null xs && x == T.pack "dizge"
 
 -- | Check whether an identifier names the character type.
+{-# INLINE isCharType #-}
 isCharType :: Identifier -- ^ Identifier to inspect.
            -> Bool -- ^ True when identifier names the character type.
 isCharType (xs, x) = null xs && x == T.pack "karakter"
@@ -3668,16 +3662,7 @@ expToPat allowScrutinee argNames e = do
           case mListPat of
             Just pat -> return (Just pat)
             Nothing -> return Nothing
-    stripCondSuffix txt =
-      let suffixes = ["ysa", "yse", "sa", "se"]
-          match = find (`T.isSuffixOf` txt) suffixes
-      in case match of
-           Nothing -> Nothing
-           Just suff ->
-             let len = T.length suff
-             in if T.length txt > len
-                  then Just (T.take (T.length txt - len) txt)
-                  else Nothing
+    stripCondSuffix = stripSuffixAny condSuffixesTxt
     resolveCondCtorName :: Identifier -> KipParser Identifier
     resolveCondCtorName ident@(mods, surface) = do
       MkParserState{parserCtors} <- getP
@@ -3847,16 +3832,7 @@ selectCondNameInCtors ctors candidates =
     stripCondSuffixIdent (mods, word) = do
       base <- stripCondSuffix word
       return (mods, base)
-    stripCondSuffix txt =
-      let suffixes = ["ysa", "yse", "sa", "se"]
-          match = find (`T.isSuffixOf` txt) suffixes
-      in case match of
-           Nothing -> Nothing
-           Just suff ->
-             let len = T.length suff
-             in if T.length txt > len
-                  then Just (T.take (T.length txt - len) txt)
-                  else Nothing
+    stripCondSuffix = stripSuffixAny condSuffixesTxt
 
 -- | Select a conditional constructor name from candidates.
 selectCondName :: Set.Set Identifier -- ^ Context identifiers.
@@ -3888,16 +3864,7 @@ selectCondName ctx candidates =
     stripCondSuffixIdent (mods, word) = do
       base <- stripCondSuffix word
       return (mods, base)
-    stripCondSuffix txt =
-      let suffixes = ["ysa", "yse", "sa", "se"]
-          match = find (`T.isSuffixOf` txt) suffixes
-      in case match of
-           Nothing -> Nothing
-           Just suff ->
-             let len = T.length suff
-             in if T.length txt > len
-                  then Just (T.take (T.length txt - len) txt)
-                  else Nothing
+    stripCondSuffix = stripSuffixAny condSuffixesTxt
 
 -- | Convert an expression into a pattern variable.
 expToPatVar :: Exp Ann -- ^ Expression to convert.
@@ -4243,8 +4210,7 @@ findRepeatedPatternBinderText mPath src =
           | T.null rest -> txt
           | otherwise -> base
     stripCaseSuffix txt =
-      fromMaybe txt
-        (find (not . T.null) (mapMaybe (`T.stripSuffix` txt) suffixes))
+      fromMaybe txt (stripSuffixAny suffixes txt)
     isWordChar c = isLetter c || c == '\'' || c == '-'
     wordsWithCols :: Text -> [(Text, Int)]
     wordsWithCols line = go 0 (T.unpack line)
