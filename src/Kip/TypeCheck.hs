@@ -106,16 +106,18 @@ import Data.Word (Word8)
 import Kip.AST
 import qualified Kip.Primitive as Prim
 
-import Control.Monad (unless, when, forM_, guard)
+import Control.Monad (unless, when, forM_, guard, foldM)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
 import Control.Monad.IO.Class
+import Control.Monad.ST (ST, runST)
 import Data.List (find, foldl', intersect, nub, zipWith4)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust, maybeToList, listToMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntSet as IntSet
+import Data.STRef (STRef, modifySTRef', newSTRef, readSTRef, writeSTRef)
 import System.FilePath (FilePath)
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -2093,92 +2095,255 @@ isCharIdent (mods, name) = null mods && name == T.pack "karakter"
 -- | Unify expected and actual types to produce substitutions.
 type Subst = Map.Map Identifier (Ty Ann)
 
-occursInType :: Identifier -> Ty Ann -> Bool
-occursInType needle = go
-  where
-    go ty =
-      case ty of
-        TyVar _ ident -> ident == needle
-        Arr _ d i -> go d || go i
-        TyApp _ ctor args -> go ctor || any go args
-        _ -> False
-
 unifyTypes :: [(Identifier, Int)] -- ^ Type constructor arities.
            -> [Ty Ann] -- ^ Expected types.
            -> [Ty Ann] -- ^ Actual types.
            -> Maybe Subst -- ^ Substitution when unification succeeds.
-unifyTypes tyCons expected actual =
-  foldl' go (Just Map.empty) (zip expected actual)
+unifyTypes tyCons expected actual = runST $ do
+  parentRef <- newSTRef Map.empty
+  rankRef <- newSTRef Map.empty
+  bindRef <- newSTRef Map.empty
+  let normalizedPairs = zip (map (normalizeTy tyCons) expected) (map (normalizeTy tyCons) actual)
+  ok <- unifyPairs parentRef rankRef bindRef normalizedPairs
+  if not ok
+    then return Nothing
+    else Just <$> freezeSubst parentRef rankRef bindRef
   where
-    -- | Fold step for unification.
-    go :: Maybe Subst -- ^ Current substitution.
-       -> (Ty Ann, Ty Ann) -- ^ Expected and actual types.
-       -> Maybe Subst -- ^ Updated substitution.
-    go Nothing _ = Nothing
-    go (Just subst) (e, a) =
-      unifyOne subst (normalizeTy tyCons e) (normalizeTy tyCons a)
+    unifyPairs :: STRef s (Map.Map Identifier Identifier)
+               -> STRef s (Map.Map Identifier Int)
+               -> STRef s (Map.Map Identifier (Ty Ann))
+               -> [(Ty Ann, Ty Ann)]
+               -> ST s Bool
+    unifyPairs _ _ _ [] = return True
+    unifyPairs parentRef rankRef bindRef ((e, a):rest) = do
+      ok <- unifyOne parentRef rankRef bindRef e a
+      if ok then unifyPairs parentRef rankRef bindRef rest else return False
 
-    -- | Unify a single expected/actual pair.
-    unifyOne :: Subst -- ^ Current substitution.
-             -> Ty Ann -- ^ Expected type.
-             -> Ty Ann -- ^ Actual type.
-             -> Maybe Subst -- ^ Updated substitution.
-    unifyOne subst e a =
+    unifyOne :: STRef s (Map.Map Identifier Identifier)
+             -> STRef s (Map.Map Identifier Int)
+             -> STRef s (Map.Map Identifier (Ty Ann))
+             -> Ty Ann
+             -> Ty Ann
+             -> ST s Bool
+    unifyOne parentRef rankRef bindRef expectedTy actualTy = do
+      e <- pruneTyWithRank parentRef rankRef bindRef expectedTy
+      a <- pruneTyWithRank parentRef rankRef bindRef actualTy
       case e of
         TyInt _ ->
           case a of
-            TyInt _ -> Just subst
-            _ -> Nothing
+            TyInt _ -> return True
+            _ -> return False
         TyFloat _ ->
           case a of
-            TyFloat _ -> Just subst
-            _ -> Nothing
+            TyFloat _ -> return True
+            _ -> return False
         TyVar _ name ->
-          case Map.lookup name subst of
-            Just bound ->
-              if tyEq tyCons bound a
-                then Just subst
-                else Nothing
-            Nothing ->
-              case a of
-                TyVar _ name' | name == name' -> Just subst
-                Arr {} -> Nothing  -- Type variables cannot unify with function types
-                _ ->
-                  if occursInType name a
-                    then Nothing
-                    else
-                      let subst' = Map.insert name a subst
-                      in Just subst'
+          case a of
+            Arr {} -> return False
+            _ -> bindVar parentRef rankRef bindRef name a
         TySkolem _ name ->
           case a of
-            TySkolem _ name' | name == name' -> Just subst
-            TyVar {} -> Just subst
-            _ -> Nothing
+            TySkolem _ name' -> return (name == name')
+            TyVar {} -> return True
+            _ -> return False
         TyInd _ n1 ->
           case a of
-            TyInd _ n2 | n1 == n2 -> Just subst
-            _ -> Nothing
+            TyInd _ n2 -> return (n1 == n2)
+            _ -> return False
         TyString _ ->
           case a of
-            TyString _ -> Just subst
-            _ -> Nothing
+            TyString _ -> return True
+            _ -> return False
         TyChar _ ->
           case a of
-            TyChar _ -> Just subst
-            _ -> Nothing
+            TyChar _ -> return True
+            _ -> return False
         Arr _ d1 i1 ->
           case a of
             Arr _ d2 i2 -> do
-              subst' <- unifyOne subst d1 d2
-              unifyOne subst' i1 i2
-            _ -> Nothing
+              ok <- unifyOne parentRef rankRef bindRef d1 d2
+              if ok then unifyOne parentRef rankRef bindRef i1 i2 else return False
+            _ -> return False
         TyApp _ c1 as1 ->
           case a of
             TyApp _ c2 as2
               | length as1 == length as2 -> do
-                  subst' <- unifyOne subst c1 c2
-                  foldl' go (Just subst') (zip as1 as2)
-            _ -> Nothing
+                  okHead <- unifyOne parentRef rankRef bindRef c1 c2
+                  if not okHead
+                    then return False
+                    else unifyPairs parentRef rankRef bindRef (zip as1 as2)
+            _ -> return False
+
+    ensureVar :: STRef s (Map.Map Identifier Identifier)
+              -> STRef s (Map.Map Identifier Int)
+              -> Identifier
+              -> ST s ()
+    ensureVar parentRef rankRef ident = do
+      parent <- readSTRef parentRef
+      case Map.lookup ident parent of
+        Just _ -> return ()
+        Nothing -> do
+          modifySTRef' parentRef (Map.insert ident ident)
+          modifySTRef' rankRef (Map.insert ident 0)
+
+    findRoot :: STRef s (Map.Map Identifier Identifier)
+             -> STRef s (Map.Map Identifier Int)
+             -> Identifier
+             -> ST s Identifier
+    findRoot parentRef rankRef ident = do
+      ensureVar parentRef rankRef ident
+      parent <- readSTRef parentRef
+      let parentIdent = fromMaybe ident (Map.lookup ident parent)
+      if parentIdent == ident
+        then return ident
+        else do
+          root <- findRoot parentRef rankRef parentIdent
+          modifySTRef' parentRef (Map.insert ident root)
+          return root
+
+    occursIn :: STRef s (Map.Map Identifier Identifier)
+             -> STRef s (Map.Map Identifier Int)
+             -> STRef s (Map.Map Identifier (Ty Ann))
+             -> Identifier
+             -> Ty Ann
+             -> ST s Bool
+    occursIn parentRef rankRef bindRef needle ty = do
+      ty' <- pruneTyWithRank parentRef rankRef bindRef ty
+      case ty' of
+        TyVar _ ident -> do
+          root <- findRoot parentRef rankRef ident
+          return (root == needle)
+        Arr _ d i -> do
+          od <- occursIn parentRef rankRef bindRef needle d
+          if od then return True else occursIn parentRef rankRef bindRef needle i
+        TyApp _ ctor args -> do
+          oc <- occursIn parentRef rankRef bindRef needle ctor
+          if oc then return True else anyM (occursIn parentRef rankRef bindRef needle) args
+        _ -> return False
+
+    pruneTyWithRank :: STRef s (Map.Map Identifier Identifier)
+                    -> STRef s (Map.Map Identifier Int)
+                    -> STRef s (Map.Map Identifier (Ty Ann))
+                    -> Ty Ann
+                    -> ST s (Ty Ann)
+    pruneTyWithRank parentRef rankRef bindRef ty =
+      case ty of
+        TyVar ann ident -> do
+          root <- findRoot parentRef rankRef ident
+          bindings <- readSTRef bindRef
+          case Map.lookup root bindings of
+            Nothing -> return (TyVar ann root)
+            Just bound -> do
+              bound' <- pruneTyWithRank parentRef rankRef bindRef bound
+              modifySTRef' bindRef (Map.insert root bound')
+              return bound'
+        Arr ann d i -> do
+          d' <- pruneTyWithRank parentRef rankRef bindRef d
+          i' <- pruneTyWithRank parentRef rankRef bindRef i
+          return (Arr ann d' i')
+        TyApp ann ctor args -> do
+          ctor' <- pruneTyWithRank parentRef rankRef bindRef ctor
+          args' <- mapM (pruneTyWithRank parentRef rankRef bindRef) args
+          return (TyApp ann ctor' args')
+        _ -> return ty
+
+    bindVar :: STRef s (Map.Map Identifier Identifier)
+            -> STRef s (Map.Map Identifier Int)
+            -> STRef s (Map.Map Identifier (Ty Ann))
+            -> Identifier
+            -> Ty Ann
+            -> ST s Bool
+    bindVar parentRef rankRef bindRef ident ty = do
+      root <- findRoot parentRef rankRef ident
+      ty' <- pruneTyWithRank parentRef rankRef bindRef ty
+      case ty' of
+        TyVar _ ident' -> do
+          root' <- findRoot parentRef rankRef ident'
+          if root == root'
+            then return True
+            else unionRoots parentRef rankRef bindRef root root'
+        _ -> do
+          bindings <- readSTRef bindRef
+          case Map.lookup root bindings of
+            Just bound -> unifyOne parentRef rankRef bindRef bound ty'
+            Nothing -> do
+              hasCycle <- occursIn parentRef rankRef bindRef root ty'
+              if hasCycle
+                then return False
+                else do
+                  modifySTRef' bindRef (Map.insert root ty')
+                  return True
+
+    unionRoots :: STRef s (Map.Map Identifier Identifier)
+               -> STRef s (Map.Map Identifier Int)
+               -> STRef s (Map.Map Identifier (Ty Ann))
+               -> Identifier
+               -> Identifier
+               -> ST s Bool
+    unionRoots parentRef rankRef bindRef a b = do
+      ra <- findRoot parentRef rankRef a
+      rb <- findRoot parentRef rankRef b
+      if ra == rb
+        then return True
+        else do
+          ranks <- readSTRef rankRef
+          let rankA = fromMaybe 0 (Map.lookup ra ranks)
+              rankB = fromMaybe 0 (Map.lookup rb ranks)
+              (parentRoot, childRoot) =
+                if rankA < rankB then (rb, ra) else (ra, rb)
+          modifySTRef' parentRef (Map.insert childRoot parentRoot)
+          when (rankA == rankB) $
+            modifySTRef' rankRef (Map.insert parentRoot (rankA + 1))
+          bindings <- readSTRef bindRef
+          let bParent = Map.lookup parentRoot bindings
+              bChild = Map.lookup childRoot bindings
+          modifySTRef' bindRef (Map.delete childRoot)
+          case (bParent, bChild) of
+            (Nothing, Nothing) -> return True
+            (Just t, Nothing) -> do
+              modifySTRef' bindRef (Map.insert parentRoot t)
+              return True
+            (Nothing, Just t) -> do
+              modifySTRef' bindRef (Map.insert parentRoot t)
+              return True
+            (Just t1, Just t2) -> do
+              ok <- unifyOne parentRef rankRef bindRef t1 t2
+              if not ok
+                then return False
+                else do
+                  t' <- pruneTyWithRank parentRef rankRef bindRef t1
+                  modifySTRef' bindRef (Map.insert parentRoot t')
+                  return True
+
+    freezeSubst :: STRef s (Map.Map Identifier Identifier)
+                -> STRef s (Map.Map Identifier Int)
+                -> STRef s (Map.Map Identifier (Ty Ann))
+                -> ST s Subst
+    freezeSubst parentRef rankRef bindRef = do
+      parents <- readSTRef parentRef
+      bindings <- readSTRef bindRef
+      let vars = Set.toList (Set.fromList (Map.keys parents ++ Map.keys bindings))
+      foldM
+        (\subst var -> do
+          root <- findRoot parentRef rankRef var
+          bindings' <- readSTRef bindRef
+          case Map.lookup root bindings' of
+            Just ty -> do
+              ty' <- pruneTyWithRank parentRef rankRef bindRef ty
+              return (Map.insert var ty' subst)
+            Nothing ->
+              if var == root
+                then return subst
+                else return (Map.insert var (TyVar (mkAnn Nom NoSpan) root) subst)
+        )
+        Map.empty
+        vars
+
+    anyM :: (a -> ST s Bool) -> [a] -> ST s Bool
+    anyM _ [] = return False
+    anyM p (x:xs) = do
+      ok <- p x
+      if ok then return True else anyM p xs
 
 -- | Apply a substitution to a type.
 applySubst :: Subst -- ^ Substitution bindings.
