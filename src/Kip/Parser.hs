@@ -1297,7 +1297,7 @@ resolveTypeCandidateLoose ident = do
       -- Check if identifier matches a primitive type pattern
       isPrimType base = isIntType base || isFloatType base || isStringType base || isCharType base
   -- First try morphology analysis to extract case if present
-  mCandidates <- optional (try (estimateCandidates False ident))
+  mCandidates <- optional (estimateCandidates False ident)
   case mCandidates of
     Just candidates -> do
       -- Check if any candidate's base form is in tyNames or matches a primitive pattern
@@ -2118,7 +2118,7 @@ parseExpWithCtx' useCtx allowMatch =
           if isInflected || isFuncCandidate
             then return Nothing  -- Don't apply type casting if it could be a function call
             else do
-              mResolved <- optional (try (resolveTypeCandidatePreferCtx name))
+              mResolved <- optional (resolveTypeCandidatePreferCtx name)
               case mResolved of
                 Just (ident, cas) | ident `elem` tyNames ->
                   return $
@@ -3106,7 +3106,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                 Just paramName -> return (TyVar (mkAnn Nom NoSpan) paramName)
                 Nothing -> do
                   -- If no type param match, try normal resolution
-                  mResolved <- optional (try (resolveTypeCandidatePreferCtx ident))
+                  mResolved <- optional (resolveTypeCandidatePreferCtx ident)
                   let pickTy name cas
                         | name `elem` primNames && isIntType name = TyInt (mkAnn cas NoSpan)
                         | name `elem` primNames && isFloatType name = TyFloat (mkAnn cas NoSpan)
@@ -3127,7 +3127,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             isTypeIdent :: Identifier -- ^ Surface identifier.
                         -> KipParser Bool -- ^ True when identifier resolves to a type.
             isTypeIdent ident = do
-              m <- optional (try (resolveTypeCandidatePreferCtx ident))
+              m <- optional (resolveTypeCandidatePreferCtx ident)
               case m of
                 Just (name, _) ->
                   return (name `elem` tyNames || name `elem` parserTyParams || name `elem` primNames)
@@ -3138,7 +3138,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                 arg <- identifierNotKeyword
                 ws
                 nextIdent <- lookAhead identifierNotKeyword
-                mNextResolved <- optional (try (resolveTypeCandidatePreferCtx nextIdent))
+                mNextResolved <- optional (resolveTypeCandidatePreferCtx nextIdent)
                 case mNextResolved of
                   Just (nextName, _) -> do
                     let isNextType = nextName `elem` tyNames || nextName `elem` parserTyParams || nextName `elem` primNames
