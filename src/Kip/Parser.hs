@@ -244,6 +244,27 @@ copulaSuffixesTxt = ["dir","dır","dur","dür","tir","tır","tur","tür"]
 genSuffixesNoApostropheTxt :: [Text]
 genSuffixesNoApostropheTxt = ["nın", "nin", "nun", "nün", "ın", "in", "un", "ün"]
 
+{-# INLINE hasCondSuffix #-}
+hasCondSuffix :: Text -> Bool
+hasCondSuffix = isJust . stripSuffixAny condSuffixesTxt
+
+{-# INLINE identScore #-}
+identScore :: Identifier -> Int
+identScore (mods, word) = sum (map T.length mods) + T.length word
+
+-- Keep only the first candidate with maximal identifier size.
+chooseLongestCandidate :: [(Identifier, Case)] -> [(Identifier, Case)]
+chooseLongestCandidate [] = []
+chooseLongestCandidate (x:xs) =
+  let (!best, !_bestScore) = foldl' step (x, identScore (fst x)) xs
+  in [best]
+  where
+    step (!best, !bestScore) cur =
+      let !curScore = identScore (fst cur)
+      in if curScore > bestScore
+           then (cur, curScore)
+           else (best, bestScore)
+
 -- | Memoized possessive normalization roots for the current process.
 --
 -- ==== Performance note (Optimization: morphology normalization memo)
@@ -752,14 +773,7 @@ estimateCandidates useCtx (ss, s) = do
                       | root <- fallbackRoots
                       , (ss, root) `Set.member` parserCtx
                       ]
-                    pickLongest xs =
-                      case xs of
-                        [] -> []
-                        _ ->
-                          let score ((mods, word), _) = sum (map T.length mods) + T.length word
-                              maxScore = maximum (map score xs)
-                          in take 1 (filter (\x -> score x == maxScore) xs)
-                if null matches then Nothing else Just (pickLongest matches)
+                if null matches then Nothing else Just (chooseLongestCandidate matches)
           mCtxMatch' = if isIpSurface then Nothing else mCtxMatch
       case ipFallbackMatch of
         Just match -> return match
@@ -824,15 +838,8 @@ estimateCandidates useCtx (ss, s) = do
                               , (ss, root) `Set.member` parserCtx
                               ]
                             allMatches = ordNubAppend (ordNub ipCandidatesFromAnalyses) fallbackMatches
-                            pickLongest xs =
-                              case xs of
-                                [] -> []
-                                _ ->
-                                  let score ((mods, word), _) = sum (map T.length mods) + T.length word
-                                      maxScore = maximum (map score xs)
-                                  in take 1 (filter (\x -> score x == maxScore) xs)
                         if useCtx && not (null allMatches)
-                          then Just (pickLongest allMatches)
+                          then Just (chooseLongestCandidate allMatches)
                           else Nothing
                   case ipMatch of
                     Just match -> return match
@@ -2781,13 +2788,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     parseClausesRest :: [Identifier] -- ^ Function argument names.
                      -> KipParser [Clause Ann] -- ^ Parsed clauses.
     parseClausesRest argNames = do
-      startsRepeated <- clauseStartsWithRepeatedArg argNames
-      when startsRepeated (customFailure ErrPatternArgNameRepeated)
-      mRepeated <- optional (try (lookAhead (repeatedArgPattern argNames)))
-      when (isJust mRepeated) (customFailure ErrPatternArgNameRepeated)
-      let argNames' = argNameVariants argNames
-      mHead <- optional (try (lookAhead (lexeme identifier)))
-      when (mHead `elem` map Just argNames') (customFailure ErrPatternArgNameRepeated)
+      checkRepeatedArgClauseStart argNames
       c <- try (parseClause False argNames) <|> repeatedArgClauseError argNames
       (period >> return [c]) <|> do
         clauseSep
@@ -2798,13 +2799,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                 -> KipParser (Clause Ann) -- ^ Parsed clause.
     parseClause allowScrutinee argNames = do
       unless allowScrutinee $ do
-        startsRepeated <- clauseStartsWithRepeatedArg argNames
-        when startsRepeated (customFailure ErrPatternArgNameRepeated)
-        mRepeated <- optional (try (lookAhead (repeatedArgPattern argNames)))
-        when (isJust mRepeated) (customFailure ErrPatternArgNameRepeated)
-        let argNames' = argNameVariants argNames
-        mFirst <- optional (try (lookAhead (lexeme identifier)))
-        when (mFirst `elem` map Just argNames') (customFailure ErrPatternArgNameRepeated)
+        checkRepeatedArgClauseStart argNames
       -- Check for wildcard pattern first
       mWildcard <- optional (try (lexeme (string "değilse")))
       case mWildcard of
@@ -2835,14 +2830,14 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           in case expItem of
             Var _ (mods, name) _ ->
               (inNames (mods, name) || any (\m -> ([], m) `elem` names') mods) &&
-              any (`T.isSuffixOf` name) ["ysa", "yse", "sa", "se"]
+              hasCondSuffix name
             App _ fn (Var _ n _ : _) | isCondFn fn -> inNames n
             _ -> False
         isCondFn :: Exp Ann -> Bool
         isCondFn expItem =
           case expItem of
             Var _ (_, name) _ ->
-              any (`T.isSuffixOf` name) ["ysa", "yse", "sa", "se"]
+              hasCondSuffix name
             _ -> False
     -- | Parse a clause of the form "scrutinee, pattern, body".
     parseClauseAfterScrutinee :: Bool -- ^ Whether to allow scrutinee expressions.
@@ -2872,6 +2867,19 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                     -> [Identifier] -- ^ Arguments plus modifier tokens.
     argNameVariants names =
       ordNub (names ++ [([], m) | (mods, _) <- names, m <- mods])
+    -- | Shared worker for repeated-argument clause-head detection.
+    --
+    -- This keeps both clause parsers on the same fast-path checks and avoids
+    -- duplicating parser setup/allocation for each call site.
+    checkRepeatedArgClauseStart :: [Identifier] -> KipParser ()
+    checkRepeatedArgClauseStart names = do
+      startsRepeated <- clauseStartsWithRepeatedArg names
+      when startsRepeated (customFailure ErrPatternArgNameRepeated)
+      mRepeated <- optional (try (lookAhead (repeatedArgPattern names)))
+      when (isJust mRepeated) (customFailure ErrPatternArgNameRepeated)
+      let names' = argNameVariants names
+      mFirst <- optional (try (lookAhead (lexeme identifier)))
+      when (mFirst `elem` map Just names') (customFailure ErrPatternArgNameRepeated)
     -- | Check if the next clause starts with a repeated argument name.
     -- This is a lightweight textual lookahead to catch "bu yanlışsa"
     -- style patterns before the main expression parser backtracks.
@@ -2881,12 +2889,11 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       let tokens = take 2 (T.words (T.dropWhile isSpace input))
           stripPunct = T.dropWhileEnd (\c -> c == ',' || c == ';' || c == '.')
           nameTokens = map (T.toLower . identText) (argNameVariants names)
-          isCondSuffix txt = any (`T.isSuffixOf` txt) ["ysa", "yse", "sa", "se"]
       case tokens of
         (t1:t2:_) ->
           let t1' = T.toLower (stripPunct t1)
               t2' = T.toLower (stripPunct t2)
-          in return (t1' `elem` nameTokens && isCondSuffix t2')
+          in return (t1' `elem` nameTokens && hasCondSuffix t2')
         _ -> return False
     -- | Detect repeated argument names in conditional patterns.
     -- This works on parsed identifiers, so it is robust to whitespace
@@ -2900,7 +2907,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       ws
       (secondIdent, _) <- withSpan identifierNotKeyword
       let (_, secondName) = secondIdent
-      guard (any (`T.isSuffixOf` secondName) ["ysa", "yse", "sa", "se"])
+      guard (hasCondSuffix secondName)
     -- | Fail fast on repeated argument names in clause heads.
     repeatedArgClauseError :: [Identifier] -> KipParser a
     repeatedArgClauseError names = do
