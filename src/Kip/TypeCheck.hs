@@ -171,6 +171,7 @@ data TCState =
     -- Speeds up fallback overload matching by avoiding full scans over
     -- 'tcFuncSigRets' for every candidate function name.
     , tcFuncRetByName :: !(HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann)))
+    , tcFuncEffectsByArity :: !(HM.HashMap (Identifier, Int) Bool) -- ^ Effectful-function flag indexed by (name, arity).
     , tcVarTys :: ![(Identifier, Ty Ann)] -- ^ Variable type bindings (list for shadowing).
     , tcVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings for inlining.
     , tcCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
@@ -203,6 +204,7 @@ instance Binary TCState where
     B.put [(k, v) | (k, vs) <- Map.toList tcFuncs, v <- vs]
     B.put [(k, v) | (k, vs) <- Map.toList tcFuncSigs, v <- vs]
     B.put (Map.toList tcFuncSigRets)
+    B.put (HM.toList tcFuncEffectsByArity)
     B.put tcVarTys
     B.put (Map.toList tcVals)
     B.put (Map.toList tcCtors)
@@ -218,6 +220,7 @@ instance Binary TCState where
     funcs <- Map.fromListWith (++) . map (\(k,v) -> (k,[v])) <$> B.get
     funcSigs <- Map.fromListWith (++) . map (\(k,v) -> (k,[v])) <$> B.get
     funcSigRets <- Map.fromList <$> B.get
+    funcEffectsByArity <- HM.fromList <$> B.get
     varTys <- B.get
     vals <- Map.fromList <$> B.get
     ctors <- Map.fromList <$> B.get
@@ -231,11 +234,11 @@ instance Binary TCState where
     let byArity = buildFuncSigsByArity funcSigs
     let retByName = buildFuncRetByName funcSigRets
     let namesByArity = buildFuncNamesByArity funcs
-    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
+    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName funcEffectsByArity varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
+emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
 
 -- | Prepend a single value to the list stored under a key in a 'Map.Map'.
 --
@@ -299,6 +302,13 @@ insertFuncDecl name args st =
       funcs' = mmInsert name arity (tcFuncs st')
       namesByArity' = HM.insertWith Set.union arity (Set.singleton name) (tcFuncNamesByArity st')
   in st' { tcFuncs = funcs', tcFuncNamesByArity = namesByArity' }
+
+-- | Mark one function declaration as effectful/non-effectful by exact arity.
+insertFuncEffect :: Identifier -> [Arg Ann] -> Bool -> TCState -> TCState
+insertFuncEffect name args isEffectful st
+  | isEffectful =
+      st { tcFuncEffectsByArity = HM.insert (name, length args) True (tcFuncEffectsByArity st) }
+  | otherwise = st
 
 -- | Invalidate inferType memo after any environment-affecting state change.
 --
@@ -382,10 +392,10 @@ tcExp1With allowEffect e =
           -- Record variable type for LSP hover
           mTy <- inferType resolved
           forM_ mTy (recordResolvedType (annSpan annRes))
-          unless allowEffect (rejectReadEffect annExp ident)
           MkTCState{tcFuncs} <- get
           if 0 `elem` Map.findWithDefault [] ident tcFuncs
             then do
+              unless allowEffect (rejectPureEffect annExp ident 0)
               recordResolvedSig (annSpan annRes) ident []
               return (App annExp resolved [])
             else return resolved
@@ -401,7 +411,7 @@ tcExp1With allowEffect e =
       case fnResolved of
         Var {annExp = annFn, varName, varCandidates} -> do
           case varCandidates of
-            (ident, _) : _ -> unless allowEffect (rejectReadEffect annFn ident)
+            (ident, _) : _ -> unless allowEffect (rejectPureEffect annFn ident (length allArgs))
             _ -> return ()
           MkTCState{tcFuncSigs, tcFuncSigsByArity, tcTyCons, tcCtors, tcFuncSigRets, tcVarTys} <- get
           let higherOrderResultTy =
@@ -624,14 +634,14 @@ tcExp1With allowEffect e =
           -- Same "dersek" dative check for binds in sequences.
           when (annCase bindNameAnn == Dat && annCase (annExp bindExp) /= Dat) $
             lift (throwE (NoType (annSpan (annExp bindExp))))
-          bindExp' <- tcExp1With True bindExp
+          bindExp' <- tcExp1With allowEffect bindExp
           mTy <- inferType bindExp'
           let tys = maybe [] (\t -> [(bindName, t)]) mTy
           forM_ mTy (recordResolvedType (annSpan bindNameAnn))
           second' <- withCtx [bindName] (withVarTypes tys (tcExp1With allowEffect second))
           return (Seq annSeq (Bind (annExp first) bindName bindNameAnn bindExp') second')
         _ -> do
-          first' <- tcExp1With True first
+          first' <- tcExp1With allowEffect first
           second' <- tcExp1With allowEffect second
           return (Seq annSeq first' second')
     Match {annExp, scrutinee, clauses} -> do
@@ -679,13 +689,14 @@ tcExp1With allowEffect e =
         Nothing ->
           lift (throwE (NoType (annSpan annExp)))
 
--- | Reject pure uses of effectful read primitives and infinitive functions.
-rejectReadEffect :: Ann -- ^ Expression annotation.
+-- | Reject pure uses of effectful function definitions.
+rejectPureEffect :: Ann -- ^ Expression annotation.
                  -> Identifier -- ^ Identifier being checked.
+                 -> Int -- ^ Call arity at use site.
                  -> TCM () -- ^ No result.
-rejectReadEffect ann ident = do
-  MkTCState{tcInfinitives} <- get
-  when (ident == ([], T.pack "oku") || Set.member ident tcInfinitives) $
+rejectPureEffect ann ident arity = do
+  MkTCState{tcFuncEffectsByArity} <- get
+  when (HM.lookupDefault False (ident, arity) tcFuncEffectsByArity) $
     lift (throwE (NoType (annSpan ann)))
 
 -- | Apply a grammatical case to a value expression.
@@ -958,7 +969,7 @@ tcStmt stmt =
                 Just (TyVar _ n) | isInfinitive && n == name -> defaultInfRet
                 _ -> fromMaybe ty mRet
             retTy = if explicit then ty else inferredRet
-            s' = insertFuncDecl name args s
+            s' = insertFuncEffect name args isInfinitive (insertFuncDecl name args s)
             s'' = insertFuncRet name (map (normalizePrimTy . snd) args) (normalizePrimTy retTy) s'
         in invalidateInferMemo
              (s''
@@ -977,7 +988,7 @@ tcStmt stmt =
       unless (Prim.isImplementedPrimitive name args) $
         lift (throwE (UnimplementedPrimitive name args NoSpan))
       modify (\s ->
-        let s' = insertFuncDecl name args s
+        let s' = insertFuncEffect name args isInfinitive (insertFuncDecl name args s)
             s'' = insertFuncRet name (map (normalizePrimTy . snd) args) (normalizePrimTy ty) s'
         in invalidateInferMemo
              (s''
@@ -1355,7 +1366,7 @@ withFuncSig name args m = do
   st <- get
   put (invalidateInferMemo (insertFuncDecl name args st))
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncNamesByArity = tcFuncNamesByArity st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st }))
+  modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncNamesByArity = tcFuncNamesByArity st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st, tcFuncEffectsByArity = tcFuncEffectsByArity st }))
   return res
 
 -- | Run a computation with variable types in scope.
@@ -2592,7 +2603,7 @@ registerForwardDecls stmts = do
       case stmt of
         Function name args _ _ isInfinitive ->
           modify (\s ->
-            let s' = insertFuncDecl name args s
+            let s' = insertFuncEffect name args isInfinitive (insertFuncDecl name args s)
             in s'
                  { tcCtx = Set.insert name (tcCtx s')
                  , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'
@@ -2601,7 +2612,7 @@ registerForwardDecls stmts = do
           unless (Prim.isImplementedPrimitive name args) $
             lift (throwE (UnimplementedPrimitive name args NoSpan))
           modify (\s ->
-            let s' = insertFuncDecl name args s
+            let s' = insertFuncEffect name args isInfinitive (insertFuncDecl name args s)
             in s'
                  { tcCtx = Set.insert name (tcCtx s')
                  , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s') else tcInfinitives s'

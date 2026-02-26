@@ -1446,8 +1446,9 @@ evalStmtInFile mPath stmt =
   do
     modify (\s -> s { evalCurrentFile = mPath })
     case stmt of
-      Defn name _ e ->
-        modify (\s -> s { evalVals = Map.insert name e (evalVals s) })
+      Defn name _ e -> do
+        v <- evalExp e
+        modify (\s -> s { evalVals = Map.insert name v (evalVals s) })
       Function name args _ body _ ->
         modify (\s -> s { evalFuncs = Map.insertWith (++) name [(args, body)] (evalFuncs s) })
       PrimFunc name args _ _ ->
