@@ -23,7 +23,6 @@ module Kip.Primitive
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Bifunctor as B
-import Control.Monad (foldM)
 import Data.Char (chr, ord, toLower, toUpper, isAlpha, isAlphaNum, isDigit, isLower, isSpace, isUpper)
 import Data.Fixed (mod')
 import Data.List (foldl')
@@ -68,7 +67,6 @@ data PrimitiveEvalOps m = PrimitiveEvalOps
   , peGetCurrentFile :: m (Maybe FilePath)
   , peGetArgs :: m [Text]
   , peWriteFileText :: FilePath -> Text -> m Bool
-  , peEvalExp :: Exp Ann -> m (Exp Ann)
   , peGetRandState :: m (Maybe Word32)
   , peSetRandState :: Word32 -> m ()
   , peLookupRandomSeed :: m (Maybe Integer)
@@ -340,18 +338,6 @@ allPrimitives =
       [ withTypes 1 (\case [t] -> isFloatTy t; _ -> False) ]
       ["ondalık-sayı.kip"]
 
-  , PrimitiveDef ([], "katlanış")
-      [ anyTypes 3 ]
-      ["liste.kip"]
-
-  , PrimitiveDef (["soldan"], "katlanış")
-      [ anyTypes 3 ]
-      ["liste.kip"]
-
-  , PrimitiveDef (["sağdan"], "katlanış")
-      [ anyTypes 3 ]
-      ["liste.kip"]
-
   , PrimitiveDef ([], "dur")
       [ anyTypes 0 ]
       []
@@ -565,21 +551,6 @@ primitiveEvalImpl ops mPath ident args = do
     ([], "tavan")
       | [(_, TyFloat _)] <- args ->
           Just (primFloatCeiling "tavan")
-      | otherwise ->
-          Nothing
-    ([], "katlanış")
-      | [_, _, _] <- args ->
-          Just (primListFoldr ops ([], "katlanış"))
-      | otherwise ->
-          Nothing
-    (["soldan"], "katlanış")
-      | [_, _, _] <- args ->
-          Just (primListFoldl ops (["soldan"], "katlanış"))
-      | otherwise ->
-          Nothing
-    (["sağdan"], "katlanış")
-      | [_, _, _] <- args ->
-          Just (primListFoldr ops (["sağdan"], "katlanış"))
       | otherwise ->
           Nothing
     (["sayı"], "çek") -> Just (primIntRandom ops ["sayı"] "çek")
@@ -927,71 +898,6 @@ primFloatCeiling fname args =
     [FloatLit ann n] -> pure (IntLit ann (ceiling n))
     _ -> pure (fallbackApp ([], fname) args)
 
-primListFoldr :: Monad m => PrimitiveEvalOps m -> Identifier -> [Exp Ann] -> m (Exp Ann)
-primListFoldr ops fname args =
-  case args of
-    [listExp, fnExp, initExp] ->
-      case listElements listExp of
-        Just elems -> go elems
-        Nothing -> pure (fallbackApp fname args)
-      where
-        go [] = pure initExp
-        go (x:xs) = do
-          rest <- go xs
-          primApplyBinary ops fnExp x rest
-    _ -> pure (fallbackApp fname args)
-
-primListFoldl :: Monad m => PrimitiveEvalOps m -> Identifier -> [Exp Ann] -> m (Exp Ann)
-primListFoldl ops fname args =
-  case args of
-    [listExp, fnExp, initExp] ->
-      case listElements listExp of
-        Just elems ->
-          foldM (\acc x -> primApplyBinary ops fnExp acc x) initExp elems
-        Nothing -> pure (fallbackApp fname args)
-    _ -> pure (fallbackApp fname args)
-
-primApplyBinary :: Monad m => PrimitiveEvalOps m -> Exp Ann -> Exp Ann -> Exp Ann -> m (Exp Ann)
-primApplyBinary ops fnExp left right =
-  peEvalExp ops (App (mkAnn Nom NoSpan) fnExp [asGen left, asGen right])
-  where
-    asGen expItem =
-      expItem { annExp = setAnnCase (annExp expItem) Gen }
-
-listElements :: Exp Ann -> Maybe [Exp Ann]
-listElements = go []
-  where
-    matchesCtor :: Identifier -> Identifier -> [(Identifier, Case)] -> Bool
-    matchesCtor target name candidates =
-      name == target || any ((== target) . fst) candidates
-
-    isNil :: Exp Ann -> Bool
-    isNil expItem =
-      case expItem of
-        Var _ name candidates ->
-          matchesCtor ([], "boş") name candidates
-        _ ->
-          False
-
-    isCons :: Exp Ann -> Bool
-    isCons fnExp =
-      case fnExp of
-        Var _ name candidates ->
-          matchesCtor ([], "eki") name candidates
-        _ ->
-          False
-
-    go acc expItem =
-      case expItem of
-        _
-          | isNil expItem ->
-          Just (reverse acc)
-        App _ fnExp [x, xs]
-          | isCons fnExp ->
-          go (x : acc) xs
-        _ ->
-          Nothing
-
 resolveReadCandidates :: Maybe FilePath -> Text -> [FilePath]
 resolveReadCandidates mPath path =
   let raw = T.unpack path
@@ -1177,36 +1083,6 @@ primitiveJsPrelude = T.unlines
   , "var __kip_prim_dizge_küçük_hal = (s) => s.toLowerCase();"
   , "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));"
   , "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));"
-  , "var __kip_list_to_array = (xs) => {"
-  , "  var items = [];"
-  , "  var cur = xs;"
-  , "  while (cur && typeof cur === 'object' && cur.tag === 'eki' && Array.isArray(cur.args) && cur.args.length >= 2) {"
-  , "    items.push(cur.args[0]);"
-  , "    cur = cur.args[1];"
-  , "  }"
-  , "  if (cur && typeof cur === 'object' && cur.tag === 'boş') {"
-  , "    return items;"
-  , "  }"
-  , "  return null;"
-  , "};"
-  , "var __kip_prim_soldan_katlanış = async (xs, fn, init) => {"
-  , "  var items = __kip_list_to_array(xs);"
-  , "  if (items === null) return init;"
-  , "  var acc = init;"
-  , "  for (var i = 0; i < items.length; i += 1) {"
-  , "    acc = await __kip_call(fn, [acc, items[i]]);"
-  , "  }"
-  , "  return acc;"
-  , "};"
-  , "var __kip_prim_sağdan_katlanış = async (xs, fn, init) => {"
-  , "  var items = __kip_list_to_array(xs);"
-  , "  if (items === null) return init;"
-  , "  var acc = init;"
-  , "  for (var i = items.length - 1; i >= 0; i -= 1) {"
-  , "    acc = await __kip_call(fn, [items[i], acc]);"
-  , "  }"
-  , "  return acc;"
-  , "};"
   , ""
   , "// I/O primitives - async to support browser interactivity"
   , "var __kip_prim_oku_stdin = async () => {"
@@ -1267,9 +1143,6 @@ primitiveJsPrelude = T.unlines
   , "};"
   , "var çarpım = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) * __kip_num(b)) : (__kip_num(a) * __kip_num(b));"
   , "var fark = __kip_prim_fark;"
-  , "var katlanış = __kip_prim_sağdan_katlanış;"
-  , "var soldan_katlanış = __kip_prim_soldan_katlanış;"
-  , "var sağdan_katlanış = __kip_prim_sağdan_katlanış;"
   , "var bölüm = (a, b) => {"
   , "  var av = __kip_num(a);"
   , "  var bv = __kip_num(b);"
@@ -1377,42 +1250,6 @@ primitiveJsPrunableSpecs =
   , ("__kip_prim_dizge_küçük_hal", [], "var __kip_prim_dizge_küçük_hal = (s) => s.toLowerCase();\n")
   , ("__kip_prim_toplam", [], "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));\n")
   , ("__kip_prim_fark", [], "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));\n")
-  , ("__kip_list_to_array", [], T.unlines
-      [ "var __kip_list_to_array = (xs) => {"
-      , "  var items = [];"
-      , "  var cur = xs;"
-      , "  while (cur && typeof cur === 'object' && cur.tag === 'eki' && Array.isArray(cur.args) && cur.args.length >= 2) {"
-      , "    items.push(cur.args[0]);"
-      , "    cur = cur.args[1];"
-      , "  }"
-      , "  if (cur && typeof cur === 'object' && cur.tag === 'boş') {"
-      , "    return items;"
-      , "  }"
-      , "  return null;"
-      , "};"
-      ])
-  , ("__kip_prim_soldan_katlanış", ["__kip_list_to_array", "__kip_call"], T.unlines
-      [ "var __kip_prim_soldan_katlanış = async (xs, fn, init) => {"
-      , "  var items = __kip_list_to_array(xs);"
-      , "  if (items === null) return init;"
-      , "  var acc = init;"
-      , "  for (var i = 0; i < items.length; i += 1) {"
-      , "    acc = await __kip_call(fn, [acc, items[i]]);"
-      , "  }"
-      , "  return acc;"
-      , "};"
-      ])
-  , ("__kip_prim_sağdan_katlanış", ["__kip_list_to_array", "__kip_call"], T.unlines
-      [ "var __kip_prim_sağdan_katlanış = async (xs, fn, init) => {"
-      , "  var items = __kip_list_to_array(xs);"
-      , "  if (items === null) return init;"
-      , "  var acc = init;"
-      , "  for (var i = items.length - 1; i >= 0; i -= 1) {"
-      , "    acc = await __kip_call(fn, [items[i], acc]);"
-      , "  }"
-      , "  return acc;"
-      , "};"
-      ])
   , ("__kip_prim_oku_stdin", [], T.unlines
       [ "var __kip_prim_oku_stdin = async () => {"
       , "  // Check for browser runtime at call time"
@@ -1479,9 +1316,6 @@ primitiveJsPrunableSpecs =
       ])
   , ("çarpım", [], "var çarpım = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) * __kip_num(b)) : (__kip_num(a) * __kip_num(b));\n")
   , ("fark", ["__kip_prim_fark"], "var fark = __kip_prim_fark;\n")
-  , ("katlanış", ["__kip_prim_sağdan_katlanış"], "var katlanış = __kip_prim_sağdan_katlanış;\n")
-  , ("soldan_katlanış", ["__kip_prim_soldan_katlanış"], "var soldan_katlanış = __kip_prim_soldan_katlanış;\n")
-  , ("sağdan_katlanış", ["__kip_prim_sağdan_katlanış"], "var sağdan_katlanış = __kip_prim_sağdan_katlanış;\n")
   , ("bölüm", [], T.unlines
       [ "var bölüm = (a, b) => {"
       , "  var av = __kip_num(a);"

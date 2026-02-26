@@ -1519,7 +1519,6 @@ mkPrimitiveEvalOps =
         let resolved = resolvePath st (T.pack path)
         result <- liftIO (try (TIO.writeFile resolved content) :: IO (Either SomeException ()))
         pure (either (const False) (const True) result)
-    , Prim.peEvalExp = evalExpWith []
     , Prim.peGetRandState = gets evalRandState
     , Prim.peSetRandState = \seed -> modify (\s -> s { evalRandState = Just seed })
     , Prim.peLookupRandomSeed = liftIO $ do

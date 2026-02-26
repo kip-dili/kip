@@ -1,0 +1,26 @@
+(*
+Listeyi soldan katlayarak tek bir sonuç üretir (foldl).
+Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan soldan-katlanışı)
+*)
+(bu b listesinin) (iş a'nın b'nin b'siyle) (birikim a'sından) (soldan-katlanış a'sı),
+  bu boşsa,
+    birikim;
+  ilkin devama ekiyse,
+    devamın işle (birikimin devamın işinden) soldan-katlanışıdır.
+
+(*
+Listeyi sağdan katlayarak tek bir sonuç üretir (foldr).
+Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan sağdan-katlanışı)
+*)
+(bu a listesinin) (iş a'nın b'nin b'siyle) (birikim b'sinden) (sağdan-katlanış b'si),
+  bu boşsa,
+    birikim;
+  ilkin devama ekiyse,
+    ilkin (devamın işle birikimden sağdan-katlanışının) işidir.
+
+(*
+Listeyi sağdan katlayarak tek bir sonuç üretir (fold/foldr).
+Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan katlanışı)
+*)
+(bu a listesinin) (iş a'nın b'nin b'siyle) (birikim b'sinden) (katlanış b'si),
+  bu işle birikimden sağdan-katlanışıdır.

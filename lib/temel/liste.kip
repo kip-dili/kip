@@ -56,28 +56,31 @@ Girdi listesinin uzunluğu korunur; sadece öğe tipi dönüşebilir (a -> b).
   ilkin devama ekiyse, (ilkin işinin) (devamın işle eşlemine) ekidir.
 
 (*
-Listeyi sağdan katlayarak tek bir sonuç üretir (fold/foldr).
-Adım işlevi her öğe için "iş öğe birikim" sırasıyla çağrılır.
-Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan katlanışı)
-*)
-(bu a listesinin) (iş a'nın b'nin b'siyle) (ilk b'den) (katlanış b'si),
-  yerleşiktir.
-
-(*
 Listeyi soldan katlayarak tek bir sonuç üretir (foldl).
-Adım işlevi her öğe için "iş birikim öğe" sırasıyla çağrılır.
 Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan soldan-katlanışı)
 *)
-(bu a listesinin) (iş b'nin a'nın b'siyle) (ilk b'den) (soldan-katlanış b'si),
-  yerleşiktir.
+(bu b listesinin) (iş a'nın b'nin b'siyle) (birikim a'sından) (soldan-katlanış a'sı),
+  bu boşsa,
+    birikim;
+  ilkin devama ekiyse,
+    devamın işle (birikimin ilkin işinden) soldan-katlanışıdır.
 
 (*
 Listeyi sağdan katlayarak tek bir sonuç üretir (foldr).
-Adım işlevi her öğe için "iş öğe birikim" sırasıyla çağrılır.
 Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan sağdan-katlanışı)
 *)
-(bu a listesinin) (iş a'nın b'nin b'siyle) (ilk b'den) (sağdan-katlanış b'si),
-  yerleşiktir.
+(bu a listesinin) (iş a'nın b'nin b'siyle) (birikim b'sinden) (sağdan-katlanış b'si),
+  bu boşsa,
+    birikim;
+  ilkin devama ekiyse,
+    ilkin (devamın işle birikimden sağdan-katlanışının) işidir.
+
+(*
+Listeyi sağdan katlayarak tek bir sonuç üretir (fold/foldr).
+Örnek kullanım: ([1, 2, 3]'ün farkla 0'dan katlanışı)
+*)
+(bu a listesinin) (iş a'nın b'nin b'siyle) (birikim b'sinden) (katlanış b'si),
+  bunun işle birikimden sağdan-katlanışıdır.
 
 (*
 Verilen testten geçen öğeleri tutup diğerlerini eler.

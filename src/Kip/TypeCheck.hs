@@ -433,6 +433,7 @@ tcExp1With allowEffect e =
             Just imgTy
               | annCase annFn /= Gen
               , not allowsVerbLikeHigherOrderCall
+              , length allArgs <= 1
               , not (isConditionalResultTy imgTy) ->
                   lift (throwE (NoType (annSpan annApp)))
             _ -> return ()
