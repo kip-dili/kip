@@ -1513,6 +1513,9 @@ mkPrimitiveEvalOps =
     , Prim.peFlushStdout = liftIO (hFlush stdout)
     , Prim.peReadLine = liftIO TIO.getLine
     , Prim.peReadFirstPath = liftIO . readFirstPath
+    , Prim.peReadEnv = \name -> do
+        mVal <- liftIO (lookupEnv (T.unpack name))
+        pure (T.pack <$> mVal)
     , Prim.peGetCurrentFile = gets evalCurrentFile
     , Prim.peGetArgs = gets evalArgs
     , Prim.peWriteFileText = \path content -> do

@@ -58,6 +58,15 @@ Liste sırası çağrı sırasını izler; ilk öğe çalıştırılan `.kip` do
   yerleşiktir.
 
 (*
+Belirtilen ortam değişkeninin değerini okumayı dener.
+- Değişken varsa dizge varlığı döner.
+- Değişken yoksa yokluk döner.
+Örnek kullanım: "KIP_RANDOM_SEED"ni çevreden-okumak
+*)
+(bu dizgeyi) (çevreden-okumak dizgenin olasılığı),
+  yerleşiktir.
+
+(*
 Belirtilen dosya yolundan metin okumayı dener.
 - Okuma başarılıysa dizge varlığı döner.
 - Dosya yoksa veya okunamıyorsa yokluk döner.

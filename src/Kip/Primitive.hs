@@ -64,6 +64,7 @@ data PrimitiveEvalOps m = PrimitiveEvalOps
   , peFlushStdout :: m ()
   , peReadLine :: m Text
   , peReadFirstPath :: [FilePath] -> m (Maybe Text)
+  , peReadEnv :: Text -> m (Maybe Text)
   , peGetCurrentFile :: m (Maybe FilePath)
   , peGetArgs :: m [Text]
   , peWriteFileText :: FilePath -> Text -> m Bool
@@ -167,6 +168,10 @@ allPrimitives =
 
   , PrimitiveDef (["argüman"], "oku")
       [ anyTypes 0 ]
+      ["etki.kip"]
+
+  , PrimitiveDef (["çevreden"], "oku")
+      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
       ["etki.kip"]
 
   , PrimitiveDef ([], "uzunluk")
@@ -388,6 +393,9 @@ primitiveEvalImpl ops mPath ident args = do
     (["argüman"], "oku")
       | [] <- args -> Just (primReadArgs ops)
       | otherwise -> Nothing
+    (["çevreden"], "oku")
+      | [(_, TyString _)] <- args -> Just (primReadEnv ops)
+      | otherwise -> Nothing
     ([], "uzunluk") -> Just (primStringLength "uzunluk")
     ([], "birleşim") -> Just (primStringConcat "birleşim")
     (["tam", "sayı"], "hal")
@@ -596,6 +604,16 @@ primReadArgs ops args =
   case args of
     [] -> textListExp (mkAnn Nom NoSpan) <$> peGetArgs ops
     _ -> pure (fallbackApp (["argüman"], "oku") args)
+
+primReadEnv :: Monad m => PrimitiveEvalOps m -> [Exp Ann] -> m (Exp Ann)
+primReadEnv ops args =
+  case args of
+    [StrLit _ key] -> do
+      val <- peReadEnv ops key
+      case val of
+        Nothing -> pure noneExp
+        Just txt -> pure (someExp (StrLit (mkAnn Nom NoSpan) txt))
+    _ -> pure (fallbackApp (["çevreden"], "oku") args)
 
 primWriteFile :: Monad m => PrimitiveEvalOps m -> [Exp Ann] -> m (Exp Ann)
 primWriteFile ops args =
@@ -1119,6 +1137,15 @@ primitiveJsPrelude = T.unlines
   , "  }"
   , "  return out;"
   , "};"
+  , "var __kip_prim_cevreden_oku = (name) => {"
+  , "  if (typeof process !== 'undefined' && process.env && Object.prototype.hasOwnProperty.call(process.env, name)) {"
+  , "    return __kip_some(process.env[name]);"
+  , "  }"
+  , "  if (__kip_is_browser && typeof window !== 'undefined' && window.__kip_env && Object.prototype.hasOwnProperty.call(window.__kip_env, name)) {"
+  , "    return __kip_some(String(window.__kip_env[name]));"
+  , "  }"
+  , "  return __kip_none();"
+  , "};"
   , "var __kip_prim_yaz_dosya = (path, content) => {"
   , "  if (!__kip_require) return __kip_false();"
   , "  __kip_fs = __kip_fs || __kip_require('fs');"
@@ -1288,6 +1315,17 @@ primitiveJsPrunableSpecs =
       , "    out = typeof eki === 'function' ? eki(parts[i], out) : { tag: 'eki', args: [parts[i], out] };"
       , "  }"
       , "  return out;"
+      , "};"
+      ])
+  , ("__kip_prim_cevreden_oku", ["varlık", "yokluk"], T.unlines
+      [ "var __kip_prim_cevreden_oku = (name) => {"
+      , "  if (typeof process !== 'undefined' && process.env && Object.prototype.hasOwnProperty.call(process.env, name)) {"
+      , "    return __kip_some(process.env[name]);"
+      , "  }"
+      , "  if (__kip_is_browser && typeof window !== 'undefined' && window.__kip_env && Object.prototype.hasOwnProperty.call(window.__kip_env, name)) {"
+      , "    return __kip_some(String(window.__kip_env[name]));"
+      , "  }"
+      , "  return __kip_none();"
       , "};"
       ])
   , ("__kip_prim_yaz_dosya", ["doğru", "yanlış"], T.unlines

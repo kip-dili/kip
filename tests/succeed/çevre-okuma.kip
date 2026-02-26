@@ -1,0 +1,6 @@
+denemek,
+  değer için "KIP"i çevreden-okuyup,
+  değer yokluksa, "yok"u yazmaktır;
+  metnin varlığıysa, metni yazmaktır.
+
+dene.
