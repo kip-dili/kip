@@ -495,6 +495,16 @@ tcExp1With allowEffect e =
                             else lift (throwE (NoMatchingCtor nameForErr argTys tys (annSpan annApp)))
                     _ -> do
                       case lookupByCandidates tcVarTys varCandidates of
+                        Just fnTy@Arr {} -> do
+                          argTys <- mapM inferType allArgs
+                          let matchesVarFnArgs ty [] = Just ty
+                              matchesVarFnArgs (Arr _ dom img) (argTy:rest)
+                                | typeMatchesAllowUnknown tcTyCons argTy dom = matchesVarFnArgs img rest
+                                | otherwise = Nothing
+                              matchesVarFnArgs _ (_:_) = Nothing
+                          case matchesVarFnArgs fnTy argTys of
+                            Just _ -> return (App annApp fnResolved allArgs)
+                            Nothing -> lift (throwE (NoType (annSpan annApp)))
                         Just TyVar {} -> lift (throwE (NoType (annSpan annApp)))
                         Just TySkolem {} -> lift (throwE (NoType (annSpan annApp)))
                         _ -> return (App annApp fnResolved allArgs)
