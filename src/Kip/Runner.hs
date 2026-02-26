@@ -431,7 +431,7 @@ renderTCError paramTyCons tyMods tcErr = do
         TC.Unknown ->
           return "Tip hatası: bilinmeyen hata."
         NoType sp ->
-          return ("Tip hatası: uygun bir tip bulunamadı." <> renderSpan (rcLang ctx) sp)
+          return ("Tip hatası: uygun bir tip bulunamadı (beklenen ve bulunan tipler uyuşmuyor olabilir)." <> renderSpan (rcLang ctx) sp)
         Ambiguity sp ->
           return ("Tip hatası: ifade belirsiz." <> renderSpan (rcLang ctx) sp)
         UnknownName name sp ->
@@ -473,6 +473,11 @@ renderTCError paramTyCons tyMods tcErr = do
                   then "Tip ataması uyuşmuyor: beklenen tip " <> expStr <> ", bulunan tip " <> actStr
                   else T.pack (prettyIdent ctor) <> " yapıcısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
           return header
+        ArgTypeMismatch expectedTy actualTy _ -> do
+          (cache, fsm) <- requireCacheFsm
+          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
+          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
+          return ("Argüman tipi uyuşmuyor: beklenen tip " <> expStr <> ", bulunan tip " <> actStr)
         NonExhaustivePattern pats sp -> do
           missing <- renderMissingPatterns LangTr pats
           let header = "Tip hatası: örüntü eksik." <> renderSpan (rcLang ctx) sp
@@ -495,7 +500,7 @@ renderTCError paramTyCons tyMods tcErr = do
         TC.Unknown ->
           return "Type error: unknown error."
         NoType sp ->
-          return ("Type error: no suitable type found." <> renderSpan (rcLang ctx) sp)
+          return ("Type error: no suitable type found (expected and actual types may not match)." <> renderSpan (rcLang ctx) sp)
         Ambiguity sp ->
           return ("Type error: expression is ambiguous." <> renderSpan (rcLang ctx) sp)
         UnknownName name sp ->
@@ -531,6 +536,11 @@ renderTCError paramTyCons tyMods tcErr = do
                   then "Type ascription mismatch: expected " <> expStr <> ", found " <> actStr
                   else T.pack (prettyIdent ctor) <> " constructor has type " <> expStr <> ", but " <> actStr <> " is expected here"
           return header
+        ArgTypeMismatch expectedTy actualTy _ -> do
+          (cache, fsm) <- requireCacheFsm
+          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
+          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
+          return ("Argument type mismatch: expected " <> expStr <> ", found " <> actStr)
         NonExhaustivePattern pats sp -> do
           missing <- renderMissingPatterns LangEn pats
           let header = "Type error: non-exhaustive pattern match." <> renderSpan (rcLang ctx) sp
@@ -569,6 +579,7 @@ tcErrSpan tcErr =
     NoMatchingOverload _ _ _ sp -> Just sp
     NoMatchingCtor _ _ _ sp -> Just sp
     PatternTypeMismatch _ _ _ sp -> Just sp
+    ArgTypeMismatch _ _ sp -> Just sp
     NonExhaustivePattern _ sp -> Just sp
     UnimplementedPrimitive _ _ sp -> Just sp
     InvalidReturnCase _ sp -> Just sp

@@ -330,6 +330,7 @@ data TCError =
  | NoMatchingOverload Identifier [Maybe (Ty Ann)] [(Identifier, [Arg Ann])] Span
  | NoMatchingCtor Identifier [Maybe (Ty Ann)] [Ty Ann] Span
  | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) Span  -- ctor, expected (ctor result), actual (scrutinee)
+ | ArgTypeMismatch (Ty Ann) (Ty Ann) Span -- expected argument type, actual argument type
  | NonExhaustivePattern [Pat Ann] Span
  | UnimplementedPrimitive Identifier [Arg Ann] Span
  | InvalidReturnCase Case Span
@@ -344,6 +345,7 @@ instance Binary TCError where
   put (NoMatchingOverload ident mty sigs sp) = B.put (4 :: Word8) >> B.put ident >> B.put mty >> B.put sigs >> B.put sp
   put (NoMatchingCtor ident mty tys sp) = B.put (5 :: Word8) >> B.put ident >> B.put mty >> B.put tys >> B.put sp
   put (PatternTypeMismatch ctor expTy actTy sp) = B.put (6 :: Word8) >> B.put ctor >> B.put expTy >> B.put actTy >> B.put sp
+  put (ArgTypeMismatch expTy actTy sp) = B.put (10 :: Word8) >> B.put expTy >> B.put actTy >> B.put sp
   put (NonExhaustivePattern pats sp) = B.put (7 :: Word8) >> B.put pats >> B.put sp
   put (UnimplementedPrimitive ident args sp) = B.put (8 :: Word8) >> B.put ident >> B.put args >> B.put sp
   put (InvalidReturnCase cas sp) = B.put (9 :: Word8) >> B.put cas >> B.put sp
@@ -358,6 +360,7 @@ instance Binary TCError where
       4 -> NoMatchingOverload <$> B.get <*> B.get <*> B.get <*> B.get
       5 -> NoMatchingCtor <$> B.get <*> B.get <*> B.get <*> B.get
       6 -> PatternTypeMismatch <$> B.get <*> B.get <*> B.get <*> B.get
+      10 -> ArgTypeMismatch <$> B.get <*> B.get <*> B.get
       7 -> NonExhaustivePattern <$> B.get <*> B.get
       8 -> UnimplementedPrimitive <$> B.get <*> B.get <*> B.get
       9 -> InvalidReturnCase <$> B.get <*> B.get
@@ -444,8 +447,13 @@ tcExp1With allowEffect e =
               | annCase annFn /= Gen
               , not allowsVerbLikeHigherOrderCall
               , length allArgs <= 1
-              , not (isConditionalResultTy imgTy) ->
-                  lift (throwE (NoType (annSpan annApp)))
+              , not (isConditionalResultTy imgTy) -> do
+                  argTys <- mapM inferType allArgs
+                  let nameForErr =
+                        case varCandidates of
+                          (ident, _):_ -> ident
+                          [] -> varName
+                  lift (throwE (NoMatchingOverload nameForErr argTys [] (annSpan annApp)))
             _ -> return ()
           let tyNames = Map.keys tcTyCons
               funcNames = Map.keys tcFuncSigs
@@ -497,14 +505,19 @@ tcExp1With allowEffect e =
                       case lookupByCandidates tcVarTys varCandidates of
                         Just fnTy@Arr {} -> do
                           argTys <- mapM inferType allArgs
-                          let matchesVarFnArgs ty [] = Just ty
-                              matchesVarFnArgs (Arr _ dom img) (argTy:rest)
+                          let argInfos = zip allArgs argTys
+                              matchesVarFnArgs ty [] = Right ty
+                              matchesVarFnArgs (Arr _ dom img) ((argExp, argTy):rest)
                                 | typeMatchesAllowUnknown tcTyCons argTy dom = matchesVarFnArgs img rest
-                                | otherwise = Nothing
-                              matchesVarFnArgs _ (_:_) = Nothing
-                          case matchesVarFnArgs fnTy argTys of
-                            Just _ -> return (App annApp fnResolved allArgs)
-                            Nothing -> lift (throwE (NoType (annSpan annApp)))
+                                | otherwise =
+                                    case argTy of
+                                      Just actualTy -> Left (dom, actualTy, annSpan (annExp argExp))
+                                      Nothing -> Right img
+                              matchesVarFnArgs _ (_:_) = Right fnTy
+                          case matchesVarFnArgs fnTy argInfos of
+                            Left (expectedTy, actualTy, mismatchSpan) ->
+                              lift (throwE (ArgTypeMismatch expectedTy actualTy mismatchSpan))
+                            Right _ -> return (App annApp fnResolved allArgs)
                         Just TyVar {} -> lift (throwE (NoType (annSpan annApp)))
                         Just TySkolem {} -> lift (throwE (NoType (annSpan annApp)))
                         _ -> return (App annApp fnResolved allArgs)
