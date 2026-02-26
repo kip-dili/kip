@@ -977,16 +977,20 @@ typeMatchesAllowUnknown :: Map.Map Identifier Int -- ^ Type constructor arities 
                         -> Bool -- ^ True when types match.
 typeMatchesAllowUnknown tyCons mTy ty =
   case mTy of
-    Nothing ->
-      case ty of
-        TyVar {} -> True
-        TySkolem {} -> False
-        _ -> False
+    Nothing -> allowsUnknown ty
     Just t ->
       case ty of
         TyVar {} -> True
         TySkolem {} -> tyEq tyCons t ty
         _ -> typeMatches tyCons (Just t) ty
+  where
+    allowsUnknown expectedTy =
+      case expectedTy of
+        TyVar {} -> True
+        TySkolem {} -> False
+        Arr _ d i -> allowsUnknown d || allowsUnknown i
+        TyApp _ c args -> allowsUnknown c || any allowsUnknown args
+        _ -> False
 
 -- | Lookup a binding by candidate identifiers in a list-based environment.
 --
@@ -1197,14 +1201,17 @@ inferType e =
     Bind {bindExp} -> inferType bindExp
     Seq {second} -> inferType second
     Var {varCandidates} -> do
-      MkEvalState{evalVals, evalCtors} <- get
+      MkEvalState{evalVals, evalCtors, evalFuncs, evalPrimFuncs} <- get
       case lookupByCandidates evalVals varCandidates of
         Just v -> inferType v
         Nothing ->
           case lookupCtorByCandidates evalCtors varCandidates of
             Just (argTys, ty) ->
               return (Just (foldr (Arr (mkAnn Nom NoSpan)) ty argTys))
-            _ -> return Nothing
+            _ ->
+              case functionValueType evalFuncs evalPrimFuncs varCandidates of
+                Just fnTy -> return (Just fnTy)
+                Nothing -> return Nothing
     App {fn, args} -> do
       fn' <- evalExpWith [] fn
       case fn' of
@@ -1224,6 +1231,28 @@ inferType e =
             _ -> return Nothing
         _ -> return Nothing
     _ -> return Nothing
+  where
+    functionValueType ::
+         Map.Map Identifier [([Arg Ann], [Clause Ann])]
+      -> Map.Map Identifier [([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))]
+      -> [(Identifier, Case)]
+      -> Maybe (Ty Ann)
+    functionValueType fnMap primMap candidates =
+      let names = map fst candidates
+          fnArgTys =
+            [ map snd sigArgs
+            | name <- names
+            , (sigArgs, _) <- Map.findWithDefault [] name fnMap
+            ]
+          primArgTys =
+            [ map snd sigArgs
+            | name <- names
+            , (sigArgs, _) <- Map.findWithDefault [] name primMap
+            ]
+          retTy = TyVar (mkAnn Nom NoSpan) ([], "r")
+      in case fnArgTys ++ primArgTys of
+           (argTys:_) -> Just (foldr (Arr (mkAnn Nom NoSpan)) retTy argTys)
+           [] -> Nothing
 
 -- | Apply a case annotation to an expression if it is a value.
 applyTypeCase :: Case -- ^ Case to apply.
@@ -1490,6 +1519,7 @@ mkPrimitiveEvalOps =
         let resolved = resolvePath st (T.pack path)
         result <- liftIO (try (TIO.writeFile resolved content) :: IO (Either SomeException ()))
         pure (either (const False) (const True) result)
+    , Prim.peEvalExp = evalExpWith []
     , Prim.peGetRandState = gets evalRandState
     , Prim.peSetRandState = \seed -> modify (\s -> s { evalRandState = Just seed })
     , Prim.peLookupRandomSeed = liftIO $ do

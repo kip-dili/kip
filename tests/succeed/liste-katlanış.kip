@@ -1,0 +1,19 @@
+(([1, 2, 3]'ün farkla 0'dan katlanışıyla) 2'nin eşitliği) doğruysa,
+  "evet-1"'i yaz;
+yanlışsa,
+  "hayır-1"'i yaz.
+
+(([1, 2, 3]'ün farkla 0'dan sağdan-katlanışıyla) 2'nin eşitliği) doğruysa,
+  "evet-2"'yi yaz;
+yanlışsa,
+  "hayır-2"'yi yaz.
+
+(([1, 2, 3]'ün farkla 0'dan soldan-katlanışıyla) -6'nın eşitliği) doğruysa,
+  "evet-3"'ü yaz;
+yanlışsa,
+  "hayır-3"'ü yaz.
+
+((boşun farkla 10'dan katlanışıyla) 10'un eşitliği) doğruysa,
+  "evet-4"'ü yaz;
+yanlışsa,
+  "hayır-4"'ü yaz.

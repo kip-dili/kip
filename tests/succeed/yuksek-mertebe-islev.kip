@@ -1,0 +1,24 @@
+(bu tam-sayının) (şu tam-sayının) (o tam-sayının) (üçlü-toplam tam-sayısı),
+  (bununla şunun toplamıyla) onun toplamıdır.
+
+(bu a'nın) (şu b'nin) (o c'nin) (iş a'nın b'nin c'nin d'siyle) (üçlü-uygulayış d'si),
+  bunun şunun onun işidir.
+
+((1'in 2'nin 3'ün üçlü-toplamla üçlü-uygulayışıyla) 6'nın eşitliği) doğruysa,
+  "evet-3"'ü yaz;
+yanlışsa,
+  "hayır-3"'ü yaz.
+
+(bu tam-sayının) (şu tam-sayının) (o tam-sayının) (öteki tam-sayının)
+(dörtlü-toplam tam-sayısı),
+  (bununla şunun toplamıyla) (onunla ötekinin toplamının) toplamıdır.
+
+(bu a'nın) (şu b'nin) (o c'nin) (öteki d'nin)
+(iş a'nın b'nin c'nin d'nin dörtlü-uygulayışıyla)
+(dörtlü-uygulayış d'si),
+  bunun şunun onun ötekinin işidir.
+
+((1'in 2'nin 3'ün 4'ün dörtlü-toplamla dörtlü-uygulayışıyla) 10'un eşitliği) doğruysa,
+  "evet-4"'ü yaz;
+yanlışsa,
+  "hayır-4"'ü yaz.
