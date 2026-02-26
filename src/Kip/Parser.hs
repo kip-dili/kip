@@ -1973,9 +1973,41 @@ parseExpWithCtx' useCtx allowMatch =
         _ -> do
           mStrict <- buildStrictApp xs
           case mStrict of
-            Just expStrict -> return expStrict
-            Nothing -> buildAppFromFallback xs
+            Just expStrict -> normalizeCopulaCallableHead expStrict
+            Nothing -> buildAppFromFallback xs >>= normalizeCopulaCallableHead
       where
+        normalizeCopulaCallableHead :: Exp Ann -> KipParser (Exp Ann)
+        normalizeCopulaCallableHead expItem =
+          case expItem of
+            App ann fn args -> do
+              fn' <- promoteCopulaCallable fn args
+              let appCase = annCase (annExp fn')
+              return (App (setAnnCase ann appCase) fn' args)
+            _ -> return expItem
+
+        promoteCopulaCallable :: Exp Ann -> [Exp Ann] -> KipParser (Exp Ann)
+        promoteCopulaCallable fnExp fnArgs =
+          case fnExp of
+            Var ann name candidates
+              | not (null fnArgs)
+              , annCase ann /= Gen
+              , isJust (stripCopulaSuffix (snd name)) -> do
+                  MkParserState{parserCtx, parserCtors, parserFuncArities} <- getP
+                  let localBoundIds =
+                        [ ident
+                        | (ident, _) <- candidates
+                        , ident `Set.member` parserCtx
+                        , ident `notElem` parserCtors
+                        , not (M.member ident parserFuncArities)
+                        ]
+                  if null localBoundIds
+                    then return fnExp
+                    else do
+                      let injected = [(ident, Gen) | ident <- localBoundIds]
+                          candidates' = ordNub (injected ++ candidates)
+                      return (Var (setAnnCase ann Gen) name candidates')
+            _ -> return fnExp
+
         buildAppFromFallback ys =
           case ys of
             [] -> customFailure (ErrInternal "Internal error: buildAppFromFallback called with empty list")
@@ -2570,18 +2602,25 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
 
         parseHigherOrderArgType :: KipParser (Ty Ann)
         parseHigherOrderArgType = do
-          domTy <- try parseTypeWithCase <|> parseTypeLoose
+          firstTy <- parseOneTy
           ws
-          imgTy <- try parseTypeWithCase <|> parseTypeLoose
+          secondTy <- parseOneTy
+          restTys <- many (try (ws *> parseOneTy))
           notFollowedBy (ws *> identifierNotKeyword)
-          let domCase = annCase (annTy domTy)
-              imgCase = annCase (annTy imgTy)
-              domLooksArrow = domCase == Gen
+          let allTys = firstTy : secondTy : restTys
+              allCases = map (annCase . annTy) allTys
+              argCases = init allCases
+              imgCase = last allCases
+              argsLookArrow = all (== Gen) argCases
               imgLooksArrow = imgCase == Ins || imgCase == P3s
-          guard domLooksArrow
+          guard argsLookArrow
           guard imgLooksArrow
-          let spanMerged = mergeSpan (annSpan (annTy domTy)) (annSpan (annTy imgTy))
-          return (Arr (mkAnn imgCase spanMerged) domTy imgTy)
+          return (foldr1 mkArrow allTys)
+          where
+            parseOneTy = try parseTypeWithCase <|> parseTypeLoose
+            mkArrow domTy imgTy =
+              let spanMerged = mergeSpan (annSpan (annTy domTy)) (annSpan (annTy imgTy))
+              in Arr (mkAnn (annCase (annTy imgTy)) spanMerged) domTy imgTy
     -- | Parse a type without requiring it to be in scope.
     parseTypeLoose :: KipParser (Ty Ann) -- ^ Parsed type.
     parseTypeLoose = do
