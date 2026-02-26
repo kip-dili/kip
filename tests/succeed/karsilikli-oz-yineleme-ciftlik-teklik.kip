@@ -1,0 +1,16 @@
+(bu tam-sayının) çiftliği,
+  (bunla 0'ın eşitliği) doğruysa,
+    doğru;
+  değilse,
+    (bunla 1'in farkının) tekliğidir.
+
+(bu tam-sayının) tekliği,
+  (bunla 0'ın eşitliği) doğruysa,
+    yanlış;
+  değilse,
+    (bunla 1'in farkının) çiftliğidir.
+
+(4'ün çiftliği) doğruysa, "evet"'i yaz; yanlışsa, "hayır"'ı yaz.
+(4'ün tekliği) doğruysa, "evet"'i yaz; yanlışsa, "hayır"'ı yaz.
+(5'in çiftliği) doğruysa, "evet"'i yaz; yanlışsa, "hayır"'ı yaz.
+(5'in tekliği) doğruysa, "evet"'i yaz; yanlışsa, "hayır"'ı yaz.
