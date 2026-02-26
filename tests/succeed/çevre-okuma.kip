@@ -4,3 +4,10 @@ denemek,
   metnin varlığıysa, metni yazmaktır.
 
 dene.
+
+tekrar-denemek,
+  değer için "KIP2"yi çevreden-okuyup,
+  değer yokluksa, "yok"u yazmaktır;
+  metnin varlığıysa, metni yazmaktır.
+
+tekrar-dene.
