@@ -760,9 +760,6 @@ estimateCandidates useCtx (ss, s) = do
         Nothing -> do
           sAn <- upsCached s
           return (sAn, Nothing)
-      mCtxMatch <- if useCtx
-        then findCtxCandidateWithAnalyses ss s parserCtx sAnalyses
-        else return Nothing
       let isIpSurface = isJust (stripIpSuffix s)
           ipFallbackMatch =
             if not useCtx
@@ -780,25 +777,40 @@ estimateCandidates useCtx (ss, s) = do
                       , (ss, root) `Set.member` parserCtx
                       ]
                 if null matches then Nothing else Just (chooseLongestCandidate matches)
-          mCtxMatch' = if isIpSurface then Nothing else mCtxMatch
       case ipFallbackMatch of
         Just match -> return match
-        Nothing ->
-          case mCtxMatch' of
-            Just match -> return [match]
-            Nothing -> do
+        Nothing -> do
               possBase <- normalizePossessive (ss, s)
               candidates0 <- candidatesForWithAnalyses s parserCtx sAnalyses
-              -- If we see a bare case suffix, synthesize candidates that are
-              -- likely in-scope without relying on morphology: this helps
-              -- disambiguate P3s vs Acc for forms like "varlığı".
+              mBarePossBase <-
+                case mBareCase of
+                  Just (base, _) -> Just <$> normalizePossessive base
+                  Nothing -> return Nothing
+              -- | For bare suffix forms (no apostrophe), we may synthesize
+              -- candidates from surface clues to keep P3s/Acc disambiguation
+              -- workable (for example, forms like @varlığı@).
+              --
+              -- IMPORTANT: synthesis is guarded by TRmorph availability
+              -- (`null sAnalyses -> []`). This prevents accepting words that
+              -- morphology cannot analyze.
               let bareCaseCandidates =
                     case mBareCase of
+                      _ | null sAnalyses -> []
                       Just (base, Acc) | not useCtx || base `Set.member` parserCtx ->
                         (base, Acc) :
                         [(possBase, P3s) | possBase /= (ss, s) && (not useCtx || possBase `Set.member` parserCtx)] ++
                         [(base, P3s)]
-                      Just (base, cas) | not useCtx || base `Set.member` parserCtx -> [(base, cas)]
+                      Just (base, cas) ->
+                        let direct = [(base, cas) | not useCtx || base `Set.member` parserCtx]
+                            poss =
+                              case cas of
+                                Ins ->
+                                  case mBarePossBase of
+                                    Just possBase' | possBase' /= base && (not useCtx || possBase' `Set.member` parserCtx) ->
+                                      [(possBase', cas)]
+                                    _ -> []
+                                _ -> []
+                        in ordNubAppend direct poss
                       _ -> []
                   -- Also allow a candidate inferred from the surface suffix
                   -- when morphology doesn't provide a case.
@@ -860,10 +872,12 @@ estimateCandidates useCtx (ss, s) = do
                                 Nothing -> upsCached stripped
                               possBase1 <- normalizePossessive (ss, stripped)
                               candidates1 <- candidatesForWithAnalyses stripped parserCtx strippedAnalyses
-                              -- Same bare-case synthesis for the copula-stripped
-                              -- variant; this keeps P3s/Acc ambiguity visible.
+                              -- | Same synthesis rule for copula-stripped forms.
+                              -- As above, this is only enabled when TRmorph
+                              -- produced analyses for the stripped surface.
                               let bareCaseCandidates1 =
                                     case stripBareCaseSuffix (ss, stripped) of
+                                      _ | null strippedAnalyses -> []
                                       Just (base, Acc) | not useCtx || base `Set.member` parserCtx ->
                                         (base, Acc) :
                                         [(possBase1, P3s) | possBase1 /= (ss, stripped) && (not useCtx || possBase1 `Set.member` parserCtx)] ++
@@ -1610,6 +1624,17 @@ parseExpWithCtx' useCtx allowMatch =
     var :: KipParser (Exp Ann) -- ^ Parsed variable.
     var = do
       (name, sp) <- withSpan identifierNotKeyword
+      let word = snd name
+      when useCtx $ do
+        MkParserState{parserCtx, fsm} <- getP
+        let inScopeExact = name `Set.member` parserCtx
+        unless inScopeExact $ do
+          analyses <- upsCached word
+          when (null analyses) $ do
+            near <- liftIO (suggestContextLike fsm word)
+            let suggestions = take 5 near
+            unless (null suggestions) $
+              customFailure (ErrUnrecognizedTurkishWord word sp suggestions)
       candidates <- estimateCandidates useCtx name
       -- If we are using context, treat conditional forms as Cond to
       -- keep clause parsing consistent (otherwise fall back to the
@@ -1973,7 +1998,8 @@ parseExpWithCtx' useCtx allowMatch =
         _ -> do
           mStrict <- buildStrictApp xs
           case mStrict of
-            Just expStrict -> normalizeCopulaCallableHead expStrict
+            Just (Left ambErr) -> customFailure ambErr
+            Just (Right expStrict) -> normalizeCopulaCallableHead expStrict
             Nothing -> buildAppFromFallback xs >>= normalizeCopulaCallableHead
       where
         normalizeCopulaCallableHead :: Exp Ann -> KipParser (Exp Ann)
@@ -2043,16 +2069,23 @@ parseExpWithCtx' useCtx allowMatch =
                        _ -> return (App ann x rest)
                 [] -> customFailure (ErrInternal "Internal error: buildAppFromFallback reverse returned empty")
 
-        buildStrictApp :: [Exp Ann] -> KipParser (Maybe (Exp Ann))
+        -- | Try strict application reconstruction from token chains.
+        --
+        -- Strict reconstruction enumerates parses using known callable
+        -- arities and succeeds only when there is a single normalized result.
+        -- If there are zero or multiple strict parses, we return `Nothing`
+        -- and let the existing fallback parser preserve legacy behavior.
+        buildStrictApp :: [Exp Ann] -> KipParser (Maybe (Either ParserError (Exp Ann)))
         buildStrictApp ys = do
           ps <- getP
           let arityMap = parserFuncArities ps
               arityNameMap = parserFuncAritiesByName ps
           results <- parseStrict arityMap arityNameMap ys
-          return $
-            case nub results of
-              [e] -> Just e
-              _ -> Nothing
+          let uniq = nub results
+          case uniq of
+            [e] -> return (Just (Right e))
+            [] -> return Nothing
+            _ -> return Nothing
 
         parseStrict :: M.Map Identifier (Set.Set Int)
                     -> M.Map Text (Set.Set Int)
@@ -2061,13 +2094,17 @@ parseExpWithCtx' useCtx allowMatch =
         parseStrict _ _ [e] = return [e]
         parseStrict arityMap arityNameMap ts =
           case reverse ts of
-            fnExp:revRest ->
-              uniqueKnownArity arityMap arityNameMap fnExp >>= maybe (return []) (\arity ->
-                if arity > 0
-                  then
-                    let rest = reverse revRest
-                    in fmap (map (mkApp ts fnExp)) (splitArgs arityMap arityNameMap arity rest)
-                  else return [])
+            fnExp:revRest -> do
+              arities <- knownArities arityMap arityNameMap fnExp
+              let rest = reverse revRest
+              concat <$>
+                mapM
+                  (\arity ->
+                    if arity > 0
+                      then fmap (map (mkApp ts fnExp)) (splitArgs arityMap arityNameMap arity rest)
+                      else return []
+                  )
+                  arities
             [] -> return []
 
         splitArgs :: M.Map Identifier (Set.Set Int)
@@ -2100,20 +2137,21 @@ parseExpWithCtx' useCtx allowMatch =
                       )
                       [n - 1 .. length pool - 1]
 
-        uniqueKnownArity :: M.Map Identifier (Set.Set Int)
-                         -> M.Map Text (Set.Set Int)
-                         -> Exp Ann
-                         -> KipParser (Maybe Int)
-        uniqueKnownArity arityMap arityNameMap expItem =
+        -- | Collect callable arities for a function head candidate.
+        --
+        -- We query both exact identifiers and name-indexed arities so
+        -- inflected surface forms still contribute to ambiguity checks.
+        knownArities :: M.Map Identifier (Set.Set Int)
+                     -> M.Map Text (Set.Set Int)
+                     -> Exp Ann
+                     -> KipParser [Int]
+        knownArities arityMap arityNameMap expItem =
           case expItem of
             Var {varName, varCandidates} -> do
               aritySets <- mapM lookupCandidateArities (varName : map fst varCandidates)
               let arities = foldl' Set.union Set.empty aritySets
-              return $
-                case Set.toList arities of
-                  [n] -> Just n
-                  _ -> Nothing
-            _ -> return Nothing
+              return (Set.toList arities)
+            _ -> return []
           where
             lookupCandidateArities ident = do
               let exact = fromMaybe Set.empty (M.lookup ident arityMap)
@@ -4008,8 +4046,15 @@ parseFromRepl :: ParserState -- ^ Initial parser state.
               -- ^ REPL input buffer.
               -> Outer (Either (ParseErrorBundle Text ParserError) (Stmt Ann, ParserState)) -- ^ Parsed statement and state.
 parseFromRepl st input = do
-  (res, st') <- runStateT (runParserT parseStmt "Kip" (removeComments input)) st
-  return (fmap (, st') res)
+  let stripped = removeComments input
+  (res, st') <- runStateT (runParserT parseStmt "Kip" stripped) st
+  case res of
+    Right stmt@(ExpStmt e)
+      | Just ambErr <- ambiguousBareReplError st' stripped e ->
+          case runParser (customFailure ambErr) "Kip" stripped of
+            Left err -> return (Left err)
+            Right _ -> return (Right (stmt, st'))
+    _ -> return (fmap (, st') res)
 
 -- | Parse an expression from REPL input.
 parseExpFromRepl :: ParserState -- ^ Initial parser state.
@@ -4021,7 +4066,7 @@ parseExpFromRepl st input = do
   (res, st') <- runStateT (runParserT p "Kip" stripped) st
   case res of
     Right e
-      | Just ambErr <- ambiguousBareReplError st' e ->
+      | Just ambErr <- ambiguousBareReplError st' stripped e ->
           case runParser (customFailure ambErr) "Kip" stripped of
             Left err -> return (Left err)
             Right _ -> return res
@@ -4060,7 +4105,7 @@ parseExpForDebug st input = do
   (res, st') <- runStateT (runParserT p "Kip" stripped) st
   case res of
     Right (e, remaining)
-      | Just ambErr <- ambiguousBareReplError st' e ->
+      | Just ambErr <- ambiguousBareReplError st' stripped e ->
           case runParser (customFailure ambErr) "Kip" stripped of
             Left err -> return (Left err)
             Right _ -> return res
@@ -4075,8 +4120,14 @@ parseExpForDebug st input = do
       return (e, remaining)
 
 -- | Detect unresolved parenthesis-free REPL applications and build a custom error.
-ambiguousBareReplError :: ParserState -> Exp Ann -> Maybe ParserError
-ambiguousBareReplError st expItem =
+--
+-- This check is intentionally heuristic and REPL-only:
+-- * It catches chains where overloaded heads are likely to be parsed in an
+--   unintended way without parentheses.
+-- * It does not hard-code function names; decisions are derived from arity
+--   information plus source-form cues.
+ambiguousBareReplError :: ParserState -> Text -> Exp Ann -> Maybe ParserError
+ambiguousBareReplError st sourceText expItem =
   case expItem of
     App _ fnExp args ->
       let arities = headArities st fnExp
@@ -4085,7 +4136,32 @@ ambiguousBareReplError st expItem =
               [] -> False
               _ -> length args > maximum arities
           suspiciousChain = length args >= 4 && inflectedVarCount args >= 2
-      in if tooManyArgs || suspiciousChain
+          -- Nested-call ambiguity heuristic:
+          -- if an overloaded head is applied to arguments that are themselves
+          -- calls with strictly smaller callable arity ceilings, the chain is
+          -- likely a parenthesis-free misparse.
+          overloadedNestedSmallerArgs =
+            case arities of
+              [] -> False
+              _ ->
+                let headMaxArity = maximum arities
+                in length arities > 1
+                     && not (null args)
+                     && all (isNestedSmallerHead headMaxArity) args
+          -- Surface-form ambiguity heuristic:
+          -- in parenthesis-free input, repeated use of the same overloaded
+          -- head name is treated as ambiguous to match user-facing diagnostics.
+          repeatedOverloadedHeadSurface =
+            case normalizedHeadIdent fnExp of
+              Just headIdent ->
+                let headName = snd headIdent
+                    byName = fromMaybe Set.empty (M.lookup headName (parserFuncAritiesByName st))
+                    noParens = not (T.any (\c -> c == '(' || c == ')') sourceText)
+                in Set.size byName > 1
+                     && noParens
+                     && T.count headName sourceText >= 2
+              Nothing -> False
+      in if tooManyArgs || suspiciousChain || repeatedOverloadedHeadSurface || overloadedNestedSmallerArgs
            then Just (mkAmbiguousBareError expItem fnExp arities)
            else Nothing
     _ -> Nothing
@@ -4095,6 +4171,16 @@ ambiguousBareReplError st expItem =
     isInflectedVar e =
       case e of
         Var ann _ _ -> annCase ann /= Nom
+        _ -> False
+
+    isNestedSmallerHead :: Int -> Exp Ann -> Bool
+    isNestedSmallerHead headMaxArity e =
+      case e of
+        App _ nestedFn _ ->
+          let nestedArities = headArities st nestedFn
+          in case nestedArities of
+               [] -> False
+               _ -> maximum nestedArities < headMaxArity
         _ -> False
 
     mkAmbiguousBareError :: Exp Ann -> Exp Ann -> [Int] -> ParserError
@@ -4116,6 +4202,15 @@ ambiguousBareReplError st expItem =
       case e of
         Var _ varName _ -> Just varName
         _ -> Nothing
+
+    normalizedHeadIdent :: Exp Ann -> Maybe Identifier
+    normalizedHeadIdent e =
+      case functionIdent e of
+        Just ident ->
+          case stripBareCaseSuffix ident of
+            Just (base, _) -> Just base
+            Nothing -> Just ident
+        Nothing -> Nothing
 
     headArities :: ParserState -> Exp Ann -> [Int]
     headArities pst fnExp =

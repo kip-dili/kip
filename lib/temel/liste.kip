@@ -47,6 +47,28 @@ Boş listede birim değer olarak 0 döner.
     ilkin (devamın toplamıyla) toplamıdır.
 
 (*
+Tam-sayı listesindeki tüm öğeleri çarpar.
+Boş listede birim değer olarak 0 döner.
+Örnek kullanım: ((1'in (2'nin boşa ekine) ekinin çarpımı)
+*)
+(bu tam-sayı listesinin) (çarpım tam-sayısı),
+  bu boşsa,
+    1;
+  ilkin devama ekiyse,
+    ilkin (devamın çarpımıyla) çarpımıdır.
+
+(*
+Ondalık-sayı listesindeki tüm öğeleri çarpar.
+Boş listede birim değer olarak 1.0 döner.
+Örnek kullanım: ((1.1'in (2.3'ün boşa ekine) ekinin çarpımı)
+*)
+(bu ondalık-sayı listesinin) (çarpım ondalık-sayısı),
+  bu boşsa,
+    1.0;
+  ilkin devama ekiyse,
+    ilkin (devamın çarpımıyla) çarpımıdır.
+
+(*
 Verilen işlevi listedeki her öğeye uygular ve yeni bir liste üretir.
 Girdi listesinin uzunluğu korunur; sadece öğe tipi dönüşebilir (a -> b).
 Örnek kullanım: ((1'in (2'nin boşa ekine) ekini) (artırım işleviyle) eşlem)
@@ -83,15 +105,27 @@ Listeyi sağdan katlayarak tek bir sonuç üretir (fold/foldr).
   bunun işle birikimden sağdan-katlanışıdır.
 
 (*
+Verilen testten geçen öğeleri sayar.
+Örnek kullanım: ([-2, -1, 0, 1, 2]'nin (0'dan büyüklüğüyle) sayımı)
+*)
+(bu a listesinin) (test a'nın doğruluğuyla) (sayım tam-sayısı),
+  bu boşsa, 0;
+  ilkin devama ekiyse,
+    (ilkin testinin) doğruysa,
+      1'le (devamın testle sayımının) toplamı;
+    değilse,
+      devamın testle sayımıdır.
+
+(*
 Verilen testten geçen öğeleri tutup diğerlerini eler.
 Sıra korunur; yalnızca koşulu sağlayanlar sonuç listesinde kalır.
-Örnek kullanım: ((1'in (2'nin boşa ekine) ekini) (çift-mi testiyle) filtre)
+Örnek kullanım: ([-2, -1, 0, 1, 2]'nin (0'dan büyüklüğüyle) filtresi)
 *)
 (bu a listesinin) (test a'nın doğruluğuyla) (filtre a listesi),
   bu boşsa, boş;
   ilkin devama ekiyse,
     (ilkin testi) doğruysa,
-      ilkin (devamın testle filtresine) ekidir;
+      ilkin (devamın testle filtresine) eki;
     değilse,
       devamın testle filtresidir.
 
@@ -117,9 +151,9 @@ Listenin başından, test doğru kaldığı sürece öğeleri atar.
   bu boşsa, boş;
   ilkin devama ekiyse,
     (ilkin testi) doğruysa,
-      devamın testle sürece-bırakışıdır;
+      devamın testle sürece-bırakışı;
     değilse,
-      bu.
+      budur.
 
 (*
 Listenin başından en fazla n öğe alır.

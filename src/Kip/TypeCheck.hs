@@ -774,13 +774,18 @@ matchPartialCaseIndices expectedCases = go IntSet.empty
                 ManyMatches -> ManyMatches
 
 -- | Resolve a variable by candidates, arity, and scope.
+--
+-- Arity filtering uses /supports at least this many arguments/ rather than
+-- exact arity. This keeps partial application valid in constructs such as
+-- predicate arguments, where a call site may intentionally provide fewer
+-- arguments than the final callable arity.
 resolveVar :: Ann -- ^ Annotation of the variable occurrence.
            -> Identifier -- ^ Original identifier.
            -> Maybe Int -- ^ Optional arity constraint.
            -> [(Identifier, Case)] -- ^ Candidate identifiers and cases.
            -> TCM (Exp Ann) -- ^ Resolved variable expression.
 resolveVar annExp originalName mArity candidates = do
-  MkTCState{tcCtx, tcFuncNamesByArity} <- get
+  MkTCState{tcCtx, tcFuncs} <- get
   let filtered = filter (\(ident, _) -> Set.member ident tcCtx) candidates
   if null filtered
     then
@@ -793,9 +798,9 @@ resolveVar annExp originalName mArity candidates = do
             case mArity of
               Nothing -> filtered
               Just arity ->
-                let names = fromMaybe Set.empty (HM.lookup arity tcFuncNamesByArity)
-                    narrowed = filter (\(ident, _) -> ident `Set.member` names) filtered
-                in if Set.null names || null narrowed
+                let supportsArity ident = any (>= arity) (Map.findWithDefault [] ident tcFuncs)
+                    narrowed = filter (\(ident, _) -> supportsArity ident) filtered
+                in if null narrowed
                      then filtered
                      else narrowed
           caseFiltered = filter (\(_, cas) -> cas == annCase annExp) arityFiltered
@@ -817,7 +822,12 @@ resolveVar annExp originalName mArity candidates = do
               return (Var (setAnnCase annExp (annCase annExp)) originalName [(ident, annCase annExp)])
             Nothing -> lift (throwE (NoType (annSpan annExp)))
         [(ident, cas)] -> return (Var (setAnnCase annExp cas) originalName [(ident, cas)])
-        _ -> lift (throwE (Ambiguity (annSpan annExp)))
+        _ ->
+          case mArity of
+            -- During call resolution we keep multiple scoped candidates so the
+            -- later overload-matching phase can decide with type information.
+            Just _ -> return (Var (setAnnCase annExp (annCase annExp)) originalName scoped)
+            Nothing -> lift (throwE (Ambiguity (annSpan annExp)))
 
 -- | Try to match copula-suffixed identifiers to context names.
 -- This is a heuristic fallback because the type checker does not have TRmorph access.
