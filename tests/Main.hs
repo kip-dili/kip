@@ -2,15 +2,16 @@
 module Main where
 
 import Control.Exception (bracket)
-import Data.List (isInfixOf, sort, stripPrefix)
+import Data.Char (isSpace)
+import Data.List (isInfixOf, isPrefixOf, sort, stripPrefix)
 import Data.Maybe (fromMaybe)
 import GHC.Conc (getNumProcessors)
 import System.Directory (doesFileExist, doesDirectoryExist, findExecutable, getTemporaryDirectory, listDirectory, removeFile, createDirectoryIfMissing)
-import System.Environment (lookupEnv, setEnv)
+import System.Environment (getEnvironment, lookupEnv, setEnv)
 import System.Exit (ExitCode(..))
 import System.FilePath ((</>), replaceExtension, takeExtension)
 import System.IO (hClose, openTempFile)
-import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess(env), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.Runners (NumThreads(..))
@@ -115,13 +116,14 @@ mkTest kipPath shouldSucceed path =
   testCase path $ do
     inputText <- readIfExists (replaceExtension path "in")
     argsText <- if shouldSucceed then readIfExists (replaceExtension path "args") else return Nothing
+    envOverrides <- readEnvOverrides path
     let extraArgs = maybe [] parseArgsFile argsText
         runArgs =
           case argsText of
             Just _ -> ["--exec", path] ++ extraArgs
             Nothing -> ["--test", path]
     let stdinText = fromMaybe "" inputText
-    (exitCode, stdout, stderr) <- readProcessWithExitCode kipPath runArgs stdinText
+    (exitCode, stdout, stderr) <- readProcessWithOverrides envOverrides kipPath runArgs stdinText
     expectedOut <- readIfExists (replaceExtension path "out")
     expectedErr <- readIfExists (replaceExtension path "err")
     case (shouldSucceed, exitCode) of
@@ -152,13 +154,14 @@ mkReplTest kipPath path =
   testCase path $ do
     replInput <- readFile path
     stdinExtra <- readIfExists (replaceExtension path "in")
+    envOverrides <- readEnvOverrides path
     let stdinText = case stdinExtra of
           Nothing -> replInput
           Just extra ->
             if null replInput || last replInput == '\n'
               then replInput ++ extra
               else replInput ++ "\n" ++ extra
-    (exitCode, stdout, stderr) <- readProcessWithExitCode kipPath [] stdinText
+    (exitCode, stdout, stderr) <- readProcessWithOverrides envOverrides kipPath [] stdinText
     case exitCode of
       ExitFailure _ ->
         assertFailure (path ++ " failed:\n" ++ stdout ++ stderr)
@@ -180,19 +183,20 @@ mkJsTest kipPath nodePath path =
   testCase ("js:" ++ path) $ do
     inputText <- readIfExists (replaceExtension path "in")
     argsText <- readIfExists (replaceExtension path "args")
+    envOverrides <- readEnvOverrides path
     let extraArgs = maybe [] parseArgsFile argsText
     let stdinText = fromMaybe "" inputText
-    (exitCode, kipOut, kipErr) <- readProcessWithExitCode kipPath (["--exec", path] ++ extraArgs) stdinText
+    (exitCode, kipOut, kipErr) <- readProcessWithOverrides envOverrides kipPath (["--exec", path] ++ extraArgs) stdinText
     case exitCode of
       ExitFailure _ ->
         assertFailure (path ++ " failed in kip --exec:\n" ++ kipOut ++ kipErr)
       ExitSuccess -> do
-        (jsExit, jsSrc, jsErr) <- readProcessWithExitCode kipPath ["--codegen", "js", "--no-prelude", "lib/giriş.kip", path] ""
+        (jsExit, jsSrc, jsErr) <- readProcessWithOverrides envOverrides kipPath ["--codegen", "js", "--no-prelude", "lib/giriş.kip", path] ""
         case jsExit of
           ExitFailure _ ->
             assertFailure (path ++ " failed in kip --codegen js:\n" ++ jsSrc ++ jsErr)
           ExitSuccess -> do
-            (nodeExit, nodeOut, nodeErr) <- runNodeOnJs nodePath extraArgs jsSrc stdinText
+            (nodeExit, nodeOut, nodeErr) <- runNodeOnJs envOverrides nodePath extraArgs jsSrc stdinText
             case nodeExit of
               ExitFailure _ ->
                 assertFailure (path ++ " failed under node:\n" ++ nodeOut ++ nodeErr)
@@ -205,8 +209,9 @@ mkJsModulesTest :: FilePath -> FilePath -> FilePath -> TestTree
 mkJsModulesTest kipPath nodePath path =
   testCase ("js-modules:" ++ path) $ do
     inputText <- readIfExists (replaceExtension path "in")
+    envOverrides <- readEnvOverrides path
     let stdinText = fromMaybe "" inputText
-    (exitCode, kipOut, kipErr) <- readProcessWithExitCode kipPath ["--exec", path] stdinText
+    (exitCode, kipOut, kipErr) <- readProcessWithOverrides envOverrides kipPath ["--exec", path] stdinText
     case exitCode of
       ExitFailure _ ->
         assertFailure (path ++ " failed in kip --exec:\n" ++ kipOut ++ kipErr)
@@ -218,7 +223,8 @@ mkJsModulesTest kipPath nodePath path =
         let outDir = tmpPath
         createDirectoryIfMissing True outDir
         (jsExit, _, jsErr) <-
-          readProcessWithExitCode
+          readProcessWithOverrides
+            envOverrides
             kipPath
             ["--codegen", "js-modules", "--outdir", outDir, "--no-prelude", "lib/giriş.kip", path]
             ""
@@ -226,7 +232,7 @@ mkJsModulesTest kipPath nodePath path =
           ExitFailure _ ->
             assertFailure (path ++ " failed in kip --codegen js-modules:\n" ++ jsErr)
           ExitSuccess -> do
-            (nodeExit, nodeOut, nodeErr) <- readProcessWithExitCode nodePath [outDir </> "entry.mjs"] stdinText
+            (nodeExit, nodeOut, nodeErr) <- readProcessWithOverrides envOverrides nodePath [outDir </> "entry.mjs"] stdinText
             case nodeExit of
               ExitFailure _ ->
                 assertFailure (path ++ " failed under node (js-modules):\n" ++ nodeOut ++ nodeErr)
@@ -236,12 +242,13 @@ mkJsModulesTest kipPath nodePath path =
                 assertEqual (renderOutputMismatch expected actual) expected actual
 
 -- | Write JS source to a temp file and execute it with Node.js.
-runNodeOnJs :: FilePath -- ^ Node.js executable path.
+runNodeOnJs :: [(String, String)] -- ^ Per-test environment overrides.
+            -> FilePath -- ^ Node.js executable path.
             -> [String] -- ^ Extra argv passed to the generated JS program.
             -> String -- ^ JavaScript source.
             -> String -- ^ stdin payload.
             -> IO (ExitCode, String, String) -- ^ Exit code, stdout, stderr.
-runNodeOnJs nodePath extraArgs jsSrc stdinText = do
+runNodeOnJs envOverrides nodePath extraArgs jsSrc stdinText = do
   tempDir <- getTemporaryDirectory
   bracket
     (do
@@ -251,7 +258,62 @@ runNodeOnJs nodePath extraArgs jsSrc stdinText = do
     removeFile
     (\path -> do
       writeFile path jsSrc
-      readProcessWithExitCode nodePath (path : extraArgs) stdinText)
+      readProcessWithOverrides envOverrides nodePath (path : extraArgs) stdinText)
+
+-- | Read optional `.env` fixture and parse KEY=VALUE pairs.
+readEnvOverrides :: FilePath -- ^ Test file path.
+                 -> IO [(String, String)] -- ^ Environment overrides.
+readEnvOverrides path = do
+  let envPath = replaceExtension path "env"
+  envText <- readIfExists envPath
+  case envText of
+    Nothing -> pure []
+    Just txt ->
+      case parseEnvFile envPath txt of
+        Left msg -> assertFailure msg >> pure []
+        Right vars -> pure vars
+
+-- | Parse env fixture content as KEY=VALUE pairs.
+parseEnvFile :: FilePath -- ^ Fixture path for error reporting.
+             -> String -- ^ Raw fixture text.
+             -> Either String [(String, String)] -- ^ Parsed env entries.
+parseEnvFile path txt = traverse parseLine relevant
+  where
+    numbered = zip [1 :: Int ..] (lines txt)
+    relevant =
+      [ (lineNo, rawLine)
+      | (lineNo, rawLine) <- numbered
+      , let line = dropWhile isSpace (stripCR rawLine)
+      , not (null line)
+      , not ("#" `isPrefixOf` line)
+      ]
+
+    parseLine (lineNo, rawLine) =
+      let line = dropWhile isSpace (stripCR rawLine)
+          (rawKey, rest) = break (== '=') line
+          key = trim rawKey
+      in case rest of
+           '=':value
+             | not (null key) -> Right (key, value)
+             | otherwise -> Left (formatErr lineNo "empty key")
+           _ -> Left (formatErr lineNo "expected KEY=VALUE")
+
+    formatErr lineNo detail =
+      path ++ ":" ++ show lineNo ++ ": invalid .env line (" ++ detail ++ ")"
+
+-- | Execute a process with per-test environment overrides.
+readProcessWithOverrides :: [(String, String)] -- ^ KEY=VALUE overrides.
+                         -> FilePath -- ^ Executable.
+                         -> [String] -- ^ CLI args.
+                         -> String -- ^ stdin payload.
+                         -> IO (ExitCode, String, String) -- ^ Exit code, stdout, stderr.
+readProcessWithOverrides overrides cmd args stdinText
+  | null overrides = readProcessWithExitCode cmd args stdinText
+  | otherwise = do
+      baseEnv <- getEnvironment
+      let overrideKeys = map fst overrides
+          merged = filter (\(k, _) -> k `notElem` overrideKeys) baseEnv ++ overrides
+      readCreateProcessWithExitCode ((proc cmd args) { env = Just merged }) stdinText
 
 
 -- | Render a diff-friendly output mismatch message.
@@ -343,3 +405,8 @@ trimRight = reverse . dropWhile (`elem` ("\r\n \t" :: String)) . reverse
 parseArgsFile :: String -- ^ Raw args file text.
               -> [String] -- ^ Parsed arguments.
 parseArgsFile = words
+
+-- | Trim leading and trailing whitespace.
+trim :: String -- ^ Input text.
+     -> String -- ^ Trimmed text.
+trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace

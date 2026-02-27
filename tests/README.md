@@ -5,6 +5,8 @@ Tests are organized by expected outcome.
 - Optional `.out`: exact expected output lines for a `.kip` in `tests/succeed`.
 - Optional `.err`: substring that must appear in the error for a `.kip` in `tests/fail`.
 - Optional `.in`: stdin to feed when running a `.kip` in `tests/succeed`.
+- Optional `.args`: whitespace-separated CLI args to pass to `kip --exec`.
+- Optional `.env`: per-test environment overrides (`KEY=VALUE`, one per line).
 
 Run with `stack test`. The test runner invokes the `kip` executable with
 `--exec`, so make sure it is on your `PATH` (e.g. `stack install`) or set
