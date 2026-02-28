@@ -808,7 +808,11 @@ resolveVar annExp originalName mArity candidates = do
             if null caseFiltered
               then arityFiltered
               else caseFiltered
-      case scoped of
+          -- Candidate collection can include exact duplicates (same identifier
+          -- and case) from prelude/import layering; keep only unique entries so
+          -- overload resolution does not preserve artificial ambiguity.
+          scopedUnique = nub scoped
+      case scopedUnique of
         [] -> do
           -- NOTE: We may have candidates in scope that fail the case/arity
           -- filtering, but the surface form could still be a copula/infinitive
@@ -826,7 +830,7 @@ resolveVar annExp originalName mArity candidates = do
           case mArity of
             -- During call resolution we keep multiple scoped candidates so the
             -- later overload-matching phase can decide with type information.
-            Just _ -> return (Var (setAnnCase annExp (annCase annExp)) originalName scoped)
+            Just _ -> return (Var (setAnnCase annExp (annCase annExp)) originalName scopedUnique)
             Nothing -> lift (throwE (Ambiguity (annSpan annExp)))
 
 -- | Try to match copula-suffixed identifiers to context names.

@@ -1,0 +1,2 @@
+"./tmp-kip-readwrite.txt"ye "selam"ı yaz.
+metin için "./tmp-kip-readwrite.txt"'den okuyup, metin yokluksa, "yok"u yaz; dizgenin varlığıysa, dizgeyi yaz.
