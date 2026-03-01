@@ -2610,7 +2610,7 @@ applySubst subst ty =
   case ty of
     TyVar ann name ->
       case Map.lookup name subst of
-        Just t -> t
+        Just t -> setTyCase (annCase ann) t
         Nothing -> TyVar ann name
     TySkolem {} -> ty
     TyInt {} -> ty
@@ -2621,6 +2621,26 @@ applySubst subst ty =
     Arr ann d i -> Arr ann (applySubst subst d) (applySubst subst i)
     TyApp ann ctor args ->
       TyApp ann (applySubst subst ctor) (map (applySubst subst) args)
+
+-- | Apply a grammatical case to the root annotation of a type.
+--
+-- This is used when replacing a polymorphic type variable with a concrete
+-- type during substitution so that the call-site surface case (for example
+-- @Gen@ in constructor arguments like @a'nın@) is preserved.
+setTyCase :: Case -- ^ Case to apply at the type root.
+          -> Ty Ann -- ^ Type to rewrite.
+          -> Ty Ann -- ^ Type with updated root case.
+setTyCase cas ty =
+  case ty of
+    TyVar ann name -> TyVar (setAnnCase ann cas) name
+    TySkolem ann name -> TySkolem (setAnnCase ann cas) name
+    TyInt ann -> TyInt (setAnnCase ann cas)
+    TyFloat ann -> TyFloat (setAnnCase ann cas)
+    TyInd ann name -> TyInd (setAnnCase ann cas) name
+    TyString ann -> TyString (setAnnCase ann cas)
+    TyChar ann -> TyChar (setAnnCase ann cas)
+    Arr ann d i -> Arr (setAnnCase ann cas) d i
+    TyApp ann ctor args -> TyApp (setAnnCase ann cas) ctor args
 
 -- | Run a type checker action with a starting state.
 runTCM :: TCM a -- ^ Type checker computation.

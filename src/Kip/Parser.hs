@@ -3209,7 +3209,10 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             argTy ident = do
               -- First, try base-form matching with type parameters
               case findMatchingTypeParam ident of
-                Just paramName -> return (TyVar (mkAnn Nom NoSpan) paramName)
+                Just paramName -> do
+                  (_, resolvedCase) <- resolveTypeCandidateLoose ident
+                  let cas = preferSurfaceCase ident resolvedCase
+                  return (TyVar (mkAnn cas NoSpan) paramName)
                 Nothing -> do
                   -- If no type param match, try normal resolution
                   mResolved <- optional (resolveTypeCandidatePreferCtx ident)

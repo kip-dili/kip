@@ -289,6 +289,46 @@ addCondSuffix stem =
            then stem ++ ['y', 's', suffixVowel]  -- After vowel: add 'y' + 's' + vowel
            else stem ++ ['s', suffixVowel]        -- After consonant: 's' + vowel
 
+-- | Fallback inflection for opaque stems when TRmorph cannot generate forms.
+--
+-- Opaque stems are tokens where apostrophe usage is expected in surface text
+-- (single letters, numerals, and similar non-word tokens). For regular words,
+-- we keep the bare stem when morphology generation fails.
+fallbackOpaqueCase :: String -- ^ Input stem.
+                   -> Case -- ^ Case to apply.
+                   -> Maybe String -- ^ Inflected fallback when applicable.
+fallbackOpaqueCase stem cas
+  | not (needsApostrophe stem) = Nothing
+  | otherwise =
+      case cas of
+        Gen -> Just (stem ++ "'" ++ genSuffix stem)
+        Acc -> Just (stem ++ "'" ++ accSuffix stem)
+        Dat -> Just (stem ++ "'" ++ datSuffix stem)
+        Loc -> Just (stem ++ "'" ++ locSuffix stem)
+        Abl -> Just (stem ++ "'" ++ ablSuffix stem)
+        Ins -> Just (stem ++ "'" ++ insSuffix stem)
+        _ -> Nothing
+  where
+    needsApostrophe s = length s == 1 || any isDigit s || not (all isLetter s)
+    backVowel v = v `elem` ("aıou" :: String)
+    harmony4 s =
+      case lastVowel s of
+        Just v | v `elem` ("aı" :: String) -> "ı"
+        Just v | v `elem` ("ou" :: String) -> "u"
+        Just v | v `elem` ("ei" :: String) -> "i"
+        Just v | v `elem` ("öü" :: String) -> "ü"
+        _ -> "i"
+    harmony2 s =
+      case lastVowel s of
+        Just v -> if backVowel v then "a" else "e"
+        _ -> "e"
+    genSuffix s = (if endsWithVowel s then "n" else "") ++ harmony4 s ++ "n"
+    accSuffix s = (if endsWithVowel s then "y" else "") ++ harmony4 s
+    datSuffix s = (if endsWithVowel s then "y" else "") ++ harmony2 s
+    locSuffix s = "d" ++ harmony2 s
+    ablSuffix s = "d" ++ harmony2 s ++ "n"
+    insSuffix s = (if endsWithVowel s then "y" else "") ++ "l" ++ harmony2 s
+
 -- | Render an identifier with one or more cases applied.
 renderIdentWithCases :: RenderCache -- ^ Render cache.
                      -> FSM -- ^ Morphology FSM.
@@ -312,6 +352,7 @@ renderIdentWithCases cache fsm (xs, x) cases = do
   -- P3s (possessive) and Cond (conditional) fallbacks are kept since they are
   -- regular and needed for types/patterns; TRmorph does not cover Cond.
   let minimalFallback = case cases of
+        [cas] | Just inflected <- fallbackOpaqueCase stem cas -> inflected
         [P3s] -> addP3sSuffix stem
         [Cond] -> addCondSuffix stem
         _ -> stem
