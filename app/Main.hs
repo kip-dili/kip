@@ -408,21 +408,28 @@ renderTCError paramTyCons tyMods tcErr = do
               argsLine = "Argüman tipleri: " <> T.intercalate ", " argStrs
               expLine = "Beklenen tipler: " <> T.intercalate ", " expStrs
           return (T.intercalate "\n" [header, argsLine, expLine])
-        PatternTypeMismatch ctor expectedTy actualTy _ -> do
+        PatternTypeMismatch ctor expectedTy actualTy availableCtors _ -> do
           (cache, fsm) <- requireCacheFsm
           expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
           actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
+          availableStrs <- liftIO (mapM (\ident -> renderIdentWithCase cache fsm ident Nom) availableCtors)
+          let availableLine =
+                [ "Örüntülerin tipi " <> actStr <> " olmalı; bu yüzden yalnızca "
+                    <> T.intercalate ", " (map T.pack availableStrs)
+                    <> " yapkılarını kullanabilirsiniz."
+                | not (null availableStrs)
+                ]
           let header =
                 if ctor == ([], T.pack "ascribe")
                   then "Tip ataması uyuşmuyor: beklenen tip " <> expStr <> ", bulunan tip " <> actStr
-                  else T.pack (prettyIdent ctor) <> " yapıcısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
-          return header
+                  else T.pack (prettyIdent ctor) <> " yapkısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
+          return (T.intercalate "\n" (header : availableLine))
         ArgTypeMismatch expectedTy actualTy _ -> do
           (cache, fsm) <- requireCacheFsm
           expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
           actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
           return ("Argüman tipi uyuşmuyor: beklenen tip " <> expStr <> ", bulunan tip " <> actStr)
-        NonExhaustivePattern pats sp -> do
+        NonExhaustivePattern _ pats sp -> do
           missing <- renderMissingPatterns LangTr pats
           let header = "Tip hatası: örüntü eksik." <> renderSpan (rcLang ctx) sp
           return (T.intercalate "\n" [header, missing])
@@ -473,21 +480,29 @@ renderTCError paramTyCons tyMods tcErr = do
               argsLine = "Argument types: " <> T.intercalate ", " argStrs
               expLine = "Expected types: " <> T.intercalate ", " expStrs
           return (T.intercalate "\n" [header, argsLine, expLine])
-        PatternTypeMismatch ctor expectedTy actualTy _ -> do
+        PatternTypeMismatch ctor expectedTy actualTy availableCtors _ -> do
           (cache, fsm) <- requireCacheFsm
           expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
           actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
+          availableStrs <- liftIO (mapM (\ident -> renderIdentWithCase cache fsm ident Nom) availableCtors)
+          let availableLine =
+                [ "Since the patterns are expected to have type " <> actStr
+                    <> ", you can only use the "
+                    <> T.intercalate ", " (map T.pack availableStrs)
+                    <> " constructors."
+                | not (null availableStrs)
+                ]
           let header =
                 if ctor == ([], T.pack "ascribe")
                   then "Type ascription mismatch: expected " <> expStr <> ", found " <> actStr
                   else T.pack (prettyIdent ctor) <> " constructor has type " <> expStr <> ", but " <> actStr <> " is expected here"
-          return header
+          return (T.intercalate "\n" (header : availableLine))
         ArgTypeMismatch expectedTy actualTy _ -> do
           (cache, fsm) <- requireCacheFsm
           expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
           actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
           return ("Argument type mismatch: expected " <> expStr <> ", found " <> actStr)
-        NonExhaustivePattern pats sp -> do
+        NonExhaustivePattern _ pats sp -> do
           missing <- renderMissingPatterns LangEn pats
           let header = "Type error: non-exhaustive pattern match." <> renderSpan (rcLang ctx) sp
           return (T.intercalate "\n" [header, missing])
@@ -550,9 +565,9 @@ tcErrSpan tcErr =
     UnknownName _ sp -> Just sp
     NoMatchingOverload _ _ _ sp -> Just sp
     NoMatchingCtor _ _ _ sp -> Just sp
-    PatternTypeMismatch _ _ _ sp -> Just sp
+    PatternTypeMismatch _ _ _ _ sp -> Just sp
     ArgTypeMismatch _ _ sp -> Just sp
-    NonExhaustivePattern _ sp -> Just sp
+    NonExhaustivePattern _ _ sp -> Just sp
     UnimplementedPrimitive _ _ sp -> Just sp
     InvalidReturnCase _ sp -> Just sp
     TC.Unknown -> Nothing
@@ -561,11 +576,11 @@ tcErrSpan tcErr =
 renderMissingPatterns :: Lang -> [Pat Ann] -> RenderM Text
 renderMissingPatterns lang pats = do
   patTexts <- mapM (renderPatText False) pats
-  let prefix =
-        case lang of
-          LangTr -> "Eksik örüntüler: "
-          LangEn -> "Missing patterns: "
-  return (prefix <> T.intercalate ", " patTexts)
+  let listed = T.intercalate ", " patTexts
+  return $
+    case lang of
+      LangTr -> "Eksik kalan örüntüler şunlar: " <> listed <> "."
+      LangEn -> "The missing patterns are: " <> listed <> "."
   where
     renderPatText :: Bool -- ^ Whether this is an argument position.
                   -> Pat Ann

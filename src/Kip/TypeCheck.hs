@@ -330,9 +330,9 @@ data TCError =
  | UnknownName Identifier Span
  | NoMatchingOverload Identifier [Maybe (Ty Ann)] [(Identifier, [Arg Ann])] Span
  | NoMatchingCtor Identifier [Maybe (Ty Ann)] [Ty Ann] Span
- | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) Span  -- ctor, expected (ctor result), actual (scrutinee)
+ | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) [Identifier] Span  -- ctor, expected (ctor result), actual (scrutinee), available ctors
  | ArgTypeMismatch (Ty Ann) (Ty Ann) Span -- expected argument type, actual argument type
- | NonExhaustivePattern [Pat Ann] Span
+ | NonExhaustivePattern [Identifier] [Pat Ann] Span
  | UnimplementedPrimitive Identifier [Arg Ann] Span
  | InvalidReturnCase Case Span
   deriving (Show, Ord, Eq, Generic)
@@ -346,9 +346,9 @@ instance Binary TCError where
   put (UnknownName ident sp) = B.put (3 :: Word8) >> B.put ident >> B.put sp
   put (NoMatchingOverload ident mty sigs sp) = B.put (4 :: Word8) >> B.put ident >> B.put mty >> B.put sigs >> B.put sp
   put (NoMatchingCtor ident mty tys sp) = B.put (5 :: Word8) >> B.put ident >> B.put mty >> B.put tys >> B.put sp
-  put (PatternTypeMismatch ctor expTy actTy sp) = B.put (6 :: Word8) >> B.put ctor >> B.put expTy >> B.put actTy >> B.put sp
+  put (PatternTypeMismatch ctor expTy actTy available sp) = B.put (6 :: Word8) >> B.put ctor >> B.put expTy >> B.put actTy >> B.put available >> B.put sp
   put (ArgTypeMismatch expTy actTy sp) = B.put (10 :: Word8) >> B.put expTy >> B.put actTy >> B.put sp
-  put (NonExhaustivePattern pats sp) = B.put (7 :: Word8) >> B.put pats >> B.put sp
+  put (NonExhaustivePattern available pats sp) = B.put (7 :: Word8) >> B.put available >> B.put pats >> B.put sp
   put (UnimplementedPrimitive ident args sp) = B.put (8 :: Word8) >> B.put ident >> B.put args >> B.put sp
   put (InvalidReturnCase cas sp) = B.put (9 :: Word8) >> B.put cas >> B.put sp
 
@@ -362,9 +362,9 @@ instance Binary TCError where
       3 -> UnknownName <$> B.get <*> B.get
       4 -> NoMatchingOverload <$> B.get <*> B.get <*> B.get <*> B.get
       5 -> NoMatchingCtor <$> B.get <*> B.get <*> B.get <*> B.get
-      6 -> PatternTypeMismatch <$> B.get <*> B.get <*> B.get <*> B.get
+      6 -> PatternTypeMismatch <$> B.get <*> B.get <*> B.get <*> B.get <*> B.get
       10 -> ArgTypeMismatch <$> B.get <*> B.get <*> B.get
-      7 -> NonExhaustivePattern <$> B.get <*> B.get
+      7 -> NonExhaustivePattern <$> B.get <*> B.get <*> B.get
       8 -> UnimplementedPrimitive <$> B.get <*> B.get <*> B.get
       9 -> InvalidReturnCase <$> B.get <*> B.get
       _ -> fail "Invalid TCError tag"
@@ -711,7 +711,7 @@ tcExp1With allowEffect e =
           | expIsAppToOverload && typeMatchesAllowUnknown tcTyCons (Just expTy) nAsc ->
               return (Ascribe annExp ascType exp')
           | otherwise ->
-              lift (throwE (PatternTypeMismatch ([], T.pack "ascribe") ascType expTy (annSpan annExp)))
+              lift (throwE (PatternTypeMismatch ([], T.pack "ascribe") ascType expTy [] (annSpan annExp)))
         Nothing ->
           lift (throwE (NoType (annSpan annExp)))
 
@@ -1468,7 +1468,9 @@ inferPatTypes pat args =
                          (PVar _ ann):_ -> annSpan ann
                          (PWildcard ann):_ -> annSpan ann
                          _ -> annSpan (annTy scrutTy)
-              lift (throwE (PatternTypeMismatch ctor resTy scrutTy sp))
+              mCtors <- ctorsForType scrutTy
+              let available = maybe [] (map ctorName) mCtors
+              lift (throwE (PatternTypeMismatch ctor resTy scrutTy available sp))
         Nothing -> return []  -- Constructor not found - might be undefined, let other checks handle it
     _ -> return []
 
@@ -1562,11 +1564,11 @@ checkExhaustivePatterns scrutTy clauses ann = do
       mCtors <- ctorsForType scrutTy
       case mCtors of
         Nothing -> return ()
-        Just _ -> do
+        Just ctors -> do
           missing <- missingPatternsForType scrutTy pats
           case missing of
             [] -> return ()
-            _ -> lift (throwE (NonExhaustivePattern missing (annSpan ann)))
+            _ -> lift (throwE (NonExhaustivePattern (map ctorName ctors) missing (annSpan ann)))
   where
     isWildcardPat pat =
       case pat of
