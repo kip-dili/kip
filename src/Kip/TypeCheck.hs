@@ -325,6 +325,7 @@ invalidateInferMemo st =
 data TCError =
    Unknown
  | NoType Span
+ | EffectfulExprInPureCtx Identifier Span
  | Ambiguity Span
  | UnknownName Identifier Span
  | NoMatchingOverload Identifier [Maybe (Ty Ann)] [(Identifier, [Arg Ann])] Span
@@ -340,6 +341,7 @@ data TCError =
 instance Binary TCError where
   put Unknown = B.put (0 :: Word8)
   put (NoType sp) = B.put (1 :: Word8) >> B.put sp
+  put (EffectfulExprInPureCtx ident sp) = B.put (11 :: Word8) >> B.put ident >> B.put sp
   put (Ambiguity sp) = B.put (2 :: Word8) >> B.put sp
   put (UnknownName ident sp) = B.put (3 :: Word8) >> B.put ident >> B.put sp
   put (NoMatchingOverload ident mty sigs sp) = B.put (4 :: Word8) >> B.put ident >> B.put mty >> B.put sigs >> B.put sp
@@ -355,6 +357,7 @@ instance Binary TCError where
     case tag of
       0 -> return Unknown
       1 -> NoType <$> B.get
+      11 -> EffectfulExprInPureCtx <$> B.get <*> B.get
       2 -> Ambiguity <$> B.get
       3 -> UnknownName <$> B.get <*> B.get
       4 -> NoMatchingOverload <$> B.get <*> B.get <*> B.get <*> B.get
@@ -720,7 +723,7 @@ rejectPureEffect :: Ann -- ^ Expression annotation.
 rejectPureEffect ann ident arity = do
   MkTCState{tcFuncEffectsByArity} <- get
   when (HM.lookupDefault False (ident, arity) tcFuncEffectsByArity) $
-    lift (throwE (NoType (annSpan ann)))
+    lift (throwE (EffectfulExprInPureCtx ident (annSpan ann)))
 
 -- | Apply a grammatical case to a value expression.
 applyTypeCase :: Case -- ^ Case to apply.

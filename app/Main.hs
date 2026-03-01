@@ -374,6 +374,8 @@ renderTCError paramTyCons tyMods tcErr = do
           return "Tip hatası: bilinmeyen hata."
         NoType sp ->
           return ("Tip hatası: uygun bir tip bulunamadı (beklenen ve bulunan tipler uyuşmuyor olabilir)." <> renderSpan (rcLang ctx) sp)
+        EffectfulExprInPureCtx _ sp ->
+          return (effectBoundaryHint LangTr <> renderSpan (rcLang ctx) sp)
         Ambiguity sp ->
           return ("Tip hatası: ifade belirsiz." <> renderSpan (rcLang ctx) sp)
         UnknownName name sp ->
@@ -443,6 +445,8 @@ renderTCError paramTyCons tyMods tcErr = do
           return "Type error: unknown error."
         NoType sp ->
           return ("Type error: no suitable type found (expected and actual types may not match)." <> renderSpan (rcLang ctx) sp)
+        EffectfulExprInPureCtx _ sp ->
+          return (effectBoundaryHint LangEn <> renderSpan (rcLang ctx) sp)
         Ambiguity sp ->
           return ("Type error: expression is ambiguous." <> renderSpan (rcLang ctx) sp)
         UnknownName name sp ->
@@ -515,12 +519,33 @@ renderTCErrorWithSource paramTyCons tyMods source tcErr = do
       let snippet = renderSpanSnippet source sp
       in return (msg <> "\n" <> snippet)
 
+-- | User-facing guidance for using effectful forms in the right context.
+effectBoundaryHint :: Lang -- ^ Message language.
+                   -> Text -- ^ Rendered hint.
+effectBoundaryHint lang =
+  case lang of
+    LangTr ->
+      T.intercalate
+        "\n"
+        [ "Tip hatası: bu ifade etkili bağlamda kullanılmalı."
+        , "Öneri: yazdırmak için `... yaz.` kullanın."
+        , "Öneri: etkili bir sonucu kullanmak için `x için ...yup, ...` biçimini kullanın."
+        ]
+    LangEn ->
+      T.intercalate
+        "\n"
+        [ "Hint: this expression must be used in an effectful context."
+        , "Suggestion: use `... yaz.` for printing."
+        , "Suggestion: use `x için ...yup, ...` to bind and continue with an effectful result."
+        ]
+
 -- | Extract a span from a type checker error when present.
 tcErrSpan :: TCError -- ^ Type checker error.
           -> Maybe Span -- ^ Associated span.
 tcErrSpan tcErr =
   case tcErr of
     NoType sp -> Just sp
+    EffectfulExprInPureCtx _ sp -> Just sp
     Ambiguity sp -> Just sp
     UnknownName _ sp -> Just sp
     NoMatchingOverload _ _ _ sp -> Just sp
