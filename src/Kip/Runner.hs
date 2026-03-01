@@ -581,12 +581,27 @@ renderTCError paramTyCons tyMods tcErr = do
 -- | Render a type checker error with a source snippet.
 renderTCErrorWithSource :: [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
 renderTCErrorWithSource paramTyCons tyMods source tcErr = do
+  ctx <- ask
   msg <- renderTCError paramTyCons tyMods tcErr
-  case tcErrSpan tcErr of
-    Nothing -> return msg
-    Just sp ->
-      let snippet = renderSpanSnippet source sp
-      in return (msg <> "\n" <> snippet)
+  let withPrimary =
+        case tcErrSpan tcErr of
+          Nothing -> msg
+          Just sp -> msg <> "\n" <> renderSpanSnippet source sp
+  case tcErrRelatedSpan tcErr of
+    Just relatedSp
+      | Just relatedSp /= tcErrSpan tcErr ->
+          let relatedHeader =
+                case rcLang ctx of
+                  LangTr -> "İlgili konum:"
+                  LangEn -> "Related location:"
+              relatedBody =
+                case tcErrSpan tcErr of
+                  Just primarySp
+                    | sameSpanPath primarySp relatedSp ->
+                        "\n" <> renderSpanSnippet source relatedSp
+                  _ -> renderSpan (rcLang ctx) relatedSp
+          in return (withPrimary <> "\n" <> relatedHeader <> relatedBody)
+    _ -> return withPrimary
 
 -- | User-facing guidance for using effectful forms in the right context.
 effectBoundaryHint :: Lang -> Text
@@ -623,6 +638,28 @@ tcErrSpan tcErr =
     UnimplementedPrimitive _ _ sp -> Just sp
     InvalidReturnCase _ sp -> Just sp
     TC.Unknown -> Nothing
+
+-- | Extract one secondary span for unification-style diagnostics.
+--
+-- We use the expected type annotation span when available so REPL users can
+-- see a distant but relevant location (for example, a declared parameter type
+-- that conflicts with the call site).
+tcErrRelatedSpan :: TCError -> Maybe Span
+tcErrRelatedSpan tcErr =
+  case tcErr of
+    ArgTypeMismatch expectedTy _ _ -> nonNoSpan (annSpan (annTy expectedTy))
+    PatternTypeMismatch _ expectedTy _ _ _ -> nonNoSpan (annSpan (annTy expectedTy))
+    _ -> Nothing
+  where
+    nonNoSpan sp =
+      case sp of
+        NoSpan -> Nothing
+        _ -> Just sp
+
+-- | Check whether two spans refer to the same source file path.
+sameSpanPath :: Span -> Span -> Bool
+sameSpanPath (Span _ _ p1) (Span _ _ p2) = p1 == p2
+sameSpanPath _ _ = False
 
 -- | Render missing patterns for error messages.
 renderMissingPatterns :: Lang -> [Pat Ann] -> RenderM Text
