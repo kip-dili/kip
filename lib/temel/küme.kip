@@ -1,0 +1,48 @@
+temeli yükle.
+
+(* Çokbiçimli küme tipi. Değerler primitive işlemlerle üretilir. *)
+Bir öğe küme'si var olamaz.
+
+(* Boş bir küme üretir. *)
+(boş-küme öğe kümesi),
+  yerleşiktir.
+
+(*
+Kümeye öğe ekler.
+*)
+(bu öğe kümesine) (şu öğenin) (ilave öğe kümesi),
+  yerleşiktir.
+
+(*
+Kümeden öğe çıkarır.
+*)
+(bu öğe kümesinden) (şu öğenin) (çıkarılmış öğe kümesi),
+  yerleşiktir.
+
+(*
+Kümenin bir öğeyi içerip içermediğini döndürür.
+*)
+(bu öğe kümesine) (şu öğenin) (üyelik doğruluğu),
+  yerleşiktir.
+
+(*
+Kümenin kardinalitesini döndürür.
+*)
+(bu öğe kümesinin) (boyut tam-sayısı),
+  yerleşiktir.
+
+(*
+İki kümenin birleşimini döndürür.
+*)
+(bu öğe kümesiyle) (şu öğe kümesinin) (birleşim öğe kümesi),
+  yerleşiktir.
+
+(*
+Kümeyi listeye dönüştürür.
+*)
+(bu öğe kümesinin) (liste-hal öğe listesi),
+  yerleşiktir.
+
+(* Listeyi kümeye dönüştürür. *)
+(bu öğe listesinin) (küme-hal öğe kümesi),
+  yerleşiktir.

@@ -23,10 +23,12 @@ module Kip.Primitive
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Bifunctor as B
-import Data.Char (chr, ord, toLower, toUpper, isAlpha, isAlphaNum, isDigit, isLower, isSpace, isUpper)
+import Data.Char (chr, ord, toLower, toUpper, isAlpha, isAlphaNum, isDigit, isLower, isSpace, isUpper, generalCategory, GeneralCategory(..))
 import Data.Fixed (mod')
 import Data.List (foldl')
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
+import qualified Data.Set as Set
 import Data.Word (Word32)
 import System.FilePath (isRelative, takeBaseName, takeDirectory, takeFileName, (</>))
 import Text.Read (readMaybe)
@@ -118,6 +120,14 @@ isCharTy _ = False
 isCharIdent :: Identifier -> Bool
 isCharIdent (mods, name) = null mods && name == T.pack "karakter"
 
+-- | Check for the set type identifier.
+isSetIdent :: Identifier -> Bool
+isSetIdent (mods, name) = null mods && name == T.pack "küme"
+
+-- | Check for the list type identifier.
+isListIdent :: Identifier -> Bool
+isListIdent (mods, name) = null mods && name == T.pack "liste"
+
 -- | Normalize primitive aliases to canonical primitive constructors.
 normalizePrimTy :: Ty Ann -> Ty Ann
 normalizePrimTy ty =
@@ -151,6 +161,50 @@ containsTyVar ty =
     Arr _ d i -> containsTyVar d || containsTyVar i
     _ -> False
 
+-- | Normalize type annotations for structural type equality checks.
+normalizeTyAnn :: Ty Ann -> Ty Ann
+normalizeTyAnn ty =
+  case normalizePrimTy ty of
+    TyInt _ -> TyInt (mkAnn Nom NoSpan)
+    TyFloat _ -> TyFloat (mkAnn Nom NoSpan)
+    TyString _ -> TyString (mkAnn Nom NoSpan)
+    TyChar _ -> TyChar (mkAnn Nom NoSpan)
+    TyVar _ name -> TyVar (mkAnn Nom NoSpan) name
+    TySkolem _ name -> TySkolem (mkAnn Nom NoSpan) name
+    TyInd _ name -> TyInd (mkAnn Nom NoSpan) name
+    TyApp _ ctor args ->
+      TyApp (mkAnn Nom NoSpan) (normalizeTyAnn ctor) (map normalizeTyAnn args)
+    Arr _ d i ->
+      Arr (mkAnn Nom NoSpan) (normalizeTyAnn d) (normalizeTyAnn i)
+
+-- | Compare types while ignoring source annotations/spans.
+sameTy :: Ty Ann -> Ty Ann -> Bool
+sameTy a b = normalizeTyAnn a == normalizeTyAnn b
+
+-- | Extract set element type from @öğe küme'si@.
+setElemTy :: Ty Ann -> Maybe (Ty Ann)
+setElemTy ty =
+  case normalizePrimTy ty of
+    TyApp _ ctor [elemTy]
+      | TyInd _ ident <- normalizePrimTy ctor
+      , isSetIdent ident ->
+          Just elemTy
+    _ -> Nothing
+
+-- | Check whether a type is @öğe küme'si@.
+isSetTy :: Ty Ann -> Bool
+isSetTy = isJust . setElemTy
+
+-- | Extract list element type from @öğe listesi@.
+listElemTy :: Ty Ann -> Maybe (Ty Ann)
+listElemTy ty =
+  case normalizePrimTy ty of
+    TyApp _ ctor [elemTy]
+      | TyInd _ ident <- normalizePrimTy ctor
+      , isListIdent ident ->
+          Just elemTy
+    _ -> Nothing
+
 -- | All known primitive functions
 allPrimitives :: [PrimitiveDef]
 allPrimitives =
@@ -178,9 +232,13 @@ allPrimitives =
       [ anyTypes 1 ]
       ["dizge.kip"]
 
+  , PrimitiveDef ([], "boyut")
+      [ anyTypes 1 ]
+      ["küme.kip"]
+
   , PrimitiveDef ([], "birleşim")
       [ anyTypes 2 ]
-      ["dizge.kip"]
+      ["dizge.kip", "küme.kip"]
 
   , PrimitiveDef (["tam", "sayı"], "hal")
       [ withTypes 1 (\case [t] -> isStringTy t; _ -> False)
@@ -343,6 +401,42 @@ allPrimitives =
       [ withTypes 1 (\case [t] -> isFloatTy t; _ -> False) ]
       ["ondalık-sayı.kip"]
 
+  , PrimitiveDef ([], "boş-küme")
+      [ anyTypes 0 ]
+      ["küme.kip"]
+
+  , PrimitiveDef (["boş"], "küme")
+      [ anyTypes 0 ]
+      ["küme.kip"]
+
+
+  , PrimitiveDef ([], "ilave")
+      [ anyTypes 2 ]
+      ["küme.kip"]
+
+  , PrimitiveDef ([], "çıkarılmış")
+      [ anyTypes 2 ]
+      ["küme.kip"]
+
+  , PrimitiveDef ([], "üyelik")
+      [ anyTypes 2 ]
+      ["küme.kip"]
+
+  , PrimitiveDef ([], "liste-hal")
+      [ anyTypes 1 ]
+      ["küme.kip"]
+
+  , PrimitiveDef (["liste"], "hal")
+      [ anyTypes 1 ]
+      ["küme.kip"]
+
+  , PrimitiveDef ([], "küme-hal")
+      [ anyTypes 1 ]
+      ["küme.kip"]
+
+  , PrimitiveDef (["küme"], "hal")
+      [ anyTypes 1 ]
+      ["küme.kip"]
   , PrimitiveDef ([], "dur")
       [ anyTypes 0 ]
       []
@@ -396,8 +490,64 @@ primitiveEvalImpl ops mPath ident args = do
     (["çevreden"], "oku")
       | [(_, TyString _)] <- args -> Just (primReadEnv ops)
       | otherwise -> Nothing
-    ([], "uzunluk") -> Just (primStringLength "uzunluk")
-    ([], "birleşim") -> Just (primStringConcat "birleşim")
+    ([], "uzunluk")
+      | [(_, TyString _)] <- args -> Just (primStringLength "uzunluk")
+      | otherwise -> Nothing
+    ([], "boyut")
+      | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetSize ([], "boyut"))
+      | [_] <- args -> Just (primSetSize ([], "boyut"))
+      | otherwise -> Nothing
+    ([], "birleşim")
+      | [(_, TyString _), (_, TyString _)] <- args -> Just (primStringConcat "birleşim")
+      | [(_, leftTy), (_, rightTy)] <- args
+      , Just leftElemTy <- setElemTy leftTy
+      , Just rightElemTy <- setElemTy rightTy
+      , sameTy leftElemTy rightElemTy ->
+          Just (primSetUnion ([], "birleşim"))
+      | [_, _] <- args ->
+          Just (primSetUnion ([], "birleşim"))
+      | otherwise ->
+          Nothing
+    ([], "ilave")
+      | [(_, setTy), (_, elemTy)] <- args
+      , Just setElemTy' <- setElemTy setTy
+      , sameTy setElemTy' elemTy ->
+          Just (primSetInsert ([], "ilave"))
+      | [_, _] <- args ->
+          Just (primSetInsert ([], "ilave"))
+      | otherwise -> Nothing
+    ([], "çıkarılmış")
+      | [(_, setTy), (_, elemTy)] <- args
+      , Just setElemTy' <- setElemTy setTy
+      , sameTy setElemTy' elemTy ->
+          Just (primSetDelete ([], "çıkarılmış"))
+      | [_, _] <- args ->
+          Just (primSetDelete ([], "çıkarılmış"))
+      | otherwise -> Nothing
+    ([], "üyelik")
+      | [(_, setTy), (_, elemTy)] <- args
+      , Just setElemTy' <- setElemTy setTy
+      , sameTy setElemTy' elemTy ->
+          Just (primSetMember ([], "üyelik"))
+      | [_, _] <- args ->
+          Just (primSetMember ([], "üyelik"))
+      | otherwise -> Nothing
+    ([], "liste-hal")
+      | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetToList ([], "liste-hal"))
+      | [_] <- args -> Just (primSetToList ([], "liste-hal"))
+      | otherwise -> Nothing
+    (["liste"], "hal")
+      | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetToList (["liste"], "hal"))
+      | [_] <- args -> Just (primSetToList (["liste"], "hal"))
+      | otherwise -> Nothing
+    ([], "küme-hal")
+      | [(_, listTy)] <- args, isJust (listElemTy listTy) -> Just (primListToSet ([], "küme-hal"))
+      | [_] <- args -> Just (primListToSet ([], "küme-hal"))
+      | otherwise -> Nothing
+    (["küme"], "hal")
+      | [(_, listTy)] <- args, isJust (listElemTy listTy) -> Just (primListToSet (["küme"], "hal"))
+      | [_] <- args -> Just (primListToSet (["küme"], "hal"))
+      | otherwise -> Nothing
     (["tam", "sayı"], "hal")
       | [(_, TyString _)] <- args -> Just (primStringToInt "tam-sayı-hali")
       | [(_, TyChar _)] <- args -> Just (primCharToInt "tam-sayı-hal")
@@ -561,6 +711,12 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primFloatCeiling "tavan")
       | otherwise ->
           Nothing
+    ([], "boş-küme")
+      | [] <- args -> Just (primSetEmpty ([], "boş-küme"))
+      | otherwise -> Nothing
+    (["boş"], "küme")
+      | [] <- args -> Just (primSetEmpty (["boş"], "küme"))
+      | otherwise -> Nothing
     (["sayı"], "çek") -> Just (primIntRandom ops ["sayı"] "çek")
     ([], "sayı-çek") -> Just (primIntRandom ops [] "sayı-çek")
     _ -> Nothing
@@ -916,6 +1072,227 @@ primFloatCeiling fname args =
     [FloatLit ann n] -> pure (IntLit ann (ceiling n))
     _ -> pure (fallbackApp ([], fname) args)
 
+data SetRepr = SetRepr
+  { setKeys :: Set.Set Text
+  , setElems :: Map.Map Text (Exp Ann)
+  }
+
+primSetEmpty :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetEmpty ident args =
+  case args of
+    [] -> pure (setExpFromSetRepr emptySetRepr)
+    _ -> pure (fallbackApp ident args)
+
+primSetInsert :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetInsert ident args =
+  case args of
+    [setVal, elemVal] ->
+      case setReprFromExp setVal of
+        Just setRepr ->
+          let normalizedElem = normalizeSetValue elemVal
+              key = setElemKey normalizedElem
+              setRepr' =
+                SetRepr
+                  { setKeys = Set.insert key (setKeys setRepr)
+                  , setElems = Map.insert key normalizedElem (setElems setRepr)
+                  }
+          in pure (setExpFromSetRepr setRepr')
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primSetDelete :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetDelete ident args =
+  case args of
+    [setVal, elemVal] ->
+      case setReprFromExp setVal of
+        Just setRepr ->
+          let key = setElemKey (normalizeSetValue elemVal)
+              setRepr' =
+                SetRepr
+                  { setKeys = Set.delete key (setKeys setRepr)
+                  , setElems = Map.delete key (setElems setRepr)
+                  }
+          in pure (setExpFromSetRepr setRepr')
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primSetMember :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetMember ident args =
+  case args of
+    [setVal, elemVal] ->
+      case setReprFromExp setVal of
+        Just setRepr ->
+          let key = setElemKey (normalizeSetValue elemVal)
+          in pure (boolExp (Set.member key (setKeys setRepr)))
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primSetSize :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetSize ident args =
+  case args of
+    [setVal] ->
+      case setReprFromExp setVal of
+        Just setRepr ->
+          pure (IntLit (mkAnn Nom NoSpan) (fromIntegral (Set.size (setKeys setRepr))))
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primSetUnion :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetUnion ident args =
+  case args of
+    [leftSetVal, rightSetVal] ->
+      case (setReprFromExp leftSetVal, setReprFromExp rightSetVal) of
+        (Just leftRepr, Just rightRepr) ->
+          let setRepr' =
+                SetRepr
+                  { setKeys = Set.union (setKeys leftRepr) (setKeys rightRepr)
+                  , setElems = Map.union (setElems rightRepr) (setElems leftRepr)
+                  }
+          in pure (setExpFromSetRepr setRepr')
+        _ -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primSetToList :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primSetToList ident args =
+  case args of
+    [setVal] ->
+      case setReprFromExp setVal of
+        Just setRepr ->
+          let values =
+                [ elemVal
+                | key <- Set.toAscList (setKeys setRepr)
+                , Just elemVal <- [Map.lookup key (setElems setRepr)]
+                ]
+          in pure (foldr listConsExp listNilExp values)
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primListToSet :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primListToSet ident args =
+  case args of
+    [listVal] ->
+      case expToList listVal of
+        Just values -> pure (setExpFromSetRepr (setReprFromElems values))
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+emptySetRepr :: SetRepr
+emptySetRepr = SetRepr Set.empty Map.empty
+
+setReprFromExp :: Exp Ann -> Maybe SetRepr
+setReprFromExp setVal =
+  case setVal of
+    SetLit _ entries ->
+      Just
+        SetRepr
+          { setKeys = Set.fromList (Map.keys entries)
+          , setElems = entries
+          }
+    _ -> setReprFromElems <$> expToList setVal
+
+setReprFromElems :: [Exp Ann] -> SetRepr
+setReprFromElems =
+  foldl'
+    (\setRepr elemVal ->
+      let normalizedElem = normalizeSetValue elemVal
+          key = setElemKey normalizedElem
+      in SetRepr
+           { setKeys = Set.insert key (setKeys setRepr)
+           , setElems = Map.insert key normalizedElem (setElems setRepr)
+           }
+    )
+    emptySetRepr
+
+setExpFromSetRepr :: SetRepr -> Exp Ann
+setExpFromSetRepr setRepr =
+  SetLit
+    (mkAnn Nom NoSpan)
+    (Map.fromAscList
+      [ (key, elemVal)
+      | key <- Set.toAscList (setKeys setRepr)
+      , Just elemVal <- [Map.lookup key (setElems setRepr)]
+      ])
+
+setElemKey :: Exp Ann -> Text
+setElemKey = T.pack . show . normalizeSetValue
+
+normalizeSetValue :: Exp Ann -> Exp Ann
+normalizeSetValue exp' =
+  case exp' of
+    Var _ name _ ->
+      Var (mkAnn Nom NoSpan) name []
+    App _ fnExp argExps ->
+      App (mkAnn Nom NoSpan) (normalizeSetValue fnExp) (map normalizeSetValue argExps)
+    SetLit _ entries ->
+      SetLit (mkAnn Nom NoSpan) (Map.map normalizeSetValue entries)
+    StrLit _ s ->
+      StrLit (mkAnn Nom NoSpan) s
+    IntLit _ n ->
+      IntLit (mkAnn Nom NoSpan) n
+    FloatLit _ n ->
+      FloatLit (mkAnn Nom NoSpan) n
+    CharLit _ c ->
+      CharLit (mkAnn Nom NoSpan) c
+    Bind _ name _ bindExpr ->
+      Bind (mkAnn Nom NoSpan) name (mkAnn Nom NoSpan) (normalizeSetValue bindExpr)
+    Seq _ firstExp secondExp ->
+      Seq (mkAnn Nom NoSpan) (normalizeSetValue firstExp) (normalizeSetValue secondExp)
+    Match _ scrut clauseList ->
+      Match (mkAnn Nom NoSpan) (normalizeSetValue scrut) (map normalizeSetClause clauseList)
+    Let _ name bodyExpr ->
+      Let (mkAnn Nom NoSpan) name (normalizeSetValue bodyExpr)
+    Ascribe _ ty ascExpr ->
+      Ascribe (mkAnn Nom NoSpan) (normalizeTyAnn ty) (normalizeSetValue ascExpr)
+
+normalizeSetClause :: Clause Ann -> Clause Ann
+normalizeSetClause (Clause pat bodyExpr) =
+  Clause (normalizeSetPat pat) (normalizeSetValue bodyExpr)
+
+normalizeSetPat :: Pat Ann -> Pat Ann
+normalizeSetPat pat =
+  case pat of
+    PWildcard _ ->
+      PWildcard (mkAnn Nom NoSpan)
+    PVar name _ ->
+      PVar name (mkAnn Nom NoSpan)
+    PCtor (name, _) pats ->
+      PCtor (name, mkAnn Nom NoSpan) (map normalizeSetPat pats)
+    PIntLit n _ ->
+      PIntLit n (mkAnn Nom NoSpan)
+    PFloatLit n _ ->
+      PFloatLit n (mkAnn Nom NoSpan)
+    PStrLit s _ ->
+      PStrLit s (mkAnn Nom NoSpan)
+    PCharLit c _ ->
+      PCharLit c (mkAnn Nom NoSpan)
+    PListLit pats ->
+      PListLit (map normalizeSetPat pats)
+
+expToList :: Exp Ann -> Maybe [Exp Ann]
+expToList exp'
+  | isListNilExp exp' = Just []
+  | otherwise =
+      case listConsArgs exp' of
+        Just (x, xs) -> (x :) <$> expToList xs
+        Nothing -> Nothing
+
+isListNilExp :: Exp Ann -> Bool
+isListNilExp exp' =
+  case exp' of
+    Var _ name candidates ->
+      name == ([], "boş") || any ((== ([], "boş")) . fst) candidates
+    _ -> False
+
+listConsArgs :: Exp Ann -> Maybe (Exp Ann, Exp Ann)
+listConsArgs exp' =
+  case exp' of
+    App _ (Var _ name candidates) [x, xs]
+      | isListConsIdent name || any (isListConsIdent . fst) candidates ->
+          Just (x, xs)
+    _ -> Nothing
+  where
+    isListConsIdent ident = ident == ([], "eki") || ident == ([], "ek")
+
 resolveReadCandidates :: Maybe FilePath -> Text -> [FilePath]
 resolveReadCandidates mPath path =
   let raw = T.unpack path
@@ -1101,6 +1478,96 @@ primitiveJsPrelude = T.unlines
   , "var __kip_prim_dizge_küçük_hal = (s) => s.toLowerCase();"
   , "var __kip_prim_toplam = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) + __kip_num(b)) : (__kip_num(a) + __kip_num(b));"
   , "var __kip_prim_fark = (a, b) => __kip_is_float(a) || __kip_is_float(b) ? __kip_float(__kip_num(a) - __kip_num(b)) : (__kip_num(a) - __kip_num(b));"
+  , "var __kip_set_normalize = (v) => {"
+  , "  if (__kip_is_float(v)) return { t: 'float', v: v.value };"
+  , "  if (typeof v === 'number') return { t: 'int', v };"
+  , "  if (typeof v === 'string') return { t: 'str', v };"
+  , "  if (v && typeof v === 'object') {"
+  , "    if (v.__kip_set === true && Array.isArray(v.entries)) {"
+  , "      return { t: 'set', v: v.entries.map((entry) => [entry[0], __kip_set_normalize(entry[1])]) };"
+  , "    }"
+  , "    if (typeof v.tag === 'string' && Array.isArray(v.args)) {"
+  , "      return { t: 'ctor', tag: v.tag, args: v.args.map(__kip_set_normalize) };"
+  , "    }"
+  , "  }"
+  , "  return { t: 'other', v: String(v) };"
+  , "};"
+  , "var __kip_set_key = (v) => JSON.stringify(__kip_set_normalize(v));"
+  , "var __kip_set_from_map = (m) => ({"
+  , "  __kip_set: true,"
+  , "  entries: Array.from(m.entries()).sort((a, b) => a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0))"
+  , "});"
+  , "var __kip_set_entries = (s) => (s && s.__kip_set === true && Array.isArray(s.entries)) ? s.entries : null;"
+  , "var __kip_array_to_list = (arr) => {"
+  , "  var out = typeof boş === 'function' ? boş() : (typeof boş !== 'undefined' ? boş : { tag: 'boş', args: [] });"
+  , "  for (var i = arr.length - 1; i >= 0; i -= 1) {"
+  , "    out = typeof eki === 'function' ? eki(arr[i], out) : { tag: 'eki', args: [arr[i], out] };"
+  , "  }"
+  , "  return out;"
+  , "};"
+  , "var __kip_list_to_array = (list) => {"
+  , "  var out = [];"
+  , "  var cur = list;"
+  , "  while (cur && typeof cur === 'object') {"
+  , "    if (cur.tag === 'boş' && Array.isArray(cur.args) && cur.args.length === 0) return out;"
+  , "    if (cur.tag === 'eki' && Array.isArray(cur.args) && cur.args.length === 2) {"
+  , "      out.push(cur.args[0]);"
+  , "      cur = cur.args[1];"
+  , "      continue;"
+  , "    }"
+  , "    return null;"
+  , "  }"
+  , "  return null;"
+  , "};"
+  , "var boş_küme = () => ({ __kip_set: true, entries: [] });"
+  , "var küme_ilave = (k, x) => {"
+  , "  var entries = __kip_set_entries(k);"
+  , "  if (!entries) return k;"
+  , "  var m = new Map(entries);"
+  , "  m.set(__kip_set_key(x), x);"
+  , "  return __kip_set_from_map(m);"
+  , "};"
+  , "var küme_çıkarma = (k, x) => {"
+  , "  var entries = __kip_set_entries(k);"
+  , "  if (!entries) return k;"
+  , "  var m = new Map(entries);"
+  , "  m.delete(__kip_set_key(x));"
+  , "  return __kip_set_from_map(m);"
+  , "};"
+  , "var küme_içerik = (k, x) => {"
+  , "  var entries = __kip_set_entries(k);"
+  , "  if (!entries) return { tag: 'yanlış', args: [] };"
+  , "  return (new Map(entries)).has(__kip_set_key(x)) ? { tag: 'doğru', args: [] } : { tag: 'yanlış', args: [] };"
+  , "};"
+  , "var küme_boyut = (k) => {"
+  , "  var entries = __kip_set_entries(k);"
+  , "  return entries ? entries.length : 0;"
+  , "};"
+  , "var küme_birleşim = (a, b) => {"
+  , "  var leftEntries = __kip_set_entries(a);"
+  , "  var rightEntries = __kip_set_entries(b);"
+  , "  if (!leftEntries || !rightEntries) return a;"
+  , "  var m = new Map(leftEntries);"
+  , "  for (var i = 0; i < rightEntries.length; i += 1) {"
+  , "    m.set(rightEntries[i][0], rightEntries[i][1]);"
+  , "  }"
+  , "  return __kip_set_from_map(m);"
+  , "};"
+  , "var küme_liste = (k) => {"
+  , "  var entries = __kip_set_entries(k);"
+  , "  if (!entries) return __kip_array_to_list([]);"
+  , "  return __kip_array_to_list(entries.map((entry) => entry[1]));"
+  , "};"
+  , "var liste_küme = (list) => {"
+  , "  var arr = __kip_list_to_array(list);"
+  , "  if (arr === null) return boş_küme();"
+  , "  var m = new Map();"
+  , "  for (var i = 0; i < arr.length; i += 1) {"
+  , "    var item = arr[i];"
+  , "    m.set(__kip_set_key(item), item);"
+  , "  }"
+  , "  return __kip_set_from_map(m);"
+  , "};"
   , ""
   , "// I/O primitives - async to support browser interactivity"
   , "var __kip_prim_oku_stdin = async () => {"

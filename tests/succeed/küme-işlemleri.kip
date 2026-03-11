@@ -1,0 +1,33 @@
+ilk-küme, boş-kümedir.
+ikinci-küme, (ilk-küme'ye 3'ün ilavesidir).
+üçüncü-küme, (ikinci-küme'ye 1'in ilavesidir).
+dördüncü-küme, (üçüncü-küme'ye 3'ün ilavesidir).
+
+(dördüncü-küme'nin boyutunu) yaz.
+
+(dördüncü-küme'ye 3'ün üyeliği) doğruysa,
+  "evet-1"'i yaz;
+değilse,
+  "hayır-1"'i yaz.
+
+(dördüncü-küme'ye 2'nin üyeliği) doğruysa,
+  "evet-2"'yi yaz;
+değilse,
+  "hayır-2"'yi yaz.
+
+beşinci-küme, (dördüncü-küme'den 3'ün çıkarılmışıdır).
+(beşinci-küme'nin boyutunu) yaz.
+
+(beşinci-küme'ye 3'ün üyeliği) doğruysa,
+  "evet-3"'ü yaz;
+değilse,
+  "hayır-3"'ü yaz.
+
+altıncı-küme, ([3, 2, 2, 1]'in küme-halidir).
+(altıncı-küme'nin boyutunu) yaz.
+
+yedinci-küme, (beşinci-küme'yle altıncı-küme'nin birleşimidir).
+(yedinci-küme'nin boyutunu) yaz.
+
+sonuç-liste, (yedinci-küme'nin liste-halidir).
+(sonuç-liste'nin uzunluğunu) yaz.

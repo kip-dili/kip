@@ -287,6 +287,16 @@ identMatches (mods1, name1) (mods2, name2) =
 lookupPrimJsName :: Identifier -> [Ty Ann] -> Text
 lookupPrimJsName name argTys =
   case (name, argTys) of
+    (([], "birleşim"), [leftTy, rightTy])
+      | isSetTyForLookup leftTy && isSetTyForLookup rightTy -> "küme_birleşim"
+    (([], "boyut"), [ty]) | isSetTyForLookup ty -> "küme_boyut"
+    (([], "ilave"), [setTy, _]) | isSetTyForLookup setTy -> "küme_ilave"
+    (([], "çıkarılmış"), [setTy, _]) | isSetTyForLookup setTy -> "küme_çıkarma"
+    (([], "üyelik"), [setTy, _]) | isSetTyForLookup setTy -> "küme_içerik"
+    (([], "liste-hal"), [ty]) | isSetTyForLookup ty -> "küme_liste"
+    ((["liste"], "hal"), [ty]) | isSetTyForLookup ty -> "küme_liste"
+    (([], "küme-hal"), [ty]) | isListTyForLookup ty -> "liste_küme"
+    ((["küme"], "hal"), [ty]) | isListTyForLookup ty -> "liste_küme"
     (([], "ters"), [_]) -> "__kip_prim_ters"
     (([], "birleşim"), [_, _]) -> "__kip_prim_birleşim"
     (([], "uzunluk"), [_]) -> "__kip_prim_uzunluk"
@@ -316,6 +326,20 @@ lookupPrimJsName name argTys =
     ((["çevreden"], "oku"), [TyString {}]) -> "__kip_prim_cevreden_oku"
     (([], "yaz"), [_, _]) -> "__kip_prim_yaz_dosya"
     _ -> toJsIdent name
+
+-- | Detect @öğe küme'si@ types in primitive JS-name lookup.
+isSetTyForLookup :: Ty Ann -> Bool
+isSetTyForLookup ty =
+  case ty of
+    TyApp {tyCtor = TyInd {indName = ([], "küme")}, tyArgs = [_]} -> True
+    _ -> False
+
+-- | Detect @öğe listesi@ types in primitive JS-name lookup.
+isListTyForLookup :: Ty Ann -> Bool
+isListTyForLookup ty =
+  case ty of
+    TyApp {tyCtor = TyInd {indName = ([], "liste")}, tyArgs = [_]} -> True
+    _ -> False
 
 -- | Convert a type to a suffix string for qualified overload names.
 tyToSuffix :: Ty Ann -> Text
@@ -621,6 +645,7 @@ runtimeExportNames =
   , "__kip_prim_karakter_harflik", "__kip_prim_karakter_rakamlık", "__kip_prim_karakter_harf_rakamlık"
   , "__kip_prim_karakter_buyuk_harflik", "__kip_prim_karakter_kucuk_harflik", "__kip_prim_karakter_boslukluk"
   , "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_arguman_oku", "__kip_prim_cevreden_oku", "__kip_prim_yaz_dosya"
+  , "boş_küme", "küme_ilave", "küme_çıkarma", "küme_içerik", "küme_boyut", "küme_birleşim", "küme_liste", "liste_küme"
   , "doğru", "yanlış", "varlık", "yokluk", "bitimlik", "yaz", "çarpım", "fark"
   , "bölüm", "kalan", "karekök", "radyan", "derece", "pi_sayısı", "taban", "tavan"
   , "tam_sayı_ondalık_sayı_hali", "sayı_çek", "eşitlik", "küçüklük", "küçük_eşitlik"
