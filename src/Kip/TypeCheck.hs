@@ -679,7 +679,7 @@ tcExp1With allowEffect e =
               Nothing -> []
       clauses' <- mapM (tcClause scrutArg allowEffect) clauses
       case mScrutTy of
-        Just scrutTy -> checkExhaustivePatterns scrutTy clauses annExp
+        Just scrutTy -> checkExhaustivePatterns scrutTy clauses' annExp
         Nothing -> return ()
       return (Match annExp scrutinee' clauses')
     Let {annExp, varName, body} ->
@@ -980,7 +980,7 @@ tcStmt stmt =
       mRet <- withCtx (name : argNames) (withVarTypes skolemBindings (inferReturnType body))
       body' <- withCtx (name : argNames) (withFuncRet name (map (skolemizeTy . argType) args) mRet (withFuncSig name skolemArgs (mapM (tcClause skolemArgs isInfinitive) body)))
       case skolemBindings of
-        (_, argTy):_ -> checkExhaustivePatterns argTy body (annTy ty)
+        (_, argTy):_ -> checkExhaustivePatterns argTy body' (annTy ty)
         _ -> return ()
       -- Check that the return type case is one of the allowed forms.
       -- We permit Acc as well because existing stdlib signatures use it.
@@ -1127,13 +1127,14 @@ tcClause :: [Arg Ann] -- ^ Argument signature.
 tcClause args isInfinitive (Clause pat body) = do
   let argNames = map argIdent args
       patNames = patIdentifiers pat
-  patTys <- inferPatTypes pat args
-  patSpans <- inferPatTypesWithSpans pat args
+  pat' <- normalizePatForArgs pat args
+  patTys <- inferPatTypes pat' args
+  patSpans <- inferPatTypesWithSpans pat' args
   mapM_ (uncurry recordResolvedType) patSpans
   forM_ args (\((_, ann), ty) -> recordResolvedType (annSpan ann) ty)
   let argTys = map (\((ident, _), ty) -> (ident, ty)) args
   body' <- withCtx (patNames ++ argNames) (withVarTypes (patTys ++ argTys) (tcExp1With isInfinitive body))
-  return (Clause pat body')
+  return (Clause pat' body')
 
 -- | Collect identifiers bound by a pattern.
 patIdentifiers :: Pat Ann -- ^ Pattern to inspect.
@@ -1382,6 +1383,77 @@ inferReturnType clauses = do
     firstJust [] = Nothing
     firstJust (Just t:_) = Just t
     firstJust (Nothing:rest) = firstJust rest
+
+-- | Normalize constructor sub-patterns to constructor-signature order when
+-- | grammatical cases make the mapping unique.
+normalizePatForArgs :: Pat Ann -- ^ Pattern to normalize.
+                    -> [Arg Ann] -- ^ Scrutinee arguments for the pattern.
+                    -> TCM (Pat Ann) -- ^ Pattern in constructor argument order.
+normalizePatForArgs pat args =
+  case (pat, args) of
+    (PWildcard _, _) -> return pat
+    (PVar _ _, _) -> return pat
+    (PIntLit _ _, _) -> return pat
+    (PFloatLit _ _, _) -> return pat
+    (PStrLit _ _, _) -> return pat
+    (PCharLit _ _, _) -> return pat
+    (PListLit pats, (_, scrutTy):_) -> do
+      MkTCState{tcTyCons} <- get
+      let elemTy = extractListElemTypeMap tcTyCons scrutTy
+      pats' <- mapM (\p -> normalizePatForArgs p [dummyArg elemTy]) pats
+      return (PListLit pats')
+    (PCtor (ctor, ann) pats, (_, scrutTy):_) -> do
+      MkTCState{tcCtors, tcTyCons} <- get
+      case Map.lookup ctor tcCtors of
+        Just (argTys, resTy) ->
+          let resTyNorm = stripTyCaseForMatch resTy
+              scrutTyNorm = stripTyCaseForMatch scrutTy
+          in case unifyTypes (Map.toList tcTyCons) [resTyNorm] [scrutTyNorm] of
+               Just subst -> do
+                 let argTys' = map (applySubst subst) argTys
+                     patsOrdered = reorderCtorPatternArgs argTys' pats
+                     argTysAligned =
+                       if length patsOrdered < length argTys'
+                         then drop (length argTys' - length patsOrdered) argTys'
+                         else argTys'
+                 pats' <-
+                   sequence
+                     [ normalizePatForArgs p [dummyArg ty]
+                     | (p, ty) <- zip patsOrdered argTysAligned
+                     ]
+                 return (PCtor (ctor, ann) pats')
+               Nothing -> return pat
+        Nothing -> return pat
+    _ -> return pat
+  where
+    dummyArg ty = ((([], T.pack "_"), mkAnn Nom NoSpan), ty)
+
+-- | Reorder constructor sub-patterns by their cases when the mapping is unique.
+-- Falls back to the written order when cases are repeated or incomplete.
+reorderCtorPatternArgs :: [Ty Ann] -- ^ Constructor argument types.
+                       -> [Pat Ann] -- ^ Sub-patterns as written.
+                       -> [Pat Ann] -- ^ Sub-patterns in constructor order.
+reorderCtorPatternArgs argTys pats
+  | length argTys /= length pats = pats
+  | otherwise =
+      fromMaybe pats (reorderByCases expectedCases actualCases pats)
+  where
+    expectedCases = map (annCase . annTy) argTys
+    actualCases = map patternCase pats
+
+-- | Extract the grammatical case annotation from a pattern head.
+patternCase :: Pat Ann -- ^ Pattern to inspect.
+            -> Case -- ^ Case annotation carried by the pattern.
+patternCase pat =
+  case pat of
+    PWildcard ann -> annCase ann
+    PVar _ ann -> annCase ann
+    PCtor (_, ann) _ -> annCase ann
+    PIntLit _ ann -> annCase ann
+    PFloatLit _ ann -> annCase ann
+    PStrLit _ ann -> annCase ann
+    PCharLit _ ann -> annCase ann
+    PListLit _ -> Nom
 
 -- | Run a computation with a function return type in scope.
 withFuncRet :: Identifier -- ^ Function name.

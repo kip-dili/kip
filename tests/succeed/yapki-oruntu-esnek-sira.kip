@@ -1,0 +1,25 @@
+(bu a'yla b çiftinin) eski-ilki,
+  bu a'yla b ikilisiyse,
+    a'dır.
+
+(bu a'yla b çiftinin) yeni-ilki,
+  bu b a'yla ikilisiyse,
+    a'dır.
+
+(bu öğe listesinin) (eski-uzunluk tam-sayısı),
+  bu boşsa,
+    0;
+  ilkin devama ekiyse,
+    (devamın eski-uzunluğuyla) 1'in toplamıdır.
+
+(bu öğe listesinin) (yeni-uzunluk tam-sayısı),
+  bu boşsa,
+    0;
+  devama ilkin ekiyse,
+    (devamın yeni-uzunluğuyla) 1'in toplamıdır.
+
+((1'le "x" ikilisinin) eski-ilkini) yaz.
+((1'le "x" ikilisinin) yeni-ilkini) yaz.
+
+((1'in (2'nin (3'ün boşa ekine) ekine) ekinin) eski-uzunluğunu) yaz.
+((1'in (2'nin (3'ün boşa ekine) ekine) ekinin) yeni-uzunluğunu) yaz.
