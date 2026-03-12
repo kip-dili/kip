@@ -29,7 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Text.Read (readMaybe)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, isNothing)
 import Data.List (find, foldl')
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
@@ -821,7 +821,8 @@ pickFunctionByTypes :: [(Identifier, ([Arg Ann], [Clause Ann]))] -- ^ Candidate 
                     -> EvalM (Maybe (([Arg Ann], [Clause Ann]), [Exp Ann])) -- ^ Selected function and args.
 pickFunctionByTypes defs args argTys = do
   MkEvalState{evalTyCons} <- get
-  let matches =
+  let hasUnknownArgTy = any isNothing argTys
+      matches =
         [ (def, args)
         | (_, def@(args', _)) <- defs
         , let tys = map snd args'
@@ -836,9 +837,12 @@ pickFunctionByTypes defs args argTys = do
         ]
   return $ case matches of
     d:_ -> Just d
-    [] -> case fallback of
-      d:_ -> Just d
-      [] -> Nothing
+    [] ->
+      if hasUnknownArgTy
+        then case fallback of
+          d:_ -> Just d
+          [] -> Nothing
+        else Nothing
 
 -- | Choose a primitive implementation based on inferred argument types.
 --
@@ -874,7 +878,8 @@ pickFunctionByTypesPartial :: [(Identifier, ([Arg Ann], [Clause Ann]))]
                            -> EvalM (Maybe (([Arg Ann], [Clause Ann]), [Exp Ann]))
 pickFunctionByTypesPartial defs args argTys = do
   MkEvalState{evalTyCons} <- get
-  let argCases = map (annCase . annExp) args
+  let hasUnknownArgTy = any isNothing argTys
+      argCases = map (annCase . annExp) args
       matches =
         [ (def, argsForSig)
         | (_, def@(args', _)) <- defs
@@ -895,9 +900,12 @@ pickFunctionByTypesPartial defs args argTys = do
         ]
   return $ case matches of
     d:_ -> Just d
-    [] -> case fallback of
-      d:_ -> Just d
-      [] -> Nothing
+    [] ->
+      if hasUnknownArgTy
+        then case fallback of
+          d:_ -> Just d
+          [] -> Nothing
+        else Nothing
 
 -- | Choose a primitive implementation for calls that originated from partial application.
 --

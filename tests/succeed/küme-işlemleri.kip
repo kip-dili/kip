@@ -1,7 +1,7 @@
 ilk-küme, boş-kümedir.
-ikinci-küme, (ilk-küme'ye 3'ün ilavesidir).
-üçüncü-küme, (ikinci-küme'ye 1'in ilavesidir).
-dördüncü-küme, (üçüncü-küme'ye 3'ün ilavesidir).
+ikinci-küme, (ilk-küme'ye 3'ün ekidir).
+üçüncü-küme, (ikinci-küme'ye 1'in ekidir).
+dördüncü-küme, (üçüncü-küme'ye 3'ün ekidir).
 
 (dördüncü-küme'nin boyutunu) yaz.
 

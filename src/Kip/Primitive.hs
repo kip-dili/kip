@@ -410,7 +410,7 @@ allPrimitives =
       ["küme.kip"]
 
 
-  , PrimitiveDef ([], "ilave")
+  , PrimitiveDef ([], "ek")
       [ anyTypes 2 ]
       ["küme.kip"]
 
@@ -508,13 +508,13 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primSetUnion ([], "birleşim"))
       | otherwise ->
           Nothing
-    ([], "ilave")
+    ([], "ek")
       | [(_, setTy), (_, elemTy)] <- args
       , Just setElemTy' <- setElemTy setTy
       , sameTy setElemTy' elemTy ->
-          Just (primSetInsert ([], "ilave"))
+          Just (primSetInsert ([], "ek"))
       | [_, _] <- args ->
-          Just (primSetInsert ([], "ilave"))
+          Just (primSetInsert ([], "ek"))
       | otherwise -> Nothing
     ([], "çıkarılmış")
       | [(_, setTy), (_, elemTy)] <- args

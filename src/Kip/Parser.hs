@@ -742,9 +742,10 @@ estimateCandidates useCtx (ss, s) = do
   MkParserState{..} <- getP
   let directIdent = (ss, s)
       mBareCase = stripBareCaseSuffix (ss, s)
-  -- Fast path when the surface form is already in scope and not a bare case
-  -- form (e.g. "varlığı" could also be bare acc); skip morphology entirely.
-  if useCtx && directIdent `Set.member` parserCtx && isNothing mBareCase
+  -- Fast path when the surface form is already in scope: exact context hits
+  -- must win over heuristic bare-suffix stripping (e.g. "eki" must not be
+  -- reinterpreted as "ek" + Acc).
+  if useCtx && directIdent `Set.member` parserCtx
     -- Fast path: already in scope, avoid morphology round-trips.
     then return [(directIdent, Nom)]
     else do
@@ -786,6 +787,22 @@ estimateCandidates useCtx (ss, s) = do
                 case mBareCase of
                   Just (base, _) -> Just <$> normalizePossessive base
                   Nothing -> return Nothing
+              copulaCtxHits <-
+                case mCopula of
+                  Just stripped | useCtx -> do
+                    let strippedIdent = (ss, stripped)
+                    strippedBase <- normalizePossessive strippedIdent
+                    return
+                      ( [ (strippedIdent, Nom)
+                        | strippedIdent `Set.member` parserCtx
+                        ]
+                        ++
+                        [ (strippedBase, Nom)
+                        | strippedBase `Set.member` parserCtx
+                        , strippedBase /= strippedIdent
+                        ]
+                      )
+                  _ -> return []
               -- | For bare suffix forms (no apostrophe), we may synthesize
               -- candidates from surface clues to keep P3s/Acc disambiguation
               -- workable (for example, forms like @varlığı@).
@@ -797,9 +814,12 @@ estimateCandidates useCtx (ss, s) = do
                     case mBareCase of
                       _ | null sAnalyses -> []
                       Just (base, Acc) | not useCtx || base `Set.member` parserCtx ->
-                        (base, Acc) :
-                        [(possBase, P3s) | possBase /= (ss, s) && (not useCtx || possBase `Set.member` parserCtx)] ++
-                        [(base, P3s)]
+                        if hasBufferedAccSuffix s
+                          then [(base, Acc)]
+                          else
+                            (base, Acc) :
+                            [(possBase, P3s) | possBase /= (ss, s) && (not useCtx || possBase `Set.member` parserCtx)] ++
+                            [(base, P3s)]
                       Just (base, cas) ->
                         let direct = [(base, cas) | not useCtx || base `Set.member` parserCtx]
                             poss =
@@ -825,8 +845,9 @@ estimateCandidates useCtx (ss, s) = do
                     if any (\(_, cas) -> cas == Cond) candidates
                       then ordNubAppend (ordNub filtered0) (filter (\(_, cas) -> cas == Cond) candidates)
                       else filtered0
-              if useCtx && not isIpSurface && not (null filtered)
-                then return filtered
+                  filteredWithCopula = ordNubAppend (ordNub filtered) copulaCtxHits
+              if useCtx && not isIpSurface && not (null filteredWithCopula)
+                then return filteredWithCopula
                 else do
                   -- Fast path for ip-converb roots already in scope.
                   -- Prefer TRmorph analyses; keep suffix stripping only as a
@@ -864,8 +885,18 @@ estimateCandidates useCtx (ss, s) = do
                       case mCopula of
                         Just stripped -> do
                           baseIdent <- normalizePossessive (ss, stripped)
-                          if useCtx && baseIdent `Set.member` parserCtx
-                            then return [(baseIdent, Nom)]
+                          let strippedIdent = (ss, stripped)
+                              copulaCtxHits =
+                                [ (strippedIdent, Nom)
+                                | strippedIdent `Set.member` parserCtx
+                                ]
+                                ++
+                                [ (baseIdent, Nom)
+                                | baseIdent `Set.member` parserCtx
+                                , baseIdent /= strippedIdent
+                                ]
+                          if useCtx && not (null copulaCtxHits)
+                            then return copulaCtxHits
                             else do
                               strippedAnalyses <- case mCopulaAnalyses of
                                 Just (_, analyses) -> return analyses
@@ -879,9 +910,12 @@ estimateCandidates useCtx (ss, s) = do
                                     case stripBareCaseSuffix (ss, stripped) of
                                       _ | null strippedAnalyses -> []
                                       Just (base, Acc) | not useCtx || base `Set.member` parserCtx ->
-                                        (base, Acc) :
-                                        [(possBase1, P3s) | possBase1 /= (ss, stripped) && (not useCtx || possBase1 `Set.member` parserCtx)] ++
-                                        [(base, P3s)]
+                                        if hasBufferedAccSuffix stripped
+                                          then [(base, Acc)]
+                                          else
+                                            (base, Acc) :
+                                            [(possBase1, P3s) | possBase1 /= (ss, stripped) && (not useCtx || possBase1 `Set.member` parserCtx)] ++
+                                            [(base, P3s)]
                                       Just (base, cas) | not useCtx || base `Set.member` parserCtx -> [(base, cas)]
                                       _ -> []
                                   candidates1' = addSurfaceCaseCandidate stripped candidates1
@@ -1104,6 +1138,12 @@ estimateCandidates useCtx (ss, s) = do
     stripIpSuffix :: Text -- ^ Surface form.
                   -> Maybe Text -- ^ Stripped stem.
     stripIpSuffix = stripSuffixAny ipSuffixesTxt
+    -- | Accusative with explicit buffer consonant is usually unambiguous;
+    -- avoid injecting P3s alternatives for these surfaces.
+    hasBufferedAccSuffix :: Text -> Bool
+    hasBufferedAccSuffix txt =
+      let lower = T.toLower txt
+      in any (`T.isSuffixOf` lower) ["yi","yı","yu","yü","ni","nı","nu","nü"]
 
 -- | Strip copula suffixes like \"-dir\" to recover the base noun.
 {-# INLINE stripCopulaSuffix #-}
@@ -2154,22 +2194,25 @@ parseExpWithCtx' useCtx allowMatch =
             _ -> return []
           where
             lookupCandidateArities ident = do
-              let exact = fromMaybe Set.empty (M.lookup ident arityMap)
+              let byNameFor i =
+                    if null (fst i)
+                      then fromMaybe Set.empty (M.lookup (snd i) arityNameMap)
+                      else Set.empty
+                  exact = fromMaybe Set.empty (M.lookup ident arityMap)
                   strippedBase =
                     case stripBareCaseSuffix ident of
                       Just (base, _) -> fromMaybe Set.empty (M.lookup base arityMap)
                       Nothing -> Set.empty
-                  byName name = fromMaybe Set.empty (M.lookup name arityNameMap)
-                  byNameArities = byName (snd ident)
+                  byNameArities = byNameFor ident
               normalized <- normalizePossessive ident
               let normalizedArities = fromMaybe Set.empty (M.lookup normalized arityMap)
-                  normalizedByName = byName (snd normalized)
+                  normalizedByName = byNameFor normalized
               normalizedFromStripped <-
                 case stripBareCaseSuffix ident of
                   Just (base, _) -> do
                     normalizedBase <- normalizePossessive base
                     let exactBase = fromMaybe Set.empty (M.lookup normalizedBase arityMap)
-                        byNameBase = byName (snd normalizedBase)
+                        byNameBase = byNameFor normalizedBase
                     return (Set.union exactBase byNameBase)
                   Nothing -> return Set.empty
               return (foldl' Set.union Set.empty [exact, strippedBase, byNameArities, normalizedArities, normalizedByName, normalizedFromStripped])
@@ -3621,10 +3664,10 @@ stringCaseFromSuffix suff =
       | otherwise -> Nom
 
 accSuffixesTxt, datSuffixesTxt, locSuffixesTxt, ablSuffixesTxt, genSuffixesTxt, insSuffixesTxt, condCaseSuffixesTxt :: [Text]
-accSuffixesTxt = ["i","ı","u","ü","yi","yı","yu","yü"]
-datSuffixesTxt = ["e","a","ye","ya"]
-locSuffixesTxt = ["de","da","te","ta"]
-ablSuffixesTxt = ["den","dan","ten","tan"]
+accSuffixesTxt = ["ni","nı","nu","nü","yi","yı","yu","yü","i","ı","u","ü"]
+datSuffixesTxt = ["ne","na","ye","ya","e","a"]
+locSuffixesTxt = ["nde","nda","nte","nta","de","da","te","ta"]
+ablSuffixesTxt = ["nden","ndan","nten","ntan","den","dan","ten","tan"]
 genSuffixesTxt = ["in","ın","un","ün","nin","nın","nun","nün"]
 insSuffixesTxt = ["le","la","yle","yla"]
 condCaseSuffixesTxt = ["se","sa"]
@@ -3657,9 +3700,12 @@ stripBareCaseSuffix (mods, word) =
         [ ("nın", Gen), ("nin", Gen), ("nun", Gen), ("nün", Gen)
         , ("ın", Gen), ("in", Gen), ("un", Gen), ("ün", Gen)
         , ("yla", Ins), ("yle", Ins), ("la", Ins), ("le", Ins)
+        , ("nden", Abl), ("ndan", Abl), ("nten", Abl), ("ntan", Abl)
         , ("den", Abl), ("dan", Abl), ("ten", Abl), ("tan", Abl)
+        , ("nde", Loc), ("nda", Loc), ("nte", Loc), ("nta", Loc)
         , ("de", Loc), ("da", Loc), ("te", Loc), ("ta", Loc)
-        , ("ye", Dat), ("ya", Dat), ("e", Dat), ("a", Dat)
+        , ("ne", Dat), ("na", Dat), ("ye", Dat), ("ya", Dat), ("e", Dat), ("a", Dat)
+        , ("ni", Acc), ("nı", Acc), ("nu", Acc), ("nü", Acc)
         , ("yi", Acc), ("yı", Acc), ("yu", Acc), ("yü", Acc)
         , ("i", Acc), ("ı", Acc), ("u", Acc), ("ü", Acc)
         ]
@@ -3667,7 +3713,7 @@ stripBareCaseSuffix (mods, word) =
         case T.stripSuffix suf word of
           Just base | T.length base > 1 -> Just ((mods, base), cas)
           _ -> Nothing
-  in foldr (\s acc -> acc <|> tryStrip s) Nothing suffixes
+  in foldr (\s acc -> tryStrip s <|> acc) Nothing suffixes
 
 -- | Check whether an identifier names the integer type.
 {-# INLINE isIntType #-}

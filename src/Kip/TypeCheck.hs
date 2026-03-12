@@ -486,23 +486,21 @@ tcExp1With allowEffect e =
                     ]
               if null exactSigs && null partialSigs
                 then do
-                  case lookupByCandidatesMap tcCtors varCandidates of
-                    Just (tys, _) -> do
+                  case lookupByCandidatesMapWithCandidate tcCtors varCandidates of
+                    Just (ctorCand, (tys, resTy)) -> do
                       argTys <- mapM inferType allArgs
                       if length tys /= length allArgs
                         then lift (throwE (NoMatchingCtor nameForErr argTys tys (annSpan annApp)))
                         else
                           if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys tys)
                             then do
-                              case lookupByCandidatesMap tcCtors varCandidates of
-                                Just (ctorArgTys, resTy)
-                                  | length ctorArgTys == length allArgs && Nothing `notElem` argTys ->
-                                      case unifyTypes (Map.toList tcTyCons) ctorArgTys (catMaybes argTys) of
-                                        Just subst ->
-                                          recordResolvedType (annSpan annApp) (applySubst subst resTy)
-                                        Nothing -> return ()
-                                _ -> return ()
-                              return (App annApp fnResolved allArgs)
+                              when (Nothing `notElem` argTys) $
+                                case unifyTypes (Map.toList tcTyCons) tys (catMaybes argTys) of
+                                  Just subst ->
+                                    recordResolvedType (annSpan annApp) (applySubst subst resTy)
+                                  Nothing -> return ()
+                              let ctorFnResolved = narrowResolvedVarCandidate fnResolved ctorCand
+                              return (App annApp ctorFnResolved allArgs)
                             else lift (throwE (NoMatchingCtor nameForErr argTys tys (annSpan annApp)))
                     _ -> do
                       case lookupByCandidates tcVarTys varCandidates of
@@ -556,6 +554,10 @@ tcExp1With allowEffect e =
                           Just (base, Acc) -> Set.member base tcCtx && not (Set.member name tcCtx)
                           Nothing -> False
                           _ -> False
+                      hasBufferedAccSuffixWord txt =
+                        let lower = T.toLower txt
+                            suffixes = map T.pack ["yi","yı","yu","yü","ni","nı","nu","nü"]
+                        in any (`T.isSuffixOf` lower) suffixes
                       matchExactSig (name, argsSig) =
                         let expCases = map (annCase . annTy . snd) argsSig
                             argsForSig = fromMaybe allArgs (reorderByCasesNomFallback expCases argCases allArgs)
@@ -572,14 +574,21 @@ tcExp1With allowEffect e =
                                   ambiguousP3sAcc =
                                     expCase == Acc &&
                                     argCase == P3s &&
-                                    hasExpectedCaseCandidate expCase arg
+                                    case arg of
+                                      Var {varName} ->
+                                        hasExpectedCaseCandidate expCase arg &&
+                                        not (T.isSuffixOf (T.pack "ki") (snd varName)) &&
+                                        isBareAccInCtx varName &&
+                                        not (hasBufferedAccSuffixWord (snd varName))
+                                      _ -> False
                                   ambiguousP3sBareAccHead =
                                     expCase == Acc &&
                                     argCase == P3s &&
                                     case arg of
                                       App {fn = Var {varName}} ->
                                         not (T.isSuffixOf (T.pack "ki") (snd varName)) &&
-                                        isBareAccInCtx varName
+                                        isBareAccInCtx varName &&
+                                        not (hasBufferedAccSuffixWord (snd varName))
                                       _ -> False
                                   ambiguousBareAcc =
                                     expCase == Acc &&
@@ -587,7 +596,8 @@ tcExp1With allowEffect e =
                                     case arg of
                                       App {fn = Var {varName}} ->
                                         not (T.isSuffixOf (T.pack "ki") (snd varName)) &&
-                                        isBareAccInCtx varName
+                                        isBareAccInCtx varName &&
+                                        not (hasBufferedAccSuffixWord (snd varName))
                                       _ -> False
                               in ambiguousP3sAcc || ambiguousP3sBareAccHead || ambiguousBareAcc || (expCase /= argCase && (not flexible || strictGenToIns) && not higherOrder)
                         in if hasCaseMismatch
@@ -626,10 +636,34 @@ tcExp1With allowEffect e =
                         partialTy:_ -> do
                           recordResolvedType (annSpan annApp) partialTy
                           return (App annApp fnResolved allArgs)
-                        [] ->
-                          if Nothing `elem` argTys
-                            then return (App annApp fnResolved allArgs)
-                            else lift (throwE (NoMatchingOverload nameForErr argTys allSigs (annSpan annApp)))
+                        [] -> do
+                          let ctorLookup = lookupByCandidatesMapWithCandidate tcCtors varCandidates
+                              ctorMatched =
+                                case ctorLookup of
+                                  Just (ctorCand, (ctorArgTys, resTy))
+                                    | length ctorArgTys == length allArgs
+                                    , and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys ctorArgTys) ->
+                                        Just (ctorCand, ctorArgTys, resTy)
+                                  _ -> Nothing
+                          case ctorMatched of
+                            Just (ctorCand, ctorArgTys, resTy) -> do
+                              when (Nothing `notElem` argTys) $
+                                case unifyTypes (Map.toList tcTyCons) ctorArgTys (catMaybes argTys) of
+                                  Just subst -> recordResolvedType (annSpan annApp) (applySubst subst resTy)
+                                  Nothing -> return ()
+                              let ctorFnResolved = narrowResolvedVarCandidate fnResolved ctorCand
+                              return (App annApp ctorFnResolved allArgs)
+                            Nothing ->
+                              case ctorLookup of
+                                Just (_ctorCand, (ctorArgTys, _))
+                                  | Nothing `elem` argTys ->
+                                      return (App annApp fnResolved allArgs)
+                                  | otherwise ->
+                                      lift (throwE (NoMatchingCtor nameForErr argTys ctorArgTys (annSpan annApp)))
+                                Nothing ->
+                                  if Nothing `elem` argTys
+                                    then return (App annApp fnResolved allArgs)
+                                    else lift (throwE (NoMatchingOverload nameForErr argTys allSigs (annSpan annApp)))
         _ -> return (App annApp fnResolved allArgs)
     StrLit {annExp, lit} -> do
       recordResolvedType (annSpan annExp) (TyString (mkAnn Nom (annSpan annExp)))
@@ -801,11 +835,14 @@ resolveVar annExp originalName mArity candidates = do
             case mArity of
               Nothing -> filtered
               Just arity ->
-                let supportsArity ident = any (>= arity) (Map.findWithDefault [] ident tcFuncs)
-                    narrowed = filter (\(ident, _) -> supportsArity ident) filtered
-                in if null narrowed
+                let aritiesOf ident = Map.findWithDefault [] ident tcFuncs
+                    supportsArity ident = any (>= arity) (aritiesOf ident)
+                    functionCandidates = filter (\(ident, _) -> not (null (aritiesOf ident))) filtered
+                    nonFunctionCandidates = filter (\(ident, _) -> null (aritiesOf ident)) filtered
+                    narrowedFns = filter (\(ident, _) -> supportsArity ident) functionCandidates
+                in if null narrowedFns
                      then filtered
-                     else narrowed
+                     else narrowedFns ++ nonFunctionCandidates
           caseFiltered = filter (\(_, cas) -> cas == annCase annExp) arityFiltered
           scoped =
             if null caseFiltered
@@ -834,7 +871,34 @@ resolveVar annExp originalName mArity candidates = do
             -- During call resolution we keep multiple scoped candidates so the
             -- later overload-matching phase can decide with type information.
             Just _ -> return (Var (setAnnCase annExp (annCase annExp)) originalName scopedUnique)
-            Nothing -> lift (throwE (Ambiguity (annSpan annExp)))
+            Nothing ->
+              case pickCopulaScopedCandidate originalName (annCase annExp) scopedUnique of
+                Just (ident, cas) -> return (Var (setAnnCase annExp cas) originalName [(ident, cas)])
+                Nothing -> lift (throwE (Ambiguity (annSpan annExp)))
+  where
+    pickCopulaScopedCandidate :: Identifier -> Case -> [(Identifier, Case)] -> Maybe (Identifier, Case)
+    pickCopulaScopedCandidate (mods, word) wantedCase scoped = do
+      stripped <- stripCopulaSuffixLocal word
+      let strippedIdent = (mods, stripped)
+          sameIdent = filter (\(ident, _) -> ident == strippedIdent) scoped
+          sameCase = filter (\(_, cas) -> cas == wantedCase) sameIdent
+      case sameCase of
+        x:_ -> Just x
+        [] ->
+          case sameIdent of
+            [x] -> Just x
+            _ -> Nothing
+    stripCopulaSuffixLocal :: T.Text -> Maybe T.Text
+    stripCopulaSuffixLocal txt =
+      let lowerTxt = T.toLower txt
+          suffixes = map T.pack ["dir","dır","dur","dür","tir","tır","tur","tür"]
+      in case find (`T.isSuffixOf` lowerTxt) suffixes of
+           Nothing -> Nothing
+           Just suff ->
+             let len = T.length suff
+             in if T.length txt > len
+                  then Just (T.take (T.length txt - len) txt)
+                  else Nothing
 
 -- | Try to match copula-suffixed identifiers to context names.
 -- This is a heuristic fallback because the type checker does not have TRmorph access.
@@ -1184,6 +1248,28 @@ lookupByCandidatesMap env candidates =
       case Map.lookup n env of
         Just v -> Just v
         Nothing -> go ns
+
+-- | Lookup a binding and return the matched candidate (identifier + case).
+lookupByCandidatesMapWithCandidate :: forall a.
+                                     Map.Map Identifier a -- ^ Candidate bindings.
+                                   -> [(Identifier, Case)] -- ^ Candidate identifiers.
+                                   -> Maybe ((Identifier, Case), a) -- ^ Matching candidate and binding.
+lookupByCandidatesMapWithCandidate env = go
+  where
+    go [] = Nothing
+    go (cand@(n, _):rest) =
+      case Map.lookup n env of
+        Just v -> Just (cand, v)
+        Nothing -> go rest
+
+-- | Narrow a resolved variable head to a single candidate.
+narrowResolvedVarCandidate :: Exp Ann -- ^ Resolved function head.
+                           -> (Identifier, Case) -- ^ Chosen candidate.
+                           -> Exp Ann -- ^ Head narrowed to the chosen candidate.
+narrowResolvedVarCandidate fnExp (ident, cas) =
+  case fnExp of
+    Var ann name _ -> Var (setAnnCase ann cas) name [(ident, cas)]
+    _ -> fnExp
 
 -- | Lookup a function return type by candidates and argument types.
 lookupFuncRet :: [(Identifier, Int)] -- ^ Type constructor arities for type comparison.

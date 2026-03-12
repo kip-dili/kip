@@ -290,7 +290,7 @@ lookupPrimJsName name argTys =
     (([], "birleşim"), [leftTy, rightTy])
       | isSetTyForLookup leftTy && isSetTyForLookup rightTy -> "küme_birleşim"
     (([], "boyut"), [ty]) | isSetTyForLookup ty -> "küme_boyut"
-    (([], "ilave"), [setTy, _]) | isSetTyForLookup setTy -> "küme_ilave"
+    (([], "ek"), [setTy, _]) | isSetTyForLookup setTy -> "küme_ilave"
     (([], "çıkarılmış"), [setTy, _]) | isSetTyForLookup setTy -> "küme_çıkarma"
     (([], "üyelik"), [setTy, _]) | isSetTyForLookup setTy -> "küme_içerik"
     (([], "liste-hal"), [ty]) | isSetTyForLookup ty -> "küme_liste"
