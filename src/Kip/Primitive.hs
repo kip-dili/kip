@@ -430,13 +430,6 @@ allPrimitives =
       [ anyTypes 1 ]
       ["küme.kip"]
 
-  , PrimitiveDef ([], "küme-hal")
-      [ anyTypes 1 ]
-      ["küme.kip"]
-
-  , PrimitiveDef (["küme"], "hal")
-      [ anyTypes 1 ]
-      ["küme.kip"]
   , PrimitiveDef ([], "dur")
       [ anyTypes 0 ]
       []
@@ -539,14 +532,6 @@ primitiveEvalImpl ops mPath ident args = do
     (["liste"], "hal")
       | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetToList (["liste"], "hal"))
       | [_] <- args -> Just (primSetToList (["liste"], "hal"))
-      | otherwise -> Nothing
-    ([], "küme-hal")
-      | [(_, listTy)] <- args, isJust (listElemTy listTy) -> Just (primListToSet ([], "küme-hal"))
-      | [_] <- args -> Just (primListToSet ([], "küme-hal"))
-      | otherwise -> Nothing
-    (["küme"], "hal")
-      | [(_, listTy)] <- args, isJust (listElemTy listTy) -> Just (primListToSet (["küme"], "hal"))
-      | [_] <- args -> Just (primListToSet (["küme"], "hal"))
       | otherwise -> Nothing
     (["tam", "sayı"], "hal")
       | [(_, TyString _)] <- args -> Just (primStringToInt "tam-sayı-hali")

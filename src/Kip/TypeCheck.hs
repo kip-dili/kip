@@ -416,9 +416,8 @@ tcExp1With allowEffect e =
           allArgs = preAppliedArgs ++ args'
       case fnResolved of
         Var {annExp = annFn, varName, varCandidates} -> do
-          case varCandidates of
-            (ident, _) : _ -> unless allowEffect (rejectPureEffect annFn ident (length allArgs))
-            _ -> return ()
+          unless allowEffect $
+            mapM_ (\ident -> rejectPureEffect annFn ident (length allArgs)) (nub (map fst varCandidates))
           MkTCState{tcFuncSigs, tcFuncSigsByArity, tcTyCons, tcCtors, tcFuncSigRets, tcVarTys} <- get
           let higherOrderResultTy =
                 case lookupByCandidates tcVarTys varCandidates of

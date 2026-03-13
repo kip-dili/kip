@@ -45,4 +45,4 @@ Kümeyi listeye dönüştürür.
 
 (* Listeyi kümeye dönüştürür. *)
 (bu öğe listesinin) (küme-hal öğe kümesi),
-  yerleşiktir.
+  bunun ekle boş-kümeden soldan-katlanışıdır.
