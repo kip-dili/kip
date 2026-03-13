@@ -493,7 +493,7 @@ tcExp1With allowEffect e =
                         else
                           if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys tys)
                             then do
-                              when (Nothing `notElem` argTys) $
+                              unless (Nothing `elem` argTys) $
                                 case unifyTypes (Map.toList tcTyCons) tys (catMaybes argTys) of
                                   Just subst ->
                                     recordResolvedType (annSpan annApp) (applySubst subst resTy)
@@ -646,7 +646,7 @@ tcExp1With allowEffect e =
                                   _ -> Nothing
                           case ctorMatched of
                             Just (ctorCand, ctorArgTys, resTy) -> do
-                              when (Nothing `notElem` argTys) $
+                              unless (Nothing `elem` argTys) $
                                 case unifyTypes (Map.toList tcTyCons) ctorArgTys (catMaybes argTys) of
                                   Just subst -> recordResolvedType (annSpan annApp) (applySubst subst resTy)
                                   Nothing -> return ()
