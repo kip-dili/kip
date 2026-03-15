@@ -1428,6 +1428,8 @@ renderFallback cache fsm evalSt exp =
       renderIntWithCase cache fsm Nom intVal
     FloatLit {floatVal} ->
       renderFloatWithCase cache fsm Nom floatVal
+    SetLit {} ->
+      return (prettyExp exp)
     Seq {} ->
       return (prettyExp exp)
     Bind {} ->

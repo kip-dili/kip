@@ -12,6 +12,7 @@ import Data.List
 import Data.Bits ((.|.), (.&.), shiftL, shiftR)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Map.Strict as Map
 import Text.Megaparsec.Pos (SourcePos(..), Pos, unPos, mkPos)
 import Data.Binary (Binary(..), Get)
 import Data.Word (Word8, Word32, Word64)
@@ -128,6 +129,7 @@ data Ty a =
 data Exp a =
     Var    { annExp :: a , varName :: Identifier , varCandidates :: [(Identifier, Case)] } -- ^ Variable reference.
   | App    { annExp :: a , fn :: Exp a , args :: [Exp a] } -- ^ Function application.
+  | SetLit { annExp :: a , setEntries :: Map.Map Text (Exp a) } -- ^ Internal runtime set representation.
   | StrLit { annExp :: a , lit :: !Text } -- ^ String literal.
   | IntLit { annExp :: a , intVal :: !Integer } -- ^ Integer literal.
   | FloatLit { annExp :: a , floatVal :: !Double } -- ^ Floating-point literal.
@@ -387,6 +389,8 @@ prettyExp (Seq _ a b) =
   prettyExp a ++ ", " ++ prettyExp b
 prettyExp (App _ f xs) =
   unwords (map prettyExp (xs ++ [f]))
+prettyExp (SetLit _ entries) =
+  "[" ++ intercalate ", " (map prettyExp (Map.elems entries)) ++ "]"
 prettyExp (Match _ scrut clauses) =
   "(" ++ intercalate ", " (map (prettyClause (prettyExp scrut)) clauses) ++ ")"
   where

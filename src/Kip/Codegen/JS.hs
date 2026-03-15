@@ -60,8 +60,10 @@ import qualified Kip.Primitive as Prim
 data CodegenCtx = MkCodegenCtx
   { sectionableFns :: Set.Set Identifier
   , resolvedSigs :: Map.Map Span (Identifier, [Ty Ann])
+  , functionSigMap :: Map.Map (Identifier, [Ty Ann]) Text
   , overloadRegistry :: Map.Map (Identifier, [Ty Ann]) Text
   , primFuncMap :: Map.Map (Identifier, [Ty Ann]) Text
+  , localScope :: [Identifier]
   , currentFunction :: Maybe (Identifier, [Ty Ann], Text)
   }
 
@@ -72,7 +74,7 @@ data DefRef
 
 -- | Empty codegen context used by standalone helpers/tests.
 emptyCodegenCtx :: CodegenCtx
-emptyCodegenCtx = MkCodegenCtx Set.empty Map.empty Map.empty Map.empty Nothing
+emptyCodegenCtx = MkCodegenCtx Set.empty Map.empty Map.empty Map.empty Map.empty [] Nothing
 
 -- | Build codegen context from resolved call signatures and program statements.
 buildCodegenCtx :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> CodegenCtx
@@ -94,6 +96,13 @@ buildCodegenCtx resolvMap stmts =
         | (ident, sigs) <- Map.toList overloaded
         , sig <- sigs
         ]
+      -- All user function signatures (overloaded and non-overloaded) mapped to
+      -- their emitted JS names.
+      userFuncs = Map.fromList
+        [ ((ident, sig), Map.findWithDefault (toJsIdent ident) (ident, sig) registry)
+        | Function ident args _ _ _ <- stmts
+        , let sig = normalizeSig (map argType args)
+        ]
       -- Build map of primitive signatures to emitted JS function names.
       prims = Map.fromList
         [ ((ident, argTys), lookupPrimJsName ident argTys)
@@ -103,8 +112,10 @@ buildCodegenCtx resolvMap stmts =
   in MkCodegenCtx
        { sectionableFns = sectionable
        , resolvedSigs = resolvMap
+       , functionSigMap = userFuncs
        , overloadRegistry = registry
        , primFuncMap = prims
+       , localScope = []
        , currentFunction = Nothing
        }
   where
@@ -200,9 +211,9 @@ resolveByCandidates ctx candidates args =
 -- | Collect all possible JS targets for an identifier in the current program.
 callTargetsForIdent :: CodegenCtx -> Identifier -> [([Ty Ann], Text)]
 callTargetsForIdent ctx ident =
-  let overloaded =
+  let userFuncs =
         [ (sig, jsName)
-        | ((name, sig), jsName) <- Map.toList (overloadRegistry ctx)
+        | ((name, sig), jsName) <- Map.toList (functionSigMap ctx)
         , identMatches name ident
         ]
       prims =
@@ -210,7 +221,7 @@ callTargetsForIdent ctx ident =
         | ((name, sig), jsName) <- Map.toList (primFuncMap ctx)
         , identMatches name ident
         ]
-  in uniqTargets (overloaded ++ prims)
+  in uniqTargets (userFuncs ++ prims)
 
 -- | Resolve section-call targets using fixed-argument case/type hints.
 sectionTargetsForIdent :: CodegenCtx -> Exp Ann -> Identifier -> [([Ty Ann], Text)]
@@ -287,6 +298,16 @@ identMatches (mods1, name1) (mods2, name2) =
 lookupPrimJsName :: Identifier -> [Ty Ann] -> Text
 lookupPrimJsName name argTys =
   case (name, argTys) of
+    (([], "birleşim"), [leftTy, rightTy])
+      | isSetTyForLookup leftTy && isSetTyForLookup rightTy -> "küme_birleşim"
+    (([], "boyut"), [ty]) | isSetTyForLookup ty -> "küme_boyut"
+    (([], "ek"), [setTy, _]) | isSetTyForLookup setTy -> "küme_ilave"
+    (([], "çıkarılmış"), [setTy, _]) | isSetTyForLookup setTy -> "küme_çıkarma"
+    (([], "üyelik"), [setTy, _]) | isSetTyForLookup setTy -> "küme_içerik"
+    (([], "liste-hal"), [ty]) | isSetTyForLookup ty -> "küme_liste"
+    ((["liste"], "hal"), [ty]) | isSetTyForLookup ty -> "küme_liste"
+    (([], "küme-hal"), [ty]) | isListTyForLookup ty -> "liste_küme"
+    ((["küme"], "hal"), [ty]) | isListTyForLookup ty -> "liste_küme"
     (([], "ters"), [_]) -> "__kip_prim_ters"
     (([], "birleşim"), [_, _]) -> "__kip_prim_birleşim"
     (([], "uzunluk"), [_]) -> "__kip_prim_uzunluk"
@@ -316,6 +337,20 @@ lookupPrimJsName name argTys =
     ((["çevreden"], "oku"), [TyString {}]) -> "__kip_prim_cevreden_oku"
     (([], "yaz"), [_, _]) -> "__kip_prim_yaz_dosya"
     _ -> toJsIdent name
+
+-- | Detect @öğe küme'si@ types in primitive JS-name lookup.
+isSetTyForLookup :: Ty Ann -> Bool
+isSetTyForLookup ty =
+  case ty of
+    TyApp {tyCtor = TyInd {indName = ([], "küme")}, tyArgs = [_]} -> True
+    _ -> False
+
+-- | Detect @öğe listesi@ types in primitive JS-name lookup.
+isListTyForLookup :: Ty Ann -> Bool
+isListTyForLookup ty =
+  case ty of
+    TyApp {tyCtor = TyInd {indName = ([], "liste")}, tyArgs = [_]} -> True
+    _ -> False
 
 -- | Convert a type to a suffix string for qualified overload names.
 tyToSuffix :: Ty Ann -> Text
@@ -621,6 +656,7 @@ runtimeExportNames =
   , "__kip_prim_karakter_harflik", "__kip_prim_karakter_rakamlık", "__kip_prim_karakter_harf_rakamlık"
   , "__kip_prim_karakter_buyuk_harflik", "__kip_prim_karakter_kucuk_harflik", "__kip_prim_karakter_boslukluk"
   , "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_arguman_oku", "__kip_prim_cevreden_oku", "__kip_prim_yaz_dosya"
+  , "boş_küme", "küme_ilave", "küme_çıkarma", "küme_içerik", "küme_boyut", "küme_birleşim", "küme_liste", "liste_küme"
   , "doğru", "yanlış", "varlık", "yokluk", "bitimlik", "yaz", "çarpım", "fark"
   , "bölüm", "kalan", "karekök", "radyan", "derece", "pi_sayısı", "taban", "tavan"
   , "tam_sayı_ondalık_sayı_hali", "sayı_çek", "eşitlik", "küçüklük", "küçük_eşitlik"
@@ -770,7 +806,7 @@ codegenStmtWith ctx stmt =
     Function name args _ clauses _ ->
       let argTys = map argType args
           jsName = lookupOverloadName ctx name argTys
-          fnCtx = ctx { currentFunction = Just (name, normalizeSig argTys, jsName) }
+          fnCtx = withLocalScope (ctx { currentFunction = Just (name, normalizeSig argTys, jsName) }) (map argIdent args)
       in renderFunctionNamed fnCtx jsName args clauses
     PrimFunc {} ->
       ""
@@ -791,13 +827,36 @@ codegenStmtWith ctx stmt =
 codegenExp :: Exp Ann -> Text
 codegenExp = codegenExpWith emptyCodegenCtx
 
+-- | Extend local scope with newly bound identifiers.
+withLocalScope :: CodegenCtx -> [Identifier] -> CodegenCtx
+withLocalScope ctx names =
+  ctx { localScope = uniqIdents (names ++ localScope ctx) }
+
+-- | Resolve a variable occurrence to a local binding when available.
+lookupLocalVar :: CodegenCtx -> Identifier -> [(Identifier, Case)] -> Maybe Identifier
+lookupLocalVar ctx varName varCandidates =
+  case
+    [ scopeName
+    | ident <- varName : map fst varCandidates
+    , scopeName <- localScope ctx
+    , identMatches scopeName ident
+    ] of
+    (scopeName : _) -> Just scopeName
+    [] -> Nothing
+
 codegenExpWith :: CodegenCtx -> Exp Ann -> Text
 codegenExpWith ctx exp' =
   case exp' of
-    Var {varName, varCandidates} ->
-      case varCandidates of
-        ((ident, _):_) -> toJsIdent ident
-        [] -> toJsIdent varName
+    Var {annExp, varName, varCandidates} ->
+      case lookupLocalVar ctx varName varCandidates of
+        Just localName -> toJsIdent localName
+        Nothing ->
+          case lookupValueName ctx annExp varName varCandidates of
+            Just jsName -> jsName
+            Nothing ->
+              case varCandidates of
+                ((ident, _):_) -> toJsIdent ident
+                [] -> toJsIdent varName
     StrLit {lit} ->
       renderString lit
     IntLit {intVal} ->
@@ -827,7 +886,12 @@ codegenExpWith ctx exp' =
           -- new value as an IIFE parameter so the initializer sees the outer
           -- binding and the body sees the shadowed one.
           let paramName = toJsIdent bindName
-          in "(await (async (" <> paramName <> ") => { return " <> codegenExpWith ctx second <> "; })(" <> codegenExpWith ctx bindExp <> "))"
+              bodyCtx = withLocalScope ctx [bindName]
+          in "(await (async (" <> paramName <> ") => { return " <> codegenExpWith bodyCtx second <> "; })(" <> codegenExpWith ctx bindExp <> "))"
+    Seq {first = first@Bind {bindName}, second} ->
+      let bodyCtx = withLocalScope ctx [bindName]
+      in renderIife
+           (renderExpAsStmt ctx first ++ ["return " <> codegenExpWith bodyCtx second <> ";"])
     Seq {first, second} ->
       renderIife
         (renderExpAsStmt ctx first ++ ["return " <> codegenExpWith ctx second <> ";"])
@@ -837,6 +901,39 @@ codegenExpWith ctx exp' =
       codegenExpWith ctx body
     Ascribe {ascExp} ->
       codegenExpWith ctx ascExp
+
+-- | Resolve a variable used as a value (not call head).
+--
+-- Uses resolved signature info when available. Otherwise falls back to candidate
+-- target discovery and picks a unique JS target if all candidates agree.
+lookupValueName :: CodegenCtx -> Ann -> Identifier -> [(Identifier, Case)] -> Maybe Text
+lookupValueName ctx annExp varName varCandidates =
+  case Map.lookup (annSpan annExp) (resolvedSigs ctx) of
+    Just (resolvedName, resolvedArgTys) ->
+      let sig = normalizeSig resolvedArgTys
+      in Just $
+           case Map.lookup (resolvedName, sig) (primFuncMap ctx) of
+             Just primName -> primName
+             Nothing -> lookupOverloadName ctx resolvedName sig
+    Nothing | annCase annExp /= Ins ->
+      Nothing
+    Nothing | null varCandidates ->
+      Nothing
+    Nothing ->
+      let candidates = uniqIdents (map fst varCandidates ++ [varName])
+          targets = concatMap (callTargetsForIdent ctx) candidates
+          jsNames = uniqTexts [jsName | (_, jsName) <- targets]
+      in case jsNames of
+           [jsName] -> Just jsName
+           _ -> Nothing
+
+-- | Deduplicate text values while preserving order.
+uniqTexts :: [Text] -> [Text]
+uniqTexts = reverse . fst . foldl' add ([], Set.empty)
+  where
+    add (acc, seen) txt
+      | Set.member txt seen = (acc, seen)
+      | otherwise = (txt : acc, Set.insert txt seen)
 
 -- | Render a Kip function definition as an async JS function.
 --
@@ -884,7 +981,8 @@ renderClauseIfChain ctx scrutinee =
       ["throw new Error(\"No match\");"]
     go isFirst (Clause pat body : rest) =
       let (cond, binds) = renderPatMatchCond ctx scrutinee pat
-          bodyLines = binds ++ ["return " <> codegenExpWith ctx body <> ";"]
+          bodyCtx = withLocalScope ctx (patBoundNames pat)
+          bodyLines = binds ++ ["return " <> codegenExpWith bodyCtx body <> ";"]
           header =
             if cond == ""
               then if isFirst then "{" else "else {"
@@ -897,6 +995,19 @@ renderClauseIfChain ctx scrutinee =
       in if cond == ""
            then block
            else block ++ go False rest
+
+-- | Collect variable names bound by a pattern.
+patBoundNames :: Pat ann -> [Identifier]
+patBoundNames pat =
+  case pat of
+    PWildcard _ -> []
+    PVar ident _ -> [ident]
+    PCtor _ subPats -> concatMap patBoundNames subPats
+    PIntLit _ _ -> []
+    PFloatLit _ _ -> []
+    PStrLit _ _ -> []
+    PCharLit _ _ -> []
+    PListLit pats -> concatMap patBoundNames pats
 
 -- | Render variable bindings implied by a pattern.
 --
