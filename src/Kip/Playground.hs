@@ -37,11 +37,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.HashTable.IO as HT
-import Paths_kip (getDataFileName)
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (die)
-import System.FilePath ((</>), takeDirectory, takeFileName)
+import System.FilePath (takeDirectory, takeFileName)
 import System.IO (stderr)
 
 import Language.Foma
@@ -234,26 +233,6 @@ locateLibDir lang = do
   if exists
     then return (takeDirectory path)
     else die . T.unpack $ renderPlaygroundBootstrapError lang PlaygroundLibMissing
-
-{- |
-Resolve a packaged data file path from runtime candidates.
-
-Lookup order:
-
-1. @KIP_DATADIR/<rel>@
-2. Cabal data-files path via 'getDataFileName'
-3. Relative path in current working directory
--}
-locateDataFile :: FilePath -> IO FilePath
-locateDataFile rel = do
-  mEnv <- lookupEnv "KIP_DATADIR"
-  cabalPath <- getDataFileName rel
-  let envPaths = maybe [] (\base -> [base </> rel]) mEnv
-      candidates = envPaths ++ [cabalPath, rel]
-  found <- filterM doesFileExist candidates
-  case found of
-    p:_ -> return p
-    [] -> return cabalPath
 
 {- |
 Generate one JS program text from entry files and transitive dependencies.

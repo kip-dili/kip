@@ -1,28 +1,28 @@
 ilk-sözlük, boş-sözlüktür.
-ikinci-sözlük, (ilk-sözlüğe "a"'nın 1'in kaydıdır).
-üçüncü-sözlük, (ikinci-sözlüğe "b"'nin 2'nin kaydıdır).
-dördüncü-sözlük, (üçüncü-sözlüğe "a"'nın 3'ün kaydıdır).
+ikinci-sözlük, (ilk-sözlüğe "a"'yla 1'in ekidir).
+üçüncü-sözlük, (ikinci-sözlüğe "b"'yle 2'nin ekidir).
+dördüncü-sözlük, (üçüncü-sözlüğe "a"'yla 3'ün ekidir).
 
 (dördüncü-sözlüğün boyutunu) yaz.
 
-(dördüncü-sözlükte "a"'nın araması) n'nin varlığıysa,
+(dördüncü-sözlükte "a"'nın karşılığı) n'nin varlığıysa,
   n'yi yaz;
 yokluksa,
   "yok"'u yaz.
 
-(dördüncü-sözlükte "c"'nin araması) n'nin varlığıysa,
+(dördüncü-sözlükte "c"'nin karşılığı) n'nin varlığıysa,
   n'yi yaz;
 yokluksa,
   "yok"'u yaz.
 
-beşinci-sözlük, (dördüncü-sözlükten "a"'nın silmesidir).
+beşinci-sözlük, (dördüncü-sözlükten "a"'nın çıkarılmışıdır).
 (beşinci-sözlüğün boyutunu) yaz.
 
-(beşinci-sözlükte "a"'nın araması) n'nin varlığıysa,
+(beşinci-sözlükte "a"'nın karşılığı) n'nin varlığıysa,
   "var"'ı yaz;
 yokluksa,
   "yok"'u yaz.
 
-altıncı-sözlük, (boş-sözlüğe "x"'in 10'un kaydıdır).
+altıncı-sözlük, (boş-sözlüğe "x"'le 10'un ekidir).
 yedinci-sözlük, (beşinci-sözlükle altıncı-sözlüğün birleşimidir).
 (yedinci-sözlüğün boyutunu) yaz.

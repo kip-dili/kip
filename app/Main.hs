@@ -7,7 +7,7 @@ module Main where
 
 import System.Exit
 import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, getHomeDirectory, createDirectoryIfMissing, getCurrentDirectory)
-import Paths_kip (version, getDataFileName)
+import Paths_kip (version)
 import Data.List
 import Options.Applicative hiding (ParseError)
 import System.FilePath ((</>), joinPath, takeDirectory, takeExtension, replaceExtension, makeRelative, splitDirectories, normalise)
@@ -47,7 +47,7 @@ import qualified Kip.TypeCheck as TC
 import Kip.Render
 import Kip.Cache
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
-import Kip.Runner (Lang(..), renderEvalError)
+import Kip.Runner (Lang(..), renderEvalError, locateDataFile)
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts)
 import Data.Word
 import Crypto.Hash.SHA256 (hash)
@@ -1362,7 +1362,7 @@ main = do
                   -> Bool -- ^ Whether to colorize output.
                   -> IO FilePath -- ^ Path to morphology FST.
     locateTrmorph lang useColor = do
-      path <- getDataFileName "vendor/trmorph.fst"
+      path <- locateDataFile "vendor/trmorph.fst"
       exists <- doesFileExist path
       if exists
         then return path
@@ -1372,7 +1372,7 @@ main = do
                  -> Bool -- ^ Whether to colorize output.
                  -> IO FilePath -- ^ Library directory.
     locateLibDir lang useColor = do
-      path <- getDataFileName "lib/temel.kip"
+      path <- locateDataFile "lib/temel.kip"
       exists <- doesFileExist path
       if exists
         then return (takeDirectory path)

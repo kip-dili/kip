@@ -24,12 +24,12 @@ import System.Environment (lookupEnv)
 import System.FilePath (takeFileName, takeDirectory, (</>), isRelative)
 import System.Random (randomRIO)
 import Data.Word (Word32)
-import Control.Monad (guard, unless, zipWithM)
+import Control.Monad (guard, unless, when, zipWithM)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Text.Read (readMaybe)
-import Data.Maybe (catMaybes, isNothing)
+import Data.Maybe (catMaybes, isNothing, listToMaybe, maybeToList)
 import Data.List (find, foldl')
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
@@ -117,6 +117,19 @@ isResolvableInAppContext varCandidates st =
     Map.member ident (evalTyCons st) ||
     Map.member ident (evalCtors st)
   ) varCandidates
+
+-- | Find a 0-arg primitive function matching one of the variable candidates.
+find0ArgPrim :: [(Identifier, Case)]
+             -> Map.Map Identifier [([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))]
+             -> Maybe ([Exp Ann] -> EvalM (Exp Ann))
+find0ArgPrim candidates primFuncs =
+  listToMaybe
+    [ impl
+    | (ident, _) <- candidates
+    , defs <- maybeToList (Map.lookup ident primFuncs)
+    , (args, impl) <- defs
+    , null args
+    ]
 
 -- | Check whether an evaluated expression is a runtime value.
 --
@@ -442,17 +455,37 @@ evalStepWith subEval localEnv e =
               st@MkEvalState{evalVals} <- get
               case lookupByCandidates evalVals varCandidates of
                 Nothing ->
-                  -- Not a value binding. Check if it's a function/constructor/etc.
-                  -- that will be resolved when applied in an App context.
-                  if isResolvableInAppContext varCandidates st
-                    then return (Done (Var annExp varName varCandidates))
-                    else throwError (UnboundVariable varName)
+                  -- Check for 0-arg primitive functions (e.g. boş-sözlük, boş-küme).
+                  -- Unlike constructors, primitives must be invoked to produce a value.
+                  case find0ArgPrim varCandidates (evalPrimFuncs st) of
+                    Just impl -> do
+                      result <- impl []
+                      return (Done result)
+                    Nothing ->
+                      -- Not a value binding. Check if it's a function/constructor/etc.
+                      -- that will be resolved when applied in an App context.
+                      if isResolvableInAppContext varCandidates st
+                        then return (Done (Var annExp varName varCandidates))
+                        else throwError (UnboundVariable varName)
                 Just v ->
                   -- Tail-position indirection: keep evaluating the bound value.
                   return (Continue localEnv v)
     App {annExp = annApp, fn, args} -> do
       -- Non-tail: we must compute function and arguments before applying.
-      fn' <- subEval localEnv fn
+      fn' <-
+        case fn of
+          Var {varName, varCandidates} -> do
+            st@MkEvalState{evalVals} <- get
+            case lookupByCandidatesHM localEnv varCandidates of
+              Just _ -> subEval localEnv fn
+              Nothing ->
+                case lookupBySuffixHM localEnv varName of
+                  Just _ -> subEval localEnv fn
+                  Nothing ->
+                    case lookupByCandidates evalVals varCandidates of
+                      Just _ -> subEval localEnv fn
+                      Nothing -> pure fn
+          _ -> subEval localEnv fn
       args' <- mapM (subEval localEnv) args
       let (fnResolved, preAppliedArgs) = flattenApplied fn'
           allArgs = preAppliedArgs ++ args'
@@ -499,7 +532,8 @@ evalStepWith subEval localEnv e =
                           Done <$> applySelector idx arg (App annApp fnResolved allArgs)
                         _ ->
                           return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call
-        _ -> return (Done (App annApp fnResolved allArgs))
+        _ | null allArgs -> return (Done fnResolved)
+          | otherwise -> return (Done (App annApp fnResolved allArgs))
     StrLit {annExp, lit} ->
       return (Done (StrLit annExp lit))
     IntLit {annExp, intVal} ->

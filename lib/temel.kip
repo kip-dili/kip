@@ -33,3 +33,11 @@ Bir yerleşik tam-sayı olsun.
 Bir yerleşik ondalık-sayı olsun.
 Bir yerleşik dizge olsun.
 Bir yerleşik karakter olsun.
+
+(* Çokbiçimli küme tipi. 
+   Değerler yerleşik işlemlerle üretilir. *)
+Bir yerleşik öğe küme'si olsun.
+
+(* Çokbiçimli sözlük tipi. 
+   Değerler yerleşik işlemlerle üretilir. *)
+Bir yerleşik anahtardan değere sözlük olsun.

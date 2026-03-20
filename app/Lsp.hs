@@ -69,10 +69,9 @@ import Kip.Eval (EvalState, emptyEvalState)
 import Kip.Parser
 import Kip.Render
 import qualified Kip.Render as Render
-import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeState)
+import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeState, locateDataFile)
 import Kip.TypeCheck
 import Language.Foma
-import Paths_kip (getDataFileName)
 
 import Control.Lens ((^.))
 import Text.Megaparsec (ParseErrorBundle(..), ParseError(..), errorOffset)
@@ -282,8 +281,8 @@ readState = do
 -- base parser/typechecker state used for all documents.
 initState :: IO (MVar LspState)
 initState = do
-  trmorphPath <- getDataFileName "vendor/trmorph.fst"
-  libPath <- getDataFileName "lib/temel.kip"
+  trmorphPath <- locateDataFile "vendor/trmorph.fst"
+  libPath <- locateDataFile "lib/temel.kip"
   fsm <- fsmReadBinaryFile trmorphPath
   upsCache <- HT.new
   downsCache <- HT.new

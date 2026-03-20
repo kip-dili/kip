@@ -35,6 +35,7 @@ module Kip.Runner
   , resolveBuildTargets
   , listKipFilesRecursive
   , collectNonInfinitiveRefs
+  , locateDataFile
     -- * Utilities
   , foldM'
   , mapParseErrorBundle
@@ -60,13 +61,15 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (die)
-import System.FilePath ((</>), joinPath, takeExtension)
+import System.FilePath ((</>), joinPath, takeDirectory, takeExtension)
 import Text.Megaparsec (ParseErrorBundle(..), PosState(..), errorBundlePretty)
 import Text.Megaparsec.Error (ParseError(..), ErrorFancy(..), ShowErrorComponent(..))
 import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
 import qualified Data.List.NonEmpty as NE
 import Crypto.Hash.SHA256 (hash)
+import Paths_kip (getDataFileName)
 
 import Language.Foma
 import Kip.AST
@@ -172,6 +175,39 @@ renderEvalError lang evalErr =
         Eval.NoMatchingFunction name -> "Evaluation error: no matching definition found for " <> T.pack (prettyIdent name) <> "."
         Eval.NoMatchingClause -> "Evaluation error: no matching clause found."
         Eval.RuntimeTypeErrorNonValue -> "Evaluation error: result is not a value (runtime type error)."
+
+{- |
+Resolve a packaged data file path from runtime candidates.
+
+Lookup order:
+
+1. @KIP_DATADIR/<rel>@
+2. Cabal data-files path via 'getDataFileName'
+3. Relative to the executable directory
+4. Relative to the executable parent directory
+5. Relative path in current working directory
+-}
+locateDataFile :: FilePath -> IO FilePath
+locateDataFile rel = do
+  mEnv <- lookupEnv "KIP_DATADIR"
+  cabalPath <- getDataFileName rel
+  exePath <- getExecutablePath
+  let exeDir = takeDirectory exePath
+      parentDir = takeDirectory exeDir
+      envPaths = maybe [] (\base -> [base </> rel]) mEnv
+      candidates =
+        nub
+          ( envPaths
+            ++ [ cabalPath
+               , exeDir </> rel
+               , parentDir </> rel
+               , rel
+               ]
+          )
+  found <- filterM doesFileExist candidates
+  case found of
+    p:_ -> return p
+    [] -> return cabalPath
 
 -- | Render a compiler message to text.
 renderMsg :: CompilerMsg -> RenderM Text

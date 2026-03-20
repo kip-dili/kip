@@ -791,6 +791,11 @@ estimateCandidates useCtx (ss, s) = do
                 case mCopula of
                   Just stripped | useCtx -> do
                     let strippedIdent = (ss, stripped)
+                        -- For hyphenated identifiers, also try the joined form:
+                        -- (["boş"], "sözlük") → ([], "boş-sözlük")
+                        joinedIdent
+                          | null ss   = Nothing
+                          | otherwise = Just ([], T.intercalate "-" (ss ++ [stripped]))
                     strippedBase <- normalizePossessive strippedIdent
                     return
                       ( [ (strippedIdent, Nom)
@@ -800,6 +805,11 @@ estimateCandidates useCtx (ss, s) = do
                         [ (strippedBase, Nom)
                         | strippedBase `Set.member` parserCtx
                         , strippedBase /= strippedIdent
+                        ]
+                        ++
+                        [ (joined, Nom)
+                        | Just joined <- [joinedIdent]
+                        , joined `Set.member` parserCtx
                         ]
                       )
                   _ -> return []
@@ -886,6 +896,9 @@ estimateCandidates useCtx (ss, s) = do
                         Just stripped -> do
                           baseIdent <- normalizePossessive (ss, stripped)
                           let strippedIdent = (ss, stripped)
+                              joinedIdent
+                                | null ss   = Nothing
+                                | otherwise = Just ([], T.intercalate "-" (ss ++ [stripped]))
                               copulaCtxHits =
                                 [ (strippedIdent, Nom)
                                 | strippedIdent `Set.member` parserCtx
@@ -894,6 +907,11 @@ estimateCandidates useCtx (ss, s) = do
                                 [ (baseIdent, Nom)
                                 | baseIdent `Set.member` parserCtx
                                 , baseIdent /= strippedIdent
+                                ]
+                                ++
+                                [ (joined, Nom)
+                                | Just joined <- [joinedIdent]
+                                , joined `Set.member` parserCtx
                                 ]
                           if useCtx && not (null copulaCtxHits)
                             then return copulaCtxHits
@@ -2675,7 +2693,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       try parseEffectfulHigherOrderArg <|> do
         (argName, argSpan) <- withSpan identifierNotKeyword
         ws
-        ty <- try parseHigherOrderArgType <|> try parseTypeWithCase <|> parseTypeLoose
+        ty <- try parseHigherOrderArgType <|> try parseTypeWithParenArgs <|> try parseTypeWithCase <|> parseTypeLoose
         let argAnn = mkAnn Nom argSpan
         return ((argName, argAnn), ty)
       where
@@ -2882,7 +2900,18 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     -- | Parse a return type with a lenient fallback for plain identifiers.
     parseReturnType :: KipParser (Ty Ann) -- ^ Parsed return type.
     parseReturnType =
-      try parseTypeWithCase <|> parseReturnTypeLoose
+      try parseTypeWithParenArgs <|> try parseTypeWithCase <|> parseReturnTypeLoose
+    -- | Parse a return type whose first argument is parenthesized:
+    -- @(anahtarla değer çifti) listesi@.
+    parseTypeWithParenArgs :: KipParser (Ty Ann) -- ^ Parsed type.
+    parseTypeWithParenArgs = do
+      firstArg <- parens parseTypeWithCase
+      restArgs <- many (try (ws *> parens parseTypeWithCase))
+      ws
+      (ctorIdent, ctorSp) <- withSpan identifierNotKeyword
+      (ctorName, cas) <- resolveTypeCandidateLoose ctorIdent
+      let ctorAnn = mkAnn cas ctorSp
+      return (TyApp ctorAnn (TyInd ctorAnn ctorName) (firstArg : restArgs))
     -- | Parse a return type without requiring it to be in scope.
     parseReturnTypeLoose :: KipParser (Ty Ann) -- ^ Parsed return type.
     parseReturnTypeLoose =
@@ -3819,8 +3848,12 @@ expToPat allowScrutinee argNames e = do
             Just base -> do
               ctorName <- resolveCondCtorName (mods, base)
               es' <- if allowScrutinee' then dropScrutineeExp allowScrutinee' argNames' es else return es
-              pats <- mapM expToPatArg es'
-              pats' <- dropScrutineePat allowScrutinee' argNames' pats
+              pats' <-
+                case malformedCtorBinderPats es' of
+                  Just recovered -> return recovered
+                  Nothing -> do
+                    pats <- mapM expToPatArg es'
+                    dropScrutineePat allowScrutinee' argNames' pats
               return (Just (PCtor (ctorName, ann) pats'))
             Nothing -> return Nothing
         IntLit ann n ->
@@ -3846,6 +3879,63 @@ expToPat allowScrutinee argNames e = do
             Just pat -> return (Just pat)
             Nothing -> return Nothing
     stripCondSuffix = stripSuffixAny condSuffixesTxt
+    malformedCtorBinderPats :: [Exp Ann] -> Maybe [Pat Ann]
+    malformedCtorBinderPats es' =
+      case es' of
+        [headExp, midExp, tailExp]
+          | expCase tailExp == Dat -> do
+              (headName, headSpan) <- simpleVar headExp
+              (tailName, _) <- tailBinder midExp
+              tailSpan <- finalSpan tailExp
+              return
+                [ PVar headName (mkAnn Gen headSpan)
+                , PVar tailName (mkAnn Dat tailSpan)
+                ]
+        _ -> Nothing
+    simpleVar :: Exp Ann -> Maybe (Identifier, Span)
+    simpleVar expItem =
+      case expItem of
+        Var ann name candidates ->
+          case preferInflected candidates of
+            (n, _):_ -> Just (n, annSpan ann)
+            _ -> Just (name, annSpan ann)
+        _ -> Nothing
+    tailBinder :: Exp Ann -> Maybe (Identifier, Span)
+    tailBinder expItem =
+      case expItem of
+        App _ _ args ->
+          case reverse args of
+            lastArg:_ -> simpleVar lastArg
+            [] -> Nothing
+        _ -> simpleVar expItem
+    finalSpan :: Exp Ann -> Maybe Span
+    finalSpan expItem =
+      case expItem of
+        Var ann _ _ -> Just (annSpan ann)
+        App ann _ _ -> Just (annSpan ann)
+        IntLit ann _ -> Just (annSpan ann)
+        FloatLit ann _ -> Just (annSpan ann)
+        StrLit ann _ -> Just (annSpan ann)
+        CharLit ann _ -> Just (annSpan ann)
+        Bind ann _ _ _ -> Just (annSpan ann)
+        Seq ann _ _ -> Just (annSpan ann)
+        Match ann _ _ -> Just (annSpan ann)
+        Let ann _ _ -> Just (annSpan ann)
+        Ascribe ann _ _ -> Just (annSpan ann)
+    expCase :: Exp Ann -> Case
+    expCase expItem =
+      case expItem of
+        Var ann _ _ -> annCase ann
+        App ann _ _ -> annCase ann
+        IntLit ann _ -> annCase ann
+        FloatLit ann _ -> annCase ann
+        StrLit ann _ -> annCase ann
+        CharLit ann _ -> annCase ann
+        Bind ann _ _ _ -> annCase ann
+        Seq ann _ _ -> annCase ann
+        Match ann _ _ -> annCase ann
+        Let ann _ _ -> annCase ann
+        Ascribe ann _ _ -> annCase ann
     resolveCondCtorName :: Identifier -> KipParser Identifier
     resolveCondCtorName ident@(mods, surface) = do
       MkParserState{parserCtors} <- getP
@@ -3956,12 +4046,9 @@ expToPatArg e = do
           return (PCtor (ctorName, ann) pats)
         Nothing ->
           -- Treat non-constructor applications as annotated variables (e.g., x öğe listesi)
-          case es of
-            (Var argAnn _ argCandidates : _) ->
-              case preferInflected argCandidates of
-                (n, c):_ -> return (PVar n (mkAnn c (annSpan argAnn)))
-                _ -> customFailure ErrPatternAmbiguousName
-            _ -> customFailure ErrPatternOnlyNames
+          case leftmostVarCandidate e of
+            Just (n, sp) -> return (PVar n (mkAnn (annCase ann) sp))
+            Nothing -> customFailure ErrPatternOnlyNames
     IntLit ann n -> return (PIntLit n ann)
     FloatLit ann n -> return (PFloatLit n ann)
     StrLit ann s -> return (PStrLit s ann)
@@ -3990,6 +4077,28 @@ expToPatArg e = do
           restElems <- extractListElements rest
           return (elem : restElems)
     extractListElements _ = Nothing
+
+    -- | Recover the user-written binder from an annotated variable phrase.
+    -- Examples:
+    --   "ilk öğenin" -> ilk
+    --   "devam öğe listesine" -> devam
+    leftmostVarCandidate :: Exp Ann -> Maybe (Identifier, Span)
+    leftmostVarCandidate exp0 =
+      case flattenApplied exp0 of
+        (_, args0) -> firstVar args0
+      where
+        firstVar [] = Nothing
+        firstVar (x:xs) =
+          case x of
+            Var varAnn name varCandidates ->
+              case preferInflected varCandidates of
+                (n, _):_ -> Just (n, annSpan varAnn)
+                _ -> Just (name, annSpan varAnn)
+            App {} ->
+              case leftmostVarCandidate x of
+                Just v -> Just v
+                Nothing -> firstVar xs
+            _ -> firstVar xs
 
 -- | Select a constructor name only when it is in scope.
 selectCondNameInCtors :: [Identifier] -- ^ Constructor identifiers.

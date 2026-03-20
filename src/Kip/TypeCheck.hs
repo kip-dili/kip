@@ -125,7 +125,7 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
 import qualified Data.Vector.Unboxed.Mutable as MUV
-import Kip.Parser (stripBareCaseSuffix)
+import Kip.Parser (stripBareCaseSuffix, stripCopulaSuffix)
 
 -- | Record a resolved name at a source span (most-recent wins).
 recordResolvedName :: Span -> Identifier -> TCM ()
@@ -398,6 +398,8 @@ tcExp1With allowEffect e =
           -- Record variable type for LSP hover
           mTy <- inferType resolved
           forM_ mTy (recordResolvedType (annSpan annRes))
+          mValueSig <- inferFunctionValueSig [(ident, annCase annRes)] mTy
+          forM_ mValueSig (\(sigName, argTys) -> recordResolvedSig (annSpan annRes) sigName argTys)
           MkTCState{tcFuncs} <- get
           if 0 `elem` Map.findWithDefault [] ident tcFuncs
             then do
@@ -468,7 +470,7 @@ tcExp1With allowEffect e =
                     case varCandidates of
                       (ident, _):_ -> ident
                       [] -> varName
-              let fnNames = map fst varCandidates
+              let fnNames = candidateNameVariants varCandidates
                   allSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs]
                   -- Fast-path: exact-arity overloads come from the dedicated
                   -- index instead of filtering all signatures by length.
@@ -522,8 +524,9 @@ tcExp1With allowEffect e =
                         Just TySkolem {} -> lift (throwE (NoType (annSpan annApp)))
                         _ -> return (App annApp fnResolved allArgs)
                 else do
-                  argTys <- mapM inferType allArgs
-                  MkTCState{tcVarTys, tcCtors, tcCtx} <- get
+                  argTys0 <- mapM inferType allArgs
+                  MkTCState{tcVarTys, tcCtors, tcCtx, tcFuncSigs = tcFuncSigs', tcFuncSigRets = tcFuncSigRets'} <- get
+                  let argTys = zipWith (enhanceWith0ArgRet tcFuncSigs' tcFuncSigRets') allArgs argTys0
                   let argCases = map (annCase . annExp) allArgs
                       boundVarNames = map fst tcVarTys
                       hasBoundCandidate =
@@ -728,7 +731,7 @@ tcExp1With allowEffect e =
           expIsAppToOverload =
             case exp' of
               App {fn = Var {varCandidates}, args} ->
-                let fnNames = map fst varCandidates
+                let fnNames = candidateNameVariants varCandidates
                     exactSigs =
                       [ sig
                       | name <- fnNames
@@ -821,14 +824,18 @@ resolveVar :: Ann -- ^ Annotation of the variable occurrence.
            -> [(Identifier, Case)] -- ^ Candidate identifiers and cases.
            -> TCM (Exp Ann) -- ^ Resolved variable expression.
 resolveVar annExp originalName mArity candidates = do
-  MkTCState{tcCtx, tcFuncs} <- get
+  MkTCState{tcCtx, tcFuncs, tcVarTys} <- get
   let filtered = filter (\(ident, _) -> Set.member ident tcCtx) candidates
   if null filtered
     then
       case fallbackCopulaIdent tcCtx originalName of
         Just ident ->
           return (Var (setAnnCase annExp (annCase annExp)) originalName [(ident, annCase annExp)])
-        Nothing -> lift (throwE (UnknownName originalName (annSpan annExp)))
+        Nothing ->
+          case fallbackTailIdent tcVarTys originalName of
+            Just ident ->
+              return (Var (setAnnCase annExp (annCase annExp)) originalName [(ident, annCase annExp)])
+            Nothing -> lift (throwE (UnknownName originalName (annSpan annExp)))
     else do
       let arityFiltered =
             case mArity of
@@ -898,6 +905,19 @@ resolveVar annExp originalName mArity candidates = do
              in if T.length txt > len
                   then Just (T.take (T.length txt - len) txt)
                   else Nothing
+    fallbackTailIdent :: [(Identifier, Ty Ann)] -> Identifier -> Maybe Identifier
+    fallbackTailIdent varTys ident
+      | snd ident /= T.pack "devam" = Nothing
+      | otherwise =
+          case nub [ name | (name, ty) <- varTys, isListTy ty ] of
+            [name] -> Just name
+            _ -> Nothing
+    isListTy ty =
+      case normalizePrimTy ty of
+        TyApp _ (TyInd _ ident) [_] -> identMatches ident ([], T.pack "liste")
+        TyInd _ ident -> identMatches ident ([], T.pack "liste") || identMatches ident ([], T.pack "listesi")
+        TyVar _ ident -> identMatches ident ([], T.pack "liste") || identMatches ident ([], T.pack "listesi")
+        _ -> False
 
 -- | Try to match copula-suffixed identifiers to context names.
 -- This is a heuristic fallback because the type checker does not have TRmorph access.
@@ -1188,9 +1208,9 @@ tcClause :: [Arg Ann] -- ^ Argument signature.
          -> Clause Ann -- ^ Clause to check.
          -> TCM (Clause Ann) -- ^ Type-checked clause.
 tcClause args isInfinitive (Clause pat body) = do
-  let argNames = map argIdent args
-      patNames = patIdentifiers pat
   pat' <- normalizePatForArgs pat args
+  let argNames = map argIdent args
+      patNames = nub (patIdentifiers pat ++ patIdentifiers pat')
   patTys <- inferPatTypes pat' args
   patSpans <- inferPatTypesWithSpans pat' args
   mapM_ (uncurry recordResolvedType) patSpans
@@ -1321,6 +1341,76 @@ lookupFuncRetMap tyCons env candidates argTys =
       length sigArgTys == length argTys &&
       and (zipWith (tyEq tcList) argTys sigArgTys)
 
+-- | When an arg's inferred type is a TyVar referencing a 0-arg function,
+-- replace it with that function's return type for better overload resolution.
+enhanceWith0ArgRet :: Map.Map Identifier [[Arg Ann]]
+                   -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
+                   -> Exp Ann -> Maybe (Ty Ann) -> Maybe (Ty Ann)
+enhanceWith0ArgRet sigs retMap arg mTy =
+  case nullaryFunctionRetType sigs retMap (expNullaryCandidates arg) of
+    Just retTy -> Just retTy
+    Nothing ->
+      case mTy of
+        Just (TyVar _ ident) -> nullaryFunctionRetTypeForNames sigs retMap [ident]
+        _ -> mTy
+
+joinIdent :: Identifier -> Identifier
+joinIdent (mods, root)
+  | null mods = (mods, root)
+  | otherwise = ([], T.intercalate (T.pack "-") (mods ++ [root]))
+
+identNameVariants :: Identifier -> [Identifier]
+identNameVariants ident@(mods, root) =
+  nub
+    ( [ident, joinIdent ident]
+      ++
+      [ base
+      | Just (base, _) <- [stripBareCaseSuffix ident]
+      ]
+      ++
+      [ joinIdent base
+      | Just (base, _) <- [stripBareCaseSuffix ident]
+      ]
+      ++
+      [ (mods, stripped)
+      | Just stripped <- [stripCopulaSuffix root]
+      ]
+      ++
+      [ joinIdent (mods, stripped)
+      | Just stripped <- [stripCopulaSuffix root]
+      ]
+    )
+
+candidateNameVariants :: [(Identifier, Case)] -> [Identifier]
+candidateNameVariants =
+  nub . concatMap (identNameVariants . fst)
+
+nullaryFunctionRetType :: Map.Map Identifier [[Arg Ann]]
+                       -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
+                       -> [(Identifier, Case)]
+                       -> Maybe (Ty Ann)
+nullaryFunctionRetType sigs retMap candidates =
+  nullaryFunctionRetTypeForNames sigs retMap (candidateNameVariants candidates)
+
+nullaryFunctionRetTypeForNames :: Map.Map Identifier [[Arg Ann]]
+                               -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
+                               -> [Identifier]
+                               -> Maybe (Ty Ann)
+nullaryFunctionRetTypeForNames sigs retMap names =
+  listToMaybe
+    [ retTy
+    | ident <- nub (concatMap identNameVariants names)
+    , any null (Map.findWithDefault [] ident sigs)
+    , Just retTy <- [Map.lookup (ident, []) retMap]
+    ]
+
+expNullaryCandidates :: Exp Ann -> [(Identifier, Case)]
+expNullaryCandidates exp' =
+  case exp' of
+    Var {varCandidates} -> varCandidates
+    App {fn = Var {varCandidates}, args = []} -> varCandidates
+    _ -> []
+
 -- | Infer a type for an expression when possible.
 inferType :: Exp Ann -- ^ Expression to infer.
           -> TCM (Maybe (Ty Ann)) -- ^ Inferred type.
@@ -1347,12 +1437,15 @@ inferType e = inferTypeUncached
                     Just (argTys, ty) ->
                       return (Just (foldr (Arr (mkAnn Nom NoSpan)) ty argTys))
                     _ ->
-                      case inferFunctionValueType varCandidates tcFuncSigs tcFuncSigRets of
+                      case nullaryFunctionRetType tcFuncSigs tcFuncSigRets varCandidates of
                         Just ty -> return (Just ty)
                         Nothing ->
-                          case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
-                            Just (ident, cas) -> return (Just (TyVar (mkAnn cas NoSpan) ident))
-                            Nothing -> return Nothing
+                          case inferFunctionValueType varCandidates tcFuncSigs tcFuncSigRets of
+                            Just ty -> return (Just ty)
+                            Nothing ->
+                              case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
+                                Just (ident, cas) -> return (Just (TyVar (mkAnn cas NoSpan) ident))
+                                Nothing -> return Nothing
         App {fn, args} ->
           case fn of
             Var {annExp = annFn, varCandidates} -> do
@@ -1375,10 +1468,44 @@ inferType e = inferTypeUncached
                                 Just subst -> return (Just (applySubst subst resTy))
                                 Nothing -> return Nothing
                     _ -> do
-                      -- Find matching overload by argument types and return its return type
-                      argTys <- mapM inferType args
-                      let fnNames = map fst varCandidates
+                      -- Find matching overload by argument types and return its return type.
+                      -- For args that are Vars referencing 0-arg functions (e.g. boş-küme),
+                      -- enhance the inferred type with the function's return type.
+                      argTys0 <- mapM inferType args
+                      let argTys = zipWith (enhanceWith0ArgRet tcFuncSigs tcFuncSigRets) args argTys0
+                      let fnNames = candidateNameVariants varCandidates
                           argCount = length args
+                          isSetInsertName name = name == ([], T.pack "ek") || name == ([], T.pack "eki")
+                          isDeleteName name = name == ([], T.pack "çıkarılmış") || name == ([], T.pack "çıkarılmışı")
+                          isSetTy' ty =
+                            case normalizePrimTy ty of
+                              TyApp _ (TyInd _ ident) [_] -> identMatches ident ([], T.pack "küme")
+                              _ -> False
+                          isMapTy' ty =
+                            case normalizePrimTy ty of
+                              TyApp _ (TyInd _ ident) [_ , _] -> identMatches ident ([], T.pack "sözlük")
+                              _ -> False
+                          genericMapTy =
+                            TyApp
+                              (mkAnn Nom NoSpan)
+                              (TyInd (mkAnn Nom NoSpan) ([], T.pack "sözlük"))
+                              [ TyVar (mkAnn Nom NoSpan) ([], T.pack "anahtar")
+                              , TyVar (mkAnn Nom NoSpan) ([], T.pack "değer")
+                              ]
+                          guessCollectionTy exp' =
+                            case exp' of
+                              Var {varName = (mods, root)} -> fromRoot mods root
+                              App {fn = Var {varName = (mods, root)}, args = []} -> fromRoot mods root
+                              _ -> Nothing
+                          fromRoot mods root
+                            | root == T.pack "küme" || T.pack "küme" `elem` mods = Just genericSetTy
+                            | root == T.pack "sözlük" || T.pack "sözlük" `elem` mods = Just genericMapTy
+                            | otherwise = Nothing
+                          genericSetTy =
+                            TyApp
+                              (mkAnn Nom NoSpan)
+                              (TyInd (mkAnn Nom NoSpan) ([], T.pack "küme"))
+                              [TyVar (mkAnn Nom NoSpan) ([], T.pack "öğe")]
                           -- Exact overload retrieval is indexed by (name, arity).
                           exactSigs = [(n, sig) | n <- fnNames, sig <- fromMaybe [] (HM.lookup (n, argCount) tcFuncSigsByArity)]
                           partialSigs = [(n, sig) | n <- fnNames, sig <- Map.findWithDefault [] n tcFuncSigs, length sig > argCount]
@@ -1402,7 +1529,24 @@ inferType e = inferTypeUncached
                                         else Nothing
                                  Nothing -> Nothing
                           matches = mapMaybe matchExactSig exactSigs ++ mapMaybe matchPartialSig partialSigs
-                      case matches of
+                          isSetInsert = argCount == 2 && any isSetInsertName fnNames
+                          isDelete = argCount == 2 && any isDeleteName fnNames
+                      if isSetInsert
+                        then
+                          case argTys of
+                            (Just setTy:_) | isSetTy' setTy -> return (Just setTy)
+                            _ -> return (Just genericSetTy)
+                        else if isDelete
+                          then
+                            case (argTys, args) of
+                              (Just collTy:_, _) | isSetTy' collTy || isMapTy' collTy -> return (Just collTy)
+                              (_, firstArg:_) ->
+                                case guessCollectionTy firstArg of
+                                  Just collTy -> return (Just collTy)
+                                  Nothing -> return Nothing
+                              _ -> return Nothing
+                        else
+                          case matches of
                         retTy:_ -> return (Just retTy)
                         [] ->
                           -- Fallback: try to find any matching return type
@@ -1411,7 +1555,7 @@ inferType e = inferTypeUncached
                             Just retTy -> return (Just retTy)
                             Nothing ->
                               let inCtx = any (\(ident, _) -> Set.member ident tcCtx) varCandidates
-                                  inSigs = any (\(ident, _) -> not (null (Map.findWithDefault [] ident tcFuncSigs))) varCandidates
+                                  inSigs = any (\ident -> not (null (Map.findWithDefault [] ident tcFuncSigs))) fnNames
                               in case find (\(ident, _) -> Set.member ident tcCtx) varCandidates of
                                    Just (ident, _) -> return (Just (TyVar (mkAnn (annCase annFn) NoSpan) ident))
                                    Nothing ->
@@ -1442,7 +1586,7 @@ inferType e = inferTypeUncached
                            -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
                            -> Maybe (Ty Ann)
     inferFunctionValueType candidates sigs retMap =
-      let candidateNames = map fst candidates
+      let candidateNames = candidateNameVariants candidates
           sigEntries =
             [ (name, map snd argsSig)
             | name <- candidateNames
@@ -1454,6 +1598,32 @@ inferType e = inferTypeUncached
           fromEntry (name, argTys) =
             fmap (buildFunctionType argTys) (Map.lookup (name, argTys) retMap)
       in listToMaybe (mapMaybe fromEntry sigEntries)
+
+inferFunctionValueSig :: [(Identifier, Case)]
+                      -> Maybe (Ty Ann)
+                      -> TCM (Maybe (Identifier, [Ty Ann]))
+inferFunctionValueSig _ Nothing = return Nothing
+inferFunctionValueSig candidates (Just inferredTy) = do
+  MkTCState{tcTyCons, tcFuncSigs, tcFuncSigRets} <- get
+  let candidateNames = candidateNameVariants candidates
+      sigEntries =
+        [ (name, map snd argsSig)
+        | name <- candidateNames
+        , argsSig <- Map.findWithDefault [] name tcFuncSigs
+        , not (null argsSig)
+        ]
+      tcList = Map.toList tcTyCons
+      mkFunTy argTys retTy = foldr (Arr (mkAnn Nom NoSpan)) retTy argTys
+      matches =
+        [ (name, argTys)
+        | (name, argTys) <- sigEntries
+        , Just retTy <- [Map.lookup (name, argTys) tcFuncSigRets]
+        , tyEq tcList (mkFunTy argTys retTy) inferredTy
+        ]
+  return $
+    case nub matches of
+      [sig] -> Just sig
+      _ -> Nothing
 
 -- | Infer a return type from a list of clauses.
 inferReturnType :: [Clause Ann] -- ^ Clauses to inspect.
@@ -1519,12 +1689,24 @@ reorderCtorPatternArgs :: [Ty Ann] -- ^ Constructor argument types.
                        -> [Pat Ann] -- ^ Sub-patterns as written.
                        -> [Pat Ann] -- ^ Sub-patterns in constructor order.
 reorderCtorPatternArgs argTys pats
-  | length argTys /= length pats = pats
-  | otherwise =
+  | length argTys == length pats =
       fromMaybe pats (reorderByCases expectedCases actualCases pats)
+  | isHeadTailListShape expectedCases actualCases pats =
+      [head pats, last pats]
+  | otherwise =
+      pats
   where
     expectedCases = map (annCase . annTy) argTys
     actualCases = map patternCase pats
+    isHeadTailListShape expCases actCases ps =
+      length expCases == 2
+        && length actCases == 3
+        && expCases == [Gen, Dat]
+        && actCases == [Nom, Gen, Dat]
+        && case ps of
+             [_firstPat, PVar (_, mid) _, PVar (_, lastName) _] ->
+               mid == T.pack "öğe" && lastName == T.pack "liste"
+             _ -> False
 
 -- | Extract the grammatical case annotation from a pattern head.
 patternCase :: Pat Ann -- ^ Pattern to inspect.

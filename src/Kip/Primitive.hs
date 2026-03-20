@@ -429,12 +429,12 @@ allPrimitives =
 
 
   , PrimitiveDef ([], "ek")
-      [ anyTypes 2 ]
-      ["küme.kip"]
+      [ anyTypes 2, anyTypes 3 ]
+      ["küme.kip", "sözlük.kip"]
 
   , PrimitiveDef ([], "çıkarılmış")
       [ anyTypes 2 ]
-      ["küme.kip"]
+      ["küme.kip", "sözlük.kip"]
 
   , PrimitiveDef ([], "üyelik")
       [ anyTypes 2 ]
@@ -442,11 +442,11 @@ allPrimitives =
 
   , PrimitiveDef ([], "liste-hal")
       [ anyTypes 1 ]
-      ["küme.kip"]
+      ["küme.kip", "sözlük.kip"]
 
   , PrimitiveDef (["liste"], "hal")
       [ anyTypes 1 ]
-      ["küme.kip"]
+      ["küme.kip", "sözlük.kip"]
 
   , PrimitiveDef ([], "boş-sözlük")
       [ anyTypes 0 ]
@@ -456,15 +456,7 @@ allPrimitives =
       [ anyTypes 0 ]
       ["sözlük.kip"]
 
-  , PrimitiveDef ([], "kayıt")
-      [ anyTypes 3 ]
-      ["sözlük.kip"]
-
-  , PrimitiveDef ([], "silme")
-      [ anyTypes 2 ]
-      ["sözlük.kip"]
-
-  , PrimitiveDef ([], "arama")
+  , PrimitiveDef ([], "karşılık")
       [ anyTypes 2 ]
       ["sözlük.kip"]
 
@@ -493,12 +485,19 @@ isImplementedPrimitive name args =
                any (\variant -> variantArity variant == numArgs) (primVariants prim)
          in typedMatch || (hasUnknownTyVar && arityOnlyMatch)
 
--- | Map a primitive identifier to the files that define it
+-- | Map a primitive identifier to the files that define it.
+-- Tries both the direct identifier and the hyphen-joined form
+-- since the parser may represent @boş-küme@ as @(["boş"], "küme")@.
 primFiles :: Identifier -> [FilePath]
 primFiles name =
-  case filter (\p -> primId p == name) allPrimitives of
+  case filter (\p -> primId p == name || primId p == joinIdent name) allPrimitives of
     [] -> []
     (prim:_) -> primSourceFiles prim
+  where
+    joinIdent :: Identifier -> Identifier
+    joinIdent (mods, root)
+      | null mods = (mods, root)
+      | otherwise = ([], T.intercalate "-" (mods ++ [root]))
 
 -- | Resolve a primitive implementation by name/signature.
 primitiveEvalImpl :: Monad m => PrimitiveEvalOps m -> Maybe FilePath -> Identifier -> [Arg Ann] -> Maybe ([Exp Ann] -> m (Exp Ann))
@@ -545,6 +544,10 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise ->
           Nothing
     ([], "ek")
+      | [(_, mapTy), _, _] <- args, isMapTy mapTy ->
+          Just (primMapInsert ([], "ek"))
+      | [_, _, _] <- args ->
+          Just (primMapInsert ([], "ek"))
       | [(_, setTy), (_, elemTy)] <- args
       , Just setElemTy' <- setElemTy setTy
       , sameTy setElemTy' elemTy ->
@@ -553,6 +556,8 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primSetInsert ([], "ek"))
       | otherwise -> Nothing
     ([], "çıkarılmış")
+      | [(_, mapTy), _] <- args, isMapTy mapTy ->
+          Just (primMapDelete ([], "çıkarılmış"))
       | [(_, setTy), (_, elemTy)] <- args
       , Just setElemTy' <- setElemTy setTy
       , sameTy setElemTy' elemTy ->
@@ -569,10 +574,12 @@ primitiveEvalImpl ops mPath ident args = do
           Just (primSetMember ([], "üyelik"))
       | otherwise -> Nothing
     ([], "liste-hal")
+      | [(_, mapTy)] <- args, isMapTy mapTy -> Just (primMapToList ([], "liste-hal"))
       | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetToList ([], "liste-hal"))
       | [_] <- args -> Just (primSetToList ([], "liste-hal"))
       | otherwise -> Nothing
     (["liste"], "hal")
+      | [(_, mapTy)] <- args, isMapTy mapTy -> Just (primMapToList (["liste"], "hal"))
       | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetToList (["liste"], "hal"))
       | [_] <- args -> Just (primSetToList (["liste"], "hal"))
       | otherwise -> Nothing
@@ -751,21 +758,11 @@ primitiveEvalImpl ops mPath ident args = do
     (["boş"], "sözlük")
       | [] <- args -> Just (primMapEmpty (["boş"], "sözlük"))
       | otherwise -> Nothing
-    ([], "kayıt")
-      | [(_, mapTy), _, _] <- args, isMapTy mapTy ->
-          Just (primMapInsert ([], "kayıt"))
-      | [_, _, _] <- args ->
-          Just (primMapInsert ([], "kayıt"))
-      | otherwise -> Nothing
-    ([], "silme")
+    ([], "karşılık")
       | [(_, mapTy), _] <- args, isMapTy mapTy ->
-          Just (primMapDelete ([], "silme"))
-      | otherwise -> Nothing
-    ([], "arama")
-      | [(_, mapTy), _] <- args, isMapTy mapTy ->
-          Just (primMapLookup ([], "arama"))
+          Just (primMapLookup ([], "karşılık"))
       | [_, _] <- args ->
-          Just (primMapLookup ([], "arama"))
+          Just (primMapLookup ([], "karşılık"))
       | otherwise -> Nothing
     (["sayı"], "çek") -> Just (primIntRandom ops ["sayı"] "çek")
     ([], "sayı-çek") -> Just (primIntRandom ops [] "sayı-çek")
@@ -1429,6 +1426,28 @@ primMapUnion ident args =
     _ -> pure (fallbackApp ident args)
 
 
+primMapToList :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapToList ident args =
+  case args of
+    [mapVal] ->
+      case mapReprFromExp mapVal of
+        Just repr ->
+          let pairs =
+                [ pairExp k v
+                | key <- mapKeys repr
+                , Just (k, v) <- [Map.lookup key (mapElems repr)]
+                ]
+          in pure (foldr listConsExp listNilExp pairs)
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+pairExp :: Exp Ann -> Exp Ann -> Exp Ann
+pairExp a b =
+  App
+    (mkAnn Nom NoSpan)
+    (Var (mkAnn P3s NoSpan) ([], "ikilisi") [(([], "ikilisi"), P3s)])
+    [a, b]
+
 emptyMapRepr :: MapRepr
 emptyMapRepr = MapRepr [] Map.empty
 
@@ -1733,7 +1752,7 @@ primitiveJsPrelude = T.unlines
   , "// Map/dictionary primitives"
   , "var __kip_map_entries = (m) => (m && m.__kip_map === true && Array.isArray(m.entries)) ? m.entries : null;"
   , "var boş_sözlük = () => ({ __kip_map: true, entries: [] });"
-  , "var sözlük_kayıt = (m, k, v) => {"
+  , "var sözlük_ek = (m, k, v) => {"
   , "  var entries = __kip_map_entries(m);"
   , "  if (!entries) return m;"
   , "  var key = __kip_set_key(k);"
@@ -1741,13 +1760,13 @@ primitiveJsPrelude = T.unlines
   , "  newEntries.push([key, k, v]);"
   , "  return { __kip_map: true, entries: newEntries };"
   , "};"
-  , "var sözlük_silme = (m, k) => {"
+  , "var sözlük_çıkarılmış = (m, k) => {"
   , "  var entries = __kip_map_entries(m);"
   , "  if (!entries) return m;"
   , "  var key = __kip_set_key(k);"
   , "  return { __kip_map: true, entries: entries.filter((e) => e[0] !== key) };"
   , "};"
-  , "var sözlük_arama = (m, k) => {"
+  , "var sözlük_karşılık = (m, k) => {"
   , "  var entries = __kip_map_entries(m);"
   , "  var __none = typeof yokluk === 'function' ? yokluk() : { tag: 'yokluk', args: [] };"
   , "  if (!entries) return __none;"
@@ -1769,6 +1788,11 @@ primitiveJsPrelude = T.unlines
   , "  for (var i = 0; i < leftEntries.length; i += 1) m.set(leftEntries[i][0], leftEntries[i]);"
   , "  for (var i = 0; i < rightEntries.length; i += 1) m.set(rightEntries[i][0], rightEntries[i]);"
   , "  return { __kip_map: true, entries: Array.from(m.values()) };"
+  , "};"
+  , "var sözlük_liste = (m) => {"
+  , "  var entries = __kip_map_entries(m);"
+  , "  if (!entries) return __kip_array_to_list([]);"
+  , "  return __kip_array_to_list(entries.map((e) => (typeof ikilisi === 'function' ? ikilisi(e[1], e[2]) : { tag: 'ikilisi', args: [e[1], e[2]] })));"
   , "};"
   , ""
   , "// I/O primitives - async to support browser interactivity"

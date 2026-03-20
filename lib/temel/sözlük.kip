@@ -1,38 +1,46 @@
 temeli yükle.
 
-(* Bir anahtardan değere sözlük, yerleşiktir. *)
-Bir yerleşik anahtardan değere sözlük olsun.
-
 (* Boş bir sözlük üretir. *)
-(boş-sözlük anahtar'dan değer'e sözlük),
+(boş-sözlük anahtardan değere sözlük),
   yerleşiktir.
 
 (*
 Sözlüğe bir anahtar-değer çifti kaydeder.
 *)
-(bu anahtar'dan değer'e sözlüğe) (şu anahtarın) (o değerin) (kayıt anahtar'dan değer'e sözlüğü),
+(bu anahtardan değere sözlüğe) (şu anahtarla) (o değerin) (ek anahtardan değere sözlüğü),
   yerleşiktir.
 
 (*
 Sözlükten bir anahtarı siler.
 *)
-(bu anahtar'dan değer'e sözlükten) (şu anahtarın) (silme anahtar'dan değer'e sözlüğü),
+(bu anahtardan değere sözlükten) (şu anahtarın) (çıkarılmış anahtardan değere sözlüğü),
   yerleşiktir.
 
 (*
 Sözlükte bir anahtarın değerini arar.
 *)
-(bu anahtar'dan değer'e sözlükte) (şu anahtarın) (arama değerin olasılığı),
+(bu anahtardan değere sözlükte) (şu anahtarın) (karşılık değerin olasılığı),
   yerleşiktir.
 
 (*
 Sözlüğün boyutunu döndürür.
 *)
-(bu anahtar'dan değer'e sözlüğün) (boyut tam-sayısı),
+(bu anahtardan değere sözlüğün) (boyut tam-sayısı),
   yerleşiktir.
 
 (*
 İki sözlüğün birleşimini döndürür.
 *)
-(bu anahtar'dan değer'e sözlükle) (şu anahtar'dan değer'e sözlüğün) (birleşim anahtar'dan değer'e sözlüğü),
+(bu anahtardan değere sözlükle) (şu anahtardan değere sözlüğün) (birleşim anahtardan değere sözlüğü),
   yerleşiktir.
+
+(*
+Sözlüğü listeye dönüştürür.
+*)
+(bu anahtardan değere sözlüğün) (liste-hal (anahtarla değer çifti) listesi),
+  yerleşiktir.
+
+(bu (anahtarla değer çifti) listesinin) (sözlük-hal anahtardan değere sözlük),
+  bu boşsa, boş-sözlük;
+  (a'yla bir b ikilisinin) devama ekiyse,
+    (devamın sözlük-haline) a'yla b'nin ekidir.
