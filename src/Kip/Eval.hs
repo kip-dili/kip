@@ -133,6 +133,7 @@ isRuntimeValue st expr =
     StrLit {} -> True
     CharLit {} -> True
     SetLit {} -> True
+    MapLit {} -> True
     Var {varCandidates} ->
       isRandomCandidate varCandidates ||
       any (\(ident, _) ->
@@ -281,6 +282,8 @@ substituteTraceEnv env = go 0
               App ann (go depth fn) (map (go depth) args)
             SetLit ann entries ->
               SetLit ann (Map.map (go depth) entries)
+            MapLit ann entries ->
+              MapLit ann (Map.map (\(k, v) -> (go depth k, go depth v)) entries)
             Bind ann nm na bexp ->
               Bind ann nm na (go depth bexp)
             Seq ann first second ->
@@ -303,6 +306,7 @@ sameExp (FloatLit _ a) (FloatLit _ b) = a == b
 sameExp (StrLit _ a) (StrLit _ b) = a == b
 sameExp (CharLit _ a) (CharLit _ b) = a == b
 sameExp (SetLit _ a) (SetLit _ b) = a == b
+sameExp (MapLit _ a) (MapLit _ b) = a == b
 sameExp (Var _ n1 _) (Var _ n2 _) = n1 == n2
 sameExp _ _ = False
 
@@ -317,6 +321,12 @@ eqIgnoringAnn (SetLit _ e1) (SetLit _ e2) =
     kvs1 = Map.toAscList e1
     kvs2 = Map.toAscList e2
     eqKV (k1, v1) (k2, v2) = k1 == k2 && eqIgnoringAnn v1 v2
+eqIgnoringAnn (MapLit _ e1) (MapLit _ e2) =
+  sameLength kvs1 kvs2 && and (zipWith eqKV kvs1 kvs2)
+  where
+    kvs1 = Map.toAscList e1
+    kvs2 = Map.toAscList e2
+    eqKV (k1, (ka1, va1)) (k2, (ka2, va2)) = k1 == k2 && eqIgnoringAnn ka1 ka2 && eqIgnoringAnn va1 va2
 eqIgnoringAnn (IntLit _ n1) (IntLit _ n2) = n1 == n2
 eqIgnoringAnn (FloatLit _ n1) (FloatLit _ n2) = n1 == n2
 eqIgnoringAnn (StrLit _ s1) (StrLit _ s2) = s1 == s2
@@ -351,6 +361,8 @@ substituteChildren subs parent =
           App ann (replaceChild fn) (map replaceChild args)
         SetLit ann entries ->
           SetLit ann (Map.map replaceChild entries)
+        MapLit ann entries ->
+          MapLit ann (Map.map (\(k, v) -> (replaceChild k, replaceChild v)) entries)
         Match ann scr cls ->
           Match ann (replaceChild scr) (map (\(Clause p e) -> Clause p (replaceChild e)) cls)
         Seq ann first second ->
@@ -498,6 +510,8 @@ evalStepWith subEval localEnv e =
       return (Done (CharLit annExp charVal))
     SetLit {annExp, setEntries} ->
       return (Done (SetLit annExp setEntries))
+    MapLit {annExp, mapEntries} ->
+      return (Done (MapLit annExp mapEntries))
     Bind {annExp, bindName, bindNameAnn, bindExp} -> do
       -- Non-tail: evaluate the binding expression, but the bind itself is a value.
       v <- subEval localEnv bindExp
@@ -1227,6 +1241,15 @@ inferType e =
             (mkAnn Nom NoSpan)
             (TyInd (mkAnn Nom NoSpan) ([], "küme"))
             [TyVar (mkAnn Nom NoSpan) ([], "öğe")]))
+    MapLit {} ->
+      return
+        (Just
+          (TyApp
+            (mkAnn Nom NoSpan)
+            (TyInd (mkAnn Nom NoSpan) ([], "sözlük"))
+            [ TyVar (mkAnn Nom NoSpan) ([], "anahtar")
+            , TyVar (mkAnn Nom NoSpan) ([], "değer")
+            ]))
     Bind {bindExp} -> inferType bindExp
     Seq {second} -> inferType second
     Var {varCandidates} -> do
@@ -1301,6 +1324,8 @@ applyTypeCase cas exp =
       CharLit (setAnnCase ann cas) c
     SetLit ann entries ->
       SetLit (setAnnCase ann cas) entries
+    MapLit ann entries ->
+      MapLit (setAnnCase ann cas) entries
     _ -> exp
 
 -- | Check whether an inferred type matches an expected type.
@@ -1503,8 +1528,8 @@ evalStmtInFile mPath stmt =
                         , evalCtors = Map.union (Map.fromList ctorSigs) (evalCtors s)
                         , evalTyCons = Map.insert name (length params) (evalTyCons s)
                         })
-      PrimType name ->
-        modify (\s -> s { evalTyCons = Map.insert name 0 (evalTyCons s) })
+      PrimType name params ->
+        modify (\s -> s { evalTyCons = Map.insert name (length params) (evalTyCons s) })
       ExpStmt e -> do
         _ <- evalExp e
         return ()

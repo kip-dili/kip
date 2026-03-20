@@ -2411,17 +2411,35 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     primTy = do
       lexeme (string "Bir")
       _ <- lexeme (string "yerleşik")
-      (rawName, nameSpan) <- withSpan identifierNotKeyword
-      name <- fst <$> resolveCandidatePreferNom rawName
-      recordDefSpan name nameSpan
+      (n, nameSpan, params, _mods) <- try typeHeadParens <|> primTyInline
+      recordDefSpan n nameSpan
+      let paramIdents = [ident | TyVar _ ident <- params]
       lexeme (string "olsun")
       period
-      modifyP (\ps -> ps { parserCtx = Set.insert name (parserCtx ps)
-                         , parserTyCons = (name, 0) : parserTyCons ps
-                         , parserTyConsNames = name : parserTyConsNames ps
-                         , parserPrimTypes = name : parserPrimTypes ps
+      modifyP (\ps -> ps { parserCtx = Set.insert n (Set.fromList paramIdents `Set.union` parserCtx ps)
+                         , parserTyParams = paramIdents ++ parserTyParams ps
+                         , parserTyCons = (n, length params) : parserTyCons ps
+                         , parserTyConsNames = n : parserTyConsNames ps
+                         , parserPrimTypes = n : parserPrimTypes ps
                          })
-      return (PrimType name)
+      return (PrimType n params)
+    -- | Parse inline type head for primTy, stopping before "olsun".
+    primTyInline :: KipParser (Identifier, Span, [Ty Ann], [Identifier])
+    primTyInline = do
+      first <- withSpan identifierNotKeyword
+      rest <- many (try (ws *> notFollowedBy (string "olsun") *> withSpan identifierNotKeyword))
+      case rest of
+        [] -> do
+          rawName <- fst <$> resolveCandidatePreferNom (fst first)
+          name <- normalizeTypeHead rawName
+          return (name, snd first, [], [])
+        _ -> do
+          let paramIdents = first : init rest
+              nameIdent = last rest
+          params <- mapM (parseTypeParam . fst) paramIdents
+          rawName <- fst <$> resolveCandidatePreferNom (fst nameIdent)
+          name <- normalizeTypeHead rawName
+          return (name, snd nameIdent, params, [])
     {- | Parse a type declaration.
 
     = Type Declaration Grammar

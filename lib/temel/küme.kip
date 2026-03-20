@@ -1,7 +1,7 @@
 temeli yükle.
 
 (* Çokbiçimli küme tipi. Değerler primitive işlemlerle üretilir. *)
-Bir öğe küme'si var olamaz.
+Bir yerleşik öğe küme'si olsun.
 
 (* Boş bir küme üretir. *)
 (boş-küme öğe kümesi),

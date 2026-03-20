@@ -1,0 +1,28 @@
+ilk-sözlük, boş-sözlüktür.
+ikinci-sözlük, (ilk-sözlüğe "a"'nın 1'in kaydıdır).
+üçüncü-sözlük, (ikinci-sözlüğe "b"'nin 2'nin kaydıdır).
+dördüncü-sözlük, (üçüncü-sözlüğe "a"'nın 3'ün kaydıdır).
+
+(dördüncü-sözlüğün boyutunu) yaz.
+
+(dördüncü-sözlükte "a"'nın araması) n'nin varlığıysa,
+  n'yi yaz;
+yokluksa,
+  "yok"'u yaz.
+
+(dördüncü-sözlükte "c"'nin araması) n'nin varlığıysa,
+  n'yi yaz;
+yokluksa,
+  "yok"'u yaz.
+
+beşinci-sözlük, (dördüncü-sözlükten "a"'nın silmesidir).
+(beşinci-sözlüğün boyutunu) yaz.
+
+(beşinci-sözlükte "a"'nın araması) n'nin varlığıysa,
+  "var"'ı yaz;
+yokluksa,
+  "yok"'u yaz.
+
+altıncı-sözlük, (boş-sözlüğe "x"'in 10'un kaydıdır).
+yedinci-sözlük, (beşinci-sözlükle altıncı-sözlüğün birleşimidir).
+(yedinci-sözlüğün boyutunu) yaz.

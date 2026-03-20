@@ -130,6 +130,7 @@ data Exp a =
     Var    { annExp :: a , varName :: Identifier , varCandidates :: [(Identifier, Case)] } -- ^ Variable reference.
   | App    { annExp :: a , fn :: Exp a , args :: [Exp a] } -- ^ Function application.
   | SetLit { annExp :: a , setEntries :: Map.Map Text (Exp a) } -- ^ Internal runtime set representation.
+  | MapLit { annExp :: a , mapEntries :: Map.Map Text (Exp a, Exp a) } -- ^ Internal runtime map/dictionary representation.
   | StrLit { annExp :: a , lit :: !Text } -- ^ String literal.
   | IntLit { annExp :: a , intVal :: !Integer } -- ^ Integer literal.
   | FloatLit { annExp :: a , floatVal :: !Double } -- ^ Floating-point literal.
@@ -351,7 +352,7 @@ data Stmt ann =
   | PrimFunc Identifier [Arg ann] (Ty ann) Bool
   | Load [Text] Identifier
   | NewType Identifier [Ty ann] [Ctor ann]
-  | PrimType Identifier
+  | PrimType Identifier [Ty ann]
   | ExpStmt (Exp ann)
   deriving (Show, Eq, Generic, Functor, Binary)
 
@@ -391,6 +392,8 @@ prettyExp (App _ f xs) =
   unwords (map prettyExp (xs ++ [f]))
 prettyExp (SetLit _ entries) =
   "[" ++ intercalate ", " (map prettyExp (Map.elems entries)) ++ "]"
+prettyExp (MapLit _ entries) =
+  "{" ++ intercalate ", " [prettyExp k ++ " -> " ++ prettyExp v | (k, v) <- Map.elems entries] ++ "}"
 prettyExp (Match _ scrut clauses) =
   "(" ++ intercalate ", " (map (prettyClause (prettyExp scrut)) clauses) ++ ")"
   where
@@ -507,7 +510,7 @@ ppStmt stmt = case stmt of
     "NewType " ++ ppIdent name ++
     " [" ++ intercalate ", " (map ppTy params) ++ "]\n" ++
     concatMap (\c -> "  " ++ ppCtor c ++ "\n") ctors
-  PrimType name -> "PrimType " ++ ppIdent name
+  PrimType name params -> "PrimType " ++ ppIdent name ++ " [" ++ intercalate ", " (map ppTy params) ++ "]"
   ExpStmt e -> "ExpStmt\n" ++ ppExp 2 e
   where
     ppArg ((name, _), ty) = ppIdent name ++ " : " ++ ppTy ty

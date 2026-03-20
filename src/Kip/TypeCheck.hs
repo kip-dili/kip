@@ -1136,11 +1136,11 @@ tcStmt stmt =
                                            , tcTyCons = Map.insert name (length params) (tcTyCons s)
                                            }))
       return (NewType name params ctors)
-    PrimType name -> do
+    PrimType name params -> do
       modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
-                                           , tcTyCons = Map.insert name 0 (tcTyCons s)
+                                           , tcTyCons = Map.insert name (length params) (tcTyCons s)
                                            }))
-      return (PrimType name)
+      return (PrimType name params)
     ExpStmt e -> do
       e' <- tcExp1With True e
       return (ExpStmt e')
@@ -2872,9 +2872,9 @@ registerForwardDecls stmts = do
                                                , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
                                                , tcTyCons = Map.insert name (length params) (tcTyCons s)
                                                }))
-        PrimType name ->
+        PrimType name params ->
           modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
-                                               , tcTyCons = Map.insert name 0 (tcTyCons s)
+                                               , tcTyCons = Map.insert name (length params) (tcTyCons s)
                                                }))
         _ -> return ()
 -- | Build a function-name index grouped by function arity.

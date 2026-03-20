@@ -128,6 +128,10 @@ isSetIdent (mods, name) = null mods && name == T.pack "küme"
 isListIdent :: Identifier -> Bool
 isListIdent (mods, name) = null mods && name == T.pack "liste"
 
+-- | Check for the map/dictionary type identifier.
+isMapIdent :: Identifier -> Bool
+isMapIdent (mods, name) = null mods && name == T.pack "sözlük"
+
 -- | Normalize primitive aliases to canonical primitive constructors.
 normalizePrimTy :: Ty Ann -> Ty Ann
 normalizePrimTy ty =
@@ -205,6 +209,20 @@ listElemTy ty =
           Just elemTy
     _ -> Nothing
 
+-- | Extract key and value types from @anahtar'dan değer'e sözlük@.
+mapKeyValTy :: Ty Ann -> Maybe (Ty Ann, Ty Ann)
+mapKeyValTy ty =
+  case normalizePrimTy ty of
+    TyApp _ ctor [keyTy, valTy]
+      | TyInd _ ident <- normalizePrimTy ctor
+      , isMapIdent ident ->
+          Just (keyTy, valTy)
+    _ -> Nothing
+
+-- | Check whether a type is @anahtar'dan değer'e sözlük@.
+isMapTy :: Ty Ann -> Bool
+isMapTy = isJust . mapKeyValTy
+
 -- | All known primitive functions
 allPrimitives :: [PrimitiveDef]
 allPrimitives =
@@ -234,11 +252,11 @@ allPrimitives =
 
   , PrimitiveDef ([], "boyut")
       [ anyTypes 1 ]
-      ["küme.kip"]
+      ["küme.kip", "sözlük.kip"]
 
   , PrimitiveDef ([], "birleşim")
       [ anyTypes 2 ]
-      ["dizge.kip", "küme.kip"]
+      ["dizge.kip", "küme.kip", "sözlük.kip"]
 
   , PrimitiveDef (["tam", "sayı"], "hal")
       [ withTypes 1 (\case [t] -> isStringTy t; _ -> False)
@@ -430,6 +448,27 @@ allPrimitives =
       [ anyTypes 1 ]
       ["küme.kip"]
 
+  , PrimitiveDef ([], "boş-sözlük")
+      [ anyTypes 0 ]
+      ["sözlük.kip"]
+
+  , PrimitiveDef (["boş"], "sözlük")
+      [ anyTypes 0 ]
+      ["sözlük.kip"]
+
+  , PrimitiveDef ([], "kayıt")
+      [ anyTypes 3 ]
+      ["sözlük.kip"]
+
+  , PrimitiveDef ([], "silme")
+      [ anyTypes 2 ]
+      ["sözlük.kip"]
+
+  , PrimitiveDef ([], "arama")
+      [ anyTypes 2 ]
+      ["sözlük.kip"]
+
+
   , PrimitiveDef ([], "dur")
       [ anyTypes 0 ]
       []
@@ -488,6 +527,7 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise -> Nothing
     ([], "boyut")
       | [(_, setTy)] <- args, isSetTy setTy -> Just (primSetSize ([], "boyut"))
+      | [(_, mapTy)] <- args, isMapTy mapTy -> Just (primMapSize ([], "boyut"))
       | [_] <- args -> Just (primSetSize ([], "boyut"))
       | otherwise -> Nothing
     ([], "birleşim")
@@ -497,6 +537,9 @@ primitiveEvalImpl ops mPath ident args = do
       , Just rightElemTy <- setElemTy rightTy
       , sameTy leftElemTy rightElemTy ->
           Just (primSetUnion ([], "birleşim"))
+      | [(_, leftTy), (_, rightTy)] <- args
+      , isMapTy leftTy, isMapTy rightTy ->
+          Just (primMapUnion ([], "birleşim"))
       | [_, _] <- args ->
           Just (primSetUnion ([], "birleşim"))
       | otherwise ->
@@ -701,6 +744,28 @@ primitiveEvalImpl ops mPath ident args = do
       | otherwise -> Nothing
     (["boş"], "küme")
       | [] <- args -> Just (primSetEmpty (["boş"], "küme"))
+      | otherwise -> Nothing
+    ([], "boş-sözlük")
+      | [] <- args -> Just (primMapEmpty ([], "boş-sözlük"))
+      | otherwise -> Nothing
+    (["boş"], "sözlük")
+      | [] <- args -> Just (primMapEmpty (["boş"], "sözlük"))
+      | otherwise -> Nothing
+    ([], "kayıt")
+      | [(_, mapTy), _, _] <- args, isMapTy mapTy ->
+          Just (primMapInsert ([], "kayıt"))
+      | [_, _, _] <- args ->
+          Just (primMapInsert ([], "kayıt"))
+      | otherwise -> Nothing
+    ([], "silme")
+      | [(_, mapTy), _] <- args, isMapTy mapTy ->
+          Just (primMapDelete ([], "silme"))
+      | otherwise -> Nothing
+    ([], "arama")
+      | [(_, mapTy), _] <- args, isMapTy mapTy ->
+          Just (primMapLookup ([], "arama"))
+      | [_, _] <- args ->
+          Just (primMapLookup ([], "arama"))
       | otherwise -> Nothing
     (["sayı"], "çek") -> Just (primIntRandom ops ["sayı"] "çek")
     ([], "sayı-çek") -> Just (primIntRandom ops [] "sayı-çek")
@@ -1210,6 +1275,8 @@ normalizeSetValue exp' =
       App (mkAnn Nom NoSpan) (normalizeSetValue fnExp) (map normalizeSetValue argExps)
     SetLit _ entries ->
       SetLit (mkAnn Nom NoSpan) (Map.map normalizeSetValue entries)
+    MapLit _ entries ->
+      MapLit (mkAnn Nom NoSpan) (Map.map (\(k, v) -> (normalizeSetValue k, normalizeSetValue v)) entries)
     StrLit _ s ->
       StrLit (mkAnn Nom NoSpan) s
     IntLit _ n ->
@@ -1277,6 +1344,115 @@ listConsArgs exp' =
     _ -> Nothing
   where
     isListConsIdent ident = ident == ([], "eki") || ident == ([], "ek")
+
+-- | Internal representation for map/dictionary values.
+data MapRepr = MapRepr
+  { mapKeys :: [Text]
+  , mapElems :: Map.Map Text (Exp Ann, Exp Ann)
+  }
+
+primMapEmpty :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapEmpty ident args =
+  case args of
+    [] -> pure (mapExpFromMapRepr emptyMapRepr)
+    _ -> pure (fallbackApp ident args)
+
+primMapInsert :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapInsert ident args =
+  case args of
+    [mapVal, keyVal, valVal] ->
+      case mapReprFromExp mapVal of
+        Just repr ->
+          let normalizedKey = normalizeSetValue keyVal
+              key = setElemKey normalizedKey
+              repr' = MapRepr
+                { mapKeys = if key `elem` mapKeys repr then mapKeys repr else mapKeys repr ++ [key]
+                , mapElems = Map.insert key (normalizedKey, valVal) (mapElems repr)
+                }
+          in pure (mapExpFromMapRepr repr')
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primMapDelete :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapDelete ident args =
+  case args of
+    [mapVal, keyVal] ->
+      case mapReprFromExp mapVal of
+        Just repr ->
+          let key = setElemKey (normalizeSetValue keyVal)
+              repr' = MapRepr
+                { mapKeys = filter (/= key) (mapKeys repr)
+                , mapElems = Map.delete key (mapElems repr)
+                }
+          in pure (mapExpFromMapRepr repr')
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primMapLookup :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapLookup ident args =
+  case args of
+    [mapVal, keyVal] ->
+      case mapReprFromExp mapVal of
+        Just repr ->
+          let key = setElemKey (normalizeSetValue keyVal)
+          in case Map.lookup key (mapElems repr) of
+               Just (_, v) -> pure (someExp v)
+               Nothing -> pure noneExp
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primMapSize :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapSize ident args =
+  case args of
+    [mapVal] ->
+      case mapReprFromExp mapVal of
+        Just repr ->
+          pure (IntLit (mkAnn Nom NoSpan) (fromIntegral (Map.size (mapElems repr))))
+        Nothing -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+primMapUnion :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
+primMapUnion ident args =
+  case args of
+    [leftMapVal, rightMapVal] ->
+      case (mapReprFromExp leftMapVal, mapReprFromExp rightMapVal) of
+        (Just leftRepr, Just rightRepr) ->
+          let -- Right-biased union: right values override left for same keys.
+              rightKeys = mapKeys rightRepr
+              leftOnlyKeys = filter (\k -> not (Map.member k (mapElems rightRepr))) (mapKeys leftRepr)
+              repr' = MapRepr
+                { mapKeys = leftOnlyKeys ++ rightKeys
+                , mapElems = Map.union (mapElems rightRepr) (mapElems leftRepr)
+                }
+          in pure (mapExpFromMapRepr repr')
+        _ -> pure (fallbackApp ident args)
+    _ -> pure (fallbackApp ident args)
+
+
+emptyMapRepr :: MapRepr
+emptyMapRepr = MapRepr [] Map.empty
+
+mapReprFromExp :: Exp Ann -> Maybe MapRepr
+mapReprFromExp mapVal =
+  case mapVal of
+    MapLit _ entries ->
+      let keys = Map.keys entries
+      in Just MapRepr
+           { mapKeys = keys
+           , mapElems = entries
+           }
+    _ -> Nothing
+
+mapExpFromMapRepr :: MapRepr -> Exp Ann
+mapExpFromMapRepr repr =
+  MapLit
+    (mkAnn Nom NoSpan)
+    (Map.fromList
+      [ (key, entry)
+      | key <- mapKeys repr
+      , Just entry <- [Map.lookup key (mapElems repr)]
+      ])
+
 
 resolveReadCandidates :: Maybe FilePath -> Text -> [FilePath]
 resolveReadCandidates mPath path =
@@ -1552,6 +1728,47 @@ primitiveJsPrelude = T.unlines
   , "    m.set(__kip_set_key(item), item);"
   , "  }"
   , "  return __kip_set_from_map(m);"
+  , "};"
+  , ""
+  , "// Map/dictionary primitives"
+  , "var __kip_map_entries = (m) => (m && m.__kip_map === true && Array.isArray(m.entries)) ? m.entries : null;"
+  , "var boş_sözlük = () => ({ __kip_map: true, entries: [] });"
+  , "var sözlük_kayıt = (m, k, v) => {"
+  , "  var entries = __kip_map_entries(m);"
+  , "  if (!entries) return m;"
+  , "  var key = __kip_set_key(k);"
+  , "  var newEntries = entries.filter((e) => e[0] !== key);"
+  , "  newEntries.push([key, k, v]);"
+  , "  return { __kip_map: true, entries: newEntries };"
+  , "};"
+  , "var sözlük_silme = (m, k) => {"
+  , "  var entries = __kip_map_entries(m);"
+  , "  if (!entries) return m;"
+  , "  var key = __kip_set_key(k);"
+  , "  return { __kip_map: true, entries: entries.filter((e) => e[0] !== key) };"
+  , "};"
+  , "var sözlük_arama = (m, k) => {"
+  , "  var entries = __kip_map_entries(m);"
+  , "  var __none = typeof yokluk === 'function' ? yokluk() : { tag: 'yokluk', args: [] };"
+  , "  if (!entries) return __none;"
+  , "  var key = __kip_set_key(k);"
+  , "  for (var i = 0; i < entries.length; i += 1) {"
+  , "    if (entries[i][0] === key) return typeof varlık === 'function' ? varlık(entries[i][2]) : { tag: 'varlık', args: [entries[i][2]] };"
+  , "  }"
+  , "  return __none;"
+  , "};"
+  , "var sözlük_boyut = (m) => {"
+  , "  var entries = __kip_map_entries(m);"
+  , "  return entries ? entries.length : 0;"
+  , "};"
+  , "var sözlük_birleşim = (a, b) => {"
+  , "  var leftEntries = __kip_map_entries(a);"
+  , "  var rightEntries = __kip_map_entries(b);"
+  , "  if (!leftEntries || !rightEntries) return a;"
+  , "  var m = new Map();"
+  , "  for (var i = 0; i < leftEntries.length; i += 1) m.set(leftEntries[i][0], leftEntries[i]);"
+  , "  for (var i = 0; i < rightEntries.length; i += 1) m.set(rightEntries[i][0], rightEntries[i]);"
+  , "  return { __kip_map: true, entries: Array.from(m.values()) };"
   , "};"
   , ""
   , "// I/O primitives - async to support browser interactivity"

@@ -1100,7 +1100,7 @@ defSpansFromStmts stmts defSpans =
         Function name _ _ _ _ -> [name]
         PrimFunc name _ _ _ -> [name]
         NewType name _ ctors -> name : map (fst . fst) ctors
-        PrimType name -> [name]
+        PrimType name _ -> [name]
         _ -> []
 
 latestDefSpans :: Map.Map Identifier [Span] -> Map.Map Identifier Span

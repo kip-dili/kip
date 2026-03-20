@@ -1,0 +1,38 @@
+temeli yükle.
+
+(* Bir anahtardan değere sözlük, yerleşiktir. *)
+Bir yerleşik anahtardan değere sözlük olsun.
+
+(* Boş bir sözlük üretir. *)
+(boş-sözlük anahtar'dan değer'e sözlük),
+  yerleşiktir.
+
+(*
+Sözlüğe bir anahtar-değer çifti kaydeder.
+*)
+(bu anahtar'dan değer'e sözlüğe) (şu anahtarın) (o değerin) (kayıt anahtar'dan değer'e sözlüğü),
+  yerleşiktir.
+
+(*
+Sözlükten bir anahtarı siler.
+*)
+(bu anahtar'dan değer'e sözlükten) (şu anahtarın) (silme anahtar'dan değer'e sözlüğü),
+  yerleşiktir.
+
+(*
+Sözlükte bir anahtarın değerini arar.
+*)
+(bu anahtar'dan değer'e sözlükte) (şu anahtarın) (arama değerin olasılığı),
+  yerleşiktir.
+
+(*
+Sözlüğün boyutunu döndürür.
+*)
+(bu anahtar'dan değer'e sözlüğün) (boyut tam-sayısı),
+  yerleşiktir.
+
+(*
+İki sözlüğün birleşimini döndürür.
+*)
+(bu anahtar'dan değer'e sözlükle) (şu anahtar'dan değer'e sözlüğün) (birleşim anahtar'dan değer'e sözlüğü),
+  yerleşiktir.

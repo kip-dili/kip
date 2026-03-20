@@ -24,6 +24,7 @@ data-files:
     lib/temel/etki.kip
     lib/temel/liste.kip
     lib/temel/küme.kip
+    lib/temel/sözlük.kip
     lib/temel/tam-sayı.kip
     lib/temel/ondalık-sayı.kip
 

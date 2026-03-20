@@ -2757,7 +2757,7 @@ stmtNamesFromStmts = concatMap stmtNames'
         Function name _ _ _ _ -> [name]
         PrimFunc name _ _ _ -> [name]
         NewType name _ ctors -> name : map (fst . fst) ctors
-        PrimType name -> [name]
+        PrimType name _ -> [name]
         _ -> []
 
 -- | Build definition spans without stripping base definitions.

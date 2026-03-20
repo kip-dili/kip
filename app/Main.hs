@@ -1800,7 +1800,7 @@ main = do
               emitMsgTCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
             NewType name _ _ ->
               emitMsgTCtx (MsgTypeAdded name)
-            PrimType name ->
+            PrimType name _ ->
               emitMsgTCtx (MsgPrimTypeAdded name)
             _ -> return ()
           return (Just evalSt')
@@ -2106,7 +2106,7 @@ main = do
                     when (name `elem` primRefs || isWritePrim name) $
                       emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
                   NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
-                  PrimType name -> emitMsgIOCtx (MsgPrimTypeAdded name)
+                  PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
                   _ -> return ()
               if buildOnly
                 then
@@ -2169,7 +2169,7 @@ main = do
                 when (name `elem` primRefs || isWritePrim name) $
                   emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
               NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
-              PrimType name -> emitMsgIOCtx (MsgPrimTypeAdded name)
+              PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
               _ -> return ()
           if buildOnly
             then
@@ -2237,7 +2237,7 @@ main = do
                     when (name `elem` primRefs || isWritePrim name) $
                       emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
                   NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
-                  PrimType name -> emitMsgIOCtx (MsgPrimTypeAdded name)
+                  PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
                   _ -> return ()
               if buildOnly
                 then

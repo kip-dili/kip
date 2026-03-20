@@ -308,6 +308,12 @@ lookupPrimJsName name argTys =
     ((["liste"], "hal"), [ty]) | isSetTyForLookup ty -> "küme_liste"
     (([], "küme-hal"), [ty]) | isListTyForLookup ty -> "liste_küme"
     ((["küme"], "hal"), [ty]) | isListTyForLookup ty -> "liste_küme"
+    (([], "birleşim"), [leftTy, rightTy])
+      | isMapTyForLookup leftTy && isMapTyForLookup rightTy -> "sözlük_birleşim"
+    (([], "boyut"), [ty]) | isMapTyForLookup ty -> "sözlük_boyut"
+    (([], "kayıt"), [mapTy, _, _]) | isMapTyForLookup mapTy -> "sözlük_kayıt"
+    (([], "silme"), [mapTy, _]) | isMapTyForLookup mapTy -> "sözlük_silme"
+    (([], "arama"), [mapTy, _]) | isMapTyForLookup mapTy -> "sözlük_arama"
     (([], "ters"), [_]) -> "__kip_prim_ters"
     (([], "birleşim"), [_, _]) -> "__kip_prim_birleşim"
     (([], "uzunluk"), [_]) -> "__kip_prim_uzunluk"
@@ -350,6 +356,13 @@ isListTyForLookup :: Ty Ann -> Bool
 isListTyForLookup ty =
   case ty of
     TyApp {tyCtor = TyInd {indName = ([], "liste")}, tyArgs = [_]} -> True
+    _ -> False
+
+-- | Detect @anahtar'dan değer'e sözlük@ types in primitive JS-name lookup.
+isMapTyForLookup :: Ty Ann -> Bool
+isMapTyForLookup ty =
+  case ty of
+    TyApp {tyCtor = TyInd {indName = ([], "sözlük")}, tyArgs = [_, _]} -> True
     _ -> False
 
 -- | Convert a type to a suffix string for qualified overload names.
@@ -613,7 +626,7 @@ stmtNameDefs stmt =
     Function name _ _ _ _ -> [name]
     PrimFunc name _ _ _ -> [name]
     NewType name _ ctors -> name : [ctorName | ((ctorName, _), _) <- ctors]
-    PrimType name -> [name]
+    PrimType name _ -> [name]
     _ -> []
 
 stmtRefs :: Map.Map Span (Identifier, [Ty Ann]) -> Stmt Ann -> [DefRef]
@@ -657,6 +670,7 @@ runtimeExportNames =
   , "__kip_prim_karakter_buyuk_harflik", "__kip_prim_karakter_kucuk_harflik", "__kip_prim_karakter_boslukluk"
   , "__kip_prim_oku_stdin", "__kip_prim_oku_dosya", "__kip_prim_arguman_oku", "__kip_prim_cevreden_oku", "__kip_prim_yaz_dosya"
   , "boş_küme", "küme_ilave", "küme_çıkarma", "küme_içerik", "küme_boyut", "küme_birleşim", "küme_liste", "liste_küme"
+  , "boş_sözlük", "sözlük_kayıt", "sözlük_silme", "sözlük_arama", "sözlük_boyut", "sözlük_birleşim"
   , "doğru", "yanlış", "varlık", "yokluk", "bitimlik", "yaz", "çarpım", "fark"
   , "bölüm", "kalan", "karekök", "radyan", "derece", "pi_sayısı", "taban", "tavan"
   , "tam_sayı_ondalık_sayı_hali", "sayı_çek", "eşitlik", "küçüklük", "küçük_eşitlik"
@@ -815,7 +829,7 @@ codegenStmtWith ctx stmt =
       in "// load " <> prefix <> identText name
     NewType name _ ctors ->
       renderNewType name ctors
-    PrimType _ ->
+    PrimType _ _ ->
       ""
     ExpStmt exp' ->
       codegenExpWith ctx exp' <> ";"
