@@ -219,3 +219,16 @@ Boş liste için yanlış döner.
       doğru;
     değilse,
       devamın testle herhangisidir.
+
+(*
+Verilen testten geçen ilk öğeyi varlık olarak döndürür.
+Hiçbiri geçmezse yokluk döner.
+Örnek kullanım: ([1, 3, 4]'ün (çift-mi testiyle) bulgusu)
+*)
+(bu a listesinin) (test a'nın doğruluğuyla) (bulgu a'nın olasılığı),
+  bu boşsa, yokluk;
+  ilkin devama ekiyse,
+    (ilkin testi) doğruysa,
+      ilkin varlığı;
+    değilse,
+      devamın testle bulgusudur.
