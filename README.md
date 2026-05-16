@@ -225,6 +225,23 @@ stack exec kip-playground -- --exec path/to/file.kip
 stack exec kip-playground -- --codegen js path/to/file.kip
 ```
 
+If `kip` reports that it cannot find `vendor/trmorph.fst` or `lib/temel.kip`, the
+binary is usually being run outside the installation layout Cabal expects. Kip
+now searches in this order:
+
+1. `KIP_DATADIR/<file>`
+2. Cabal's installed data-files directory
+3. paths relative to the executable
+4. the current working directory
+
+For custom packaging or manually relocated binaries, set:
+
+```bash
+export KIP_DATADIR=/absolute/path/to/kip
+```
+
+That directory should contain both `vendor/trmorph.fst` and `lib/temel.kip`.
+
 `js-modules` output layout:
 - `__kip_runtime.mjs` - runtime and primitive exports
 - one `.mjs` per input/dependency `.kip` module
