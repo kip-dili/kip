@@ -62,9 +62,14 @@ function detectCommonKipLspPath(): string | undefined {
   return undefined;
 }
 
-function resolveServerPath(): string {
+function getGlobalKipSetting<T>(key: string, fallback: T): T {
   const cfg = vscode.workspace.getConfiguration("kip");
-  const configured = (cfg.get<string>("languageServerPath") ?? "kip-lsp").trim();
+  const inspected = cfg.inspect<T>(key);
+  return inspected?.globalValue ?? fallback;
+}
+
+function resolveServerPath(): string {
+  const configured = getGlobalKipSetting("languageServerPath", "kip-lsp").trim();
   if (configured !== "" && configured !== "kip-lsp") {
     return configured;
   }
@@ -72,9 +77,7 @@ function resolveServerPath(): string {
 }
 
 function resolveServerArgs(): string[] {
-  const cfg = vscode.workspace.getConfiguration("kip");
-  const args = cfg.get<string[]>("languageServerArgs") ?? [];
-  return args;
+  return getGlobalKipSetting<string[]>("languageServerArgs", []);
 }
 
 function resolveTrace(): "off" | "messages" | "verbose" {

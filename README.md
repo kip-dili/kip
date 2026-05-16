@@ -305,6 +305,8 @@ Useful Visual Studio Code settings:
 }
 ```
 
+Set `kip.languageServerPath` and `kip.languageServerArgs` in user settings. The extension ignores workspace values for these process-launch settings.
+
 ### Vim Plugin
 
 The plugin files are already in the repo under `.vim/`:

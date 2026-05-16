@@ -97,16 +97,18 @@
       "properties": {
         "kip.languageServerPath": {
           "type": "string",
+          "scope": "application",
           "default": "kip-lsp",
-          "description": "Path to the kip-lsp executable. If left as default, the extension also checks ~/.local/bin, ~/.cabal/bin, and ~/.stack/bin."
+          "description": "User-level path to the kip-lsp executable. Workspace settings are ignored. If left as default, the extension also checks ~/.local/bin, ~/.cabal/bin, and ~/.stack/bin."
         },
         "kip.languageServerArgs": {
           "type": "array",
+          "scope": "application",
           "default": [],
           "items": {
             "type": "string"
           },
-          "description": "Arguments passed to kip-lsp."
+          "description": "User-level arguments passed to kip-lsp. Workspace settings are ignored."
         },
         "kip.trace.server": {
           "type": "string",

@@ -14,7 +14,7 @@ Visual Studio Code support for the Kip programming language, powered by `kip-lsp
 - Install `kip-lsp`. The extension auto-detects common install paths (`~/.local/bin`, `~/.cabal/bin`, `~/.stack/bin`), or you can set `kip.languageServerPath` explicitly.
 
 ## Setup
-If Visual Studio Code cannot find `kip-lsp`, set this in settings:
+If Visual Studio Code cannot find `kip-lsp`, set this in your user settings:
 
 ```json
 {
@@ -23,8 +23,8 @@ If Visual Studio Code cannot find `kip-lsp`, set this in settings:
 ```
 
 ## Extension Settings
-- `kip.languageServerPath`: path to `kip-lsp` (default: `kip-lsp`)
-- `kip.languageServerArgs`: additional arguments passed to `kip-lsp`
+- `kip.languageServerPath`: user-level path to `kip-lsp` (default: `kip-lsp`); workspace settings are ignored
+- `kip.languageServerArgs`: user-level additional arguments passed to `kip-lsp`; workspace settings are ignored
 - `kip.trace.server`: LSP trace level (`off`, `messages`, `verbose`)
 - `kip.proceduralTypeHighlight.enabled`: enable local procedural type coloring
 - `kip.proceduralTypeHighlight.maxDocumentChars`: file-size guard for procedural highlighting
