@@ -95,6 +95,9 @@ executable kip
     buildable: False
   if os(darwin)
     ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
+  if !os(windows) && !os(wasi)
+    cpp-options: -DHAVE_UNIX_EXIT
+    build-depends: unix
   build-depends:
       base >=4.7 && <5
     , bytestring
@@ -116,6 +119,7 @@ executable kip
     , time
     , vector
   default-language: Haskell2010
+  default-extensions: CPP
 
 executable kip-playground
   main-is: Playground.hs

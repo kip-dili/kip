@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -6,6 +7,10 @@
 module Main where
 
 import System.Exit
+import System.IO (hFlush, stdout, stderr)
+#ifdef HAVE_UNIX_EXIT
+import qualified System.Posix.Process as Posix
+#endif
 import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, getHomeDirectory, createDirectoryIfMissing, getCurrentDirectory)
 import Paths_kip (version)
 import Data.List
@@ -1074,6 +1079,27 @@ breakOn pat s =
           after = drop (length pat) rest
       in Just (before, after)
 
+-- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
+-- GC worker threads, returning committed memory to the OS) when possible.
+--
+-- ==== Performance note (Optimization: skip RTS shutdown on CLI exit)
+-- @+RTS -s@ showed ~9 ms of EXIT time per invocation for a batch-mode run
+-- (near-zero CPU, mostly RTS teardown) that is pure waste for a process
+-- about to terminate anyway. All output must be explicitly flushed first
+-- since @exitImmediately@ bypasses Haskell's normal handle-closing cleanup.
+-- Only safe for one-shot batch CLI modes (@--test@\/@--exec@\/@--codegen@\/
+-- @--build@) that have no further work after printing their result; the
+-- REPL and LSP must not use this, since it would apply to every REPL
+-- iteration otherwise and skip cleanup that later iterations depend on.
+fastExitSuccess :: IO a -- ^ Never returns.
+fastExitSuccess = do
+  hFlush stdout
+  hFlush stderr
+#ifdef HAVE_UNIX_EXIT
+  Posix.exitImmediately ExitSuccess
+#endif
+  exitSuccess
+
 -- | Entry point for CLI modes and REPL.
 main :: IO () -- ^ Program entry point.
 main = do
@@ -1110,7 +1136,7 @@ main = do
       (preludePst, preludeTC, preludeEval, preludeLoaded) <-
         runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
       _ <- runReaderT (runFiles showDefn showDefn False preludePst preludeTC preludeEval moduleDirs preludeLoaded (optFiles opts)) renderCtx
-      exitSuccess
+      fastExitSuccess
     ModeExec -> do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
@@ -1120,7 +1146,7 @@ main = do
       let entryPath:progArgs = optFiles opts
           execEval = preludeEval { Eval.evalArgs = map T.pack (entryPath : progArgs) }
       _ <- runReaderT (runFiles False False False preludePst preludeTC execEval moduleDirs preludeLoaded [entryPath]) renderCtx
-      exitSuccess
+      fastExitSuccess
     ModeCodegen target -> do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
@@ -1138,7 +1164,7 @@ main = do
           let resolvMap = Map.fromList (tcResolvedSigs finalTC)
               allStmts = map snd prunedTaggedStmts
           TIO.putStrLn (codegenProgram resolvMap allStmts)
-          exitSuccess
+          fastExitSuccess
         "js-modules" -> do
           (renderCtx, moduleDirs, _, fsm, upsCache, downsCache) <- initRuntime
           outDir <- case optOutDir opts of
@@ -1207,7 +1233,7 @@ main = do
                 : [ "import './" <> toPosixRel outDirAbs cwd p <> "';" | p <- entryAbs ]
               entryContent = T.unlines (importLines ++ ["__kip_close_stdin();"])
           TIO.writeFile (outDirAbs </> "entry.mjs") entryContent
-          exitSuccess
+          fastExitSuccess
         _ ->
           die . T.unpack =<< runReaderT (render (MsgUnknownCodegenTarget target)) basicCtx
     ModeBuild -> do
@@ -1220,7 +1246,7 @@ main = do
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
         runReaderT (loadPreludeState (optNoPrelude opts) buildModuleDirs renderCache fsm upsCache downsCache) renderCtx
       _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
-      exitSuccess
+      fastExitSuccess
     ModeRepl ->
       do
         (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
