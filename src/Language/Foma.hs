@@ -7,7 +7,7 @@ module Language.Foma where
 import Control.Monad
 import qualified Data.Map.Strict as Map
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar)
-import System.IO.Unsafe (unsafePerformIO)
+import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 import Data.List (find, partition, sort)
 import Foreign.C
 import Foreign.Ptr (Ptr, FunPtr, nullPtr)
@@ -33,9 +33,25 @@ foreign import ccall unsafe "fomalib.h fsm_read_binary_file"
   fsmReadBinaryFile' :: CString -> IO FSM
 
 -- | Read an FSM from a binary file on disk.
+--
+-- ==== Performance note (Optimization: lazy FSM load)
+-- @trmorph.fst@ is gzip-compressed on disk; @fsm_read_binary_file@
+-- decompresses and parses it (measured ~34 ms standalone) on __every__
+-- process start, even for runs whose morphology needs are fully satisfied
+-- by the persisted parser cache (see @Kip.Cache@) and never touch the FSM
+-- at all. We defer the actual read via 'unsafeInterleaveIO' so the cost is
+-- only paid the first time some caller actually forces the returned 'FSM'
+-- (i.e. the first real 'ups'/'downs' call, or never, if the process's morph
+-- lookups are all cache hits).
+--
+-- Safety: the deferred action only reads a file and builds a self-contained
+-- FSM value with no shared mutable state; if two threads race to force the
+-- same thunk (via 'unsafeInterleaveIO's use of 'unsafeDupablePerformIO'),
+-- at worst one redundant read/parse happens and one result is discarded --
+-- never corruption.
 fsmReadBinaryFile ::
   FilePath -- ^ Path to the compiled Foma binary file.
-  -> IO FSM -- ^ Loaded FSM handle.
+  -> IO FSM -- ^ Loaded FSM handle (lazily populated on first real use).
 fsmReadBinaryFile path = do
   cached <- modifyMVar fsmCache $ \m ->
     case Map.lookup path m of
@@ -44,7 +60,7 @@ fsmReadBinaryFile path = do
   case cached of
     Just fsm -> return fsm
     Nothing -> do
-      fsm <- newCString path >>= fsmReadBinaryFile'
+      fsm <- unsafeInterleaveIO (newCString path >>= fsmReadBinaryFile')
       modifyMVar fsmCache $ \m -> return (Map.insert path fsm m, ())
       return fsm
 
@@ -128,43 +144,41 @@ withApplyHandle fsm pickHandle initHandle action = do
 
 -- | Morphological analysis (surface form to analyses).
 -- Uses 'Text' to match the parser and avoid extra conversions.
+--
+-- ==== Performance note (Optimization: reuse cached apply handle)
+-- Previously this called the C @ups()@ entry point, which runs
+-- @apply_init@ (building the FST's apply indices) on __every single call__.
+-- Sampling showed this dominating warm-run time once the process-startup
+-- costs were fixed, since callers still hit this single-word path for any
+-- vocabulary not already covered by the persisted morphology cache. We now
+-- route through 'upsBatch' (a one-element batch), which reuses the same
+-- cached 'ApplyHandle' machinery already used by batch analysis, so
+-- @apply_init@ only runs once per process per FSM.
 ups ::
   FSM -- ^ Morphology finite state machine.
   -> Text -- ^ Surface form to analyze.
   -> IO [Text] -- ^ Analyses returned by TRmorph.
 ups fsm t = do
-  let bs = TE.encodeUtf8 t
-  -- useAsCString adds a null terminator and avoids allocation for short strings.
-  BS.useAsCString bs $ \cs -> do
-    res <- ups_ffi fsm cs
-    arr <- peekArray0 nullPtr res
-    -- Convert each CString to Text without an extra copy, then free.
-    results <- forM arr $ \cstr -> do
-      bytes <- BSU.unsafePackCString cstr
-      let !txt = TE.decodeUtf8 bytes
-      free cstr
-      return txt
-    free res
-    return results
+  results <- upsBatch fsm [t]
+  case results of
+    (r:_) -> return r
+    [] -> return []
 
 -- | Morphological generation (analysis to surface forms).
 -- Uses 'Text' to match the parser and avoid extra conversions.
+--
+-- ==== Performance note (Optimization: reuse cached apply handle)
+-- See 'ups': routes through 'downsBatch' to reuse the cached 'ApplyHandle'
+-- instead of paying a fresh @apply_init@ per call.
 downs ::
   FSM -- ^ Morphology finite state machine.
   -> Text -- ^ Analysis string to realize.
   -> IO [Text] -- ^ Surface forms returned by TRmorph.
 downs fsm t = do
-  let bs = TE.encodeUtf8 t
-  BS.useAsCString bs $ \cs -> do
-    res <- downs_ffi fsm cs
-    arr <- peekArray0 nullPtr res
-    results <- forM arr $ \cstr -> do
-      bytes <- BSU.unsafePackCString cstr
-      let !txt = TE.decodeUtf8 bytes
-      free cstr
-      return txt
-    free res
-    return results
+  results <- downsBatch fsm [t]
+  case results of
+    (r:_) -> return r
+    [] -> return []
 
 -- | Batch morphological analysis (surface forms to analyses).
 -- Reuses a single Foma apply handle to amortize setup costs across inputs.

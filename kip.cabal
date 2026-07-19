@@ -90,7 +90,7 @@ executable kip
       Repl.Steps
   hs-source-dirs:
       app
-  ghc-options: -O2 -split-sections -threaded -rtsopts "-with-rtsopts=-N -A64m"
+  ghc-options: -O2 -split-sections -threaded -rtsopts "-with-rtsopts=-N4 -A32m"
   if os(wasi)
     buildable: False
   if os(darwin)
