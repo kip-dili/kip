@@ -2005,7 +2005,7 @@ main = do
                         Nothing -> return ()
                         Just compilerHash -> do
                           mSourceMeta <- liftIO (getFileMeta absPath)
-                          cachedParserState <- liftIO (toCachedParserState pstFinal)
+                          cachedParserState <- liftIO (toCachedParserStateNoMorph pstFinal)
                           let sourceBytes = encodeUtf8 input
                               sourceDigest = hash sourceBytes
                               fallbackSourceSize = fromIntegral (BS.length sourceBytes)

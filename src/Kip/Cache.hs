@@ -7,6 +7,7 @@ module Kip.Cache where
 
 import GHC.Generics (Generic)
 import Data.Binary
+import Data.Binary.Get (runGetOrFail)
 import Data.Word
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
@@ -117,6 +118,17 @@ data CachedPrelude = CachedPrelude
   , preludeParser :: !CachedParserState
   , preludeTC :: !CachedTCState
   , preludeEval :: !CachedEvalState
+  , preludePrimStmts :: ![(FilePath, Stmt Ann)]
+    -- ^ Source path and 'PrimFunc' statement pairs needed to rebuild
+    -- 'evalPrimFuncs' host callbacks (see 'Kip.Eval.evalPrimFuncs').
+    --
+    -- ==== Performance note (Optimization: prelude prim-func snapshot)
+    -- Previously these were recovered at __every__ load by re-decoding the
+    -- full @.iz@ cache of each prelude module (~25 MB across ~11 files) just
+    -- to filter out a handful of 'PrimFunc' statements. We now do that
+    -- decode-and-filter work once, when the snapshot is (re)written, and
+    -- persist the small result directly. Loading the prelude snapshot then
+    -- only replays these statements, with no extra file I/O or decoding.
   } deriving (Generic)
 
 instance Binary CachedPrelude
@@ -142,11 +154,18 @@ data CachedParserState = CachedParserState
 
 instance Binary CachedParserState
 
--- | Convert a parser state into a cached representation.
+-- | Convert a parser state into a cached representation, including a full
+-- snapshot of the shared morphology caches.
 --
 -- ==== Performance note (Optimization 10)
 -- Materializes parser hash-table morphology caches into lists so they can be
 -- persisted in the module cache.
+--
+-- Only the prelude snapshot ('saveCachedPrelude') should use this: it is the
+-- single on-disk copy of the accumulated morphology cache that all other
+-- module caches rely on being pre-populated at load time. Per-module
+-- @.iz@ caches should use 'toCachedParserStateNoMorph' instead (see there
+-- for why).
 toCachedParserState ::
   ParserState -- ^ Parser state to serialize.
   -> IO CachedParserState -- ^ Compact cached payload.
@@ -165,6 +184,43 @@ toCachedParserState ps = do
       , pdefSpans = parserDefSpans ps
       , pupsCache = upsEntries
       , pdownsCache = downsEntries
+      }
+
+-- | Convert a parser state into a cached representation, omitting the
+-- shared morphology caches.
+--
+-- ==== Performance note (Optimization: de-duplicate morphology cache)
+-- The ups/downs morphology caches ('parserUpsCache'/'parserDownsCache') are
+-- __shared__ across all modules loaded in a process and accumulate
+-- monotonically (prelude entries plus whatever each subsequently loaded
+-- file needed). Because 'toCachedParserState' snapshotted the caches in
+-- full, every per-module @.iz@ file redundantly embedded a duplicate of the
+-- entire accumulated cache -- multi-megabyte files consisting almost
+-- entirely of prelude vocabulary already captured once in the prelude
+-- snapshot ('CachedPrelude'). That bloat was paid twice: once encoding it
+-- into every @.iz@ written, and again decoding it out of every @.iz@ read
+-- back on a warm run.
+--
+-- Per-module caches only need the non-morphology parser state; any
+-- morphology lookups specific to that file's own vocabulary are cheap to
+-- redo against the FFI (a handful of words per file, batched) and get
+-- merged back into the shared in-process cache as they happen.
+toCachedParserStateNoMorph ::
+  ParserState -- ^ Parser state to serialize.
+  -> IO CachedParserState -- ^ Compact cached payload without morphology entries.
+toCachedParserStateNoMorph ps =
+  return
+    CachedParserState
+      { pctx = Set.toList (parserCtx ps)
+      , pctors = parserCtors ps
+      , ptyParams = parserTyParams ps
+      , ptyCons = parserTyCons ps
+      , ptyMods = parserTyMods ps
+      , pprimTypes = parserPrimTypes ps
+      , pfuncArities = parserFuncArities ps
+      , pdefSpans = parserDefSpans ps
+      , pupsCache = []
+      , pdownsCache = []
       }
 
 -- | Restore a parser state from its cached representation.
@@ -294,6 +350,18 @@ canonicalizePathCached path = do
       return absPath
 
 -- | Load a cached module from disk if it is valid.
+--
+-- ==== Performance note (Optimization: header-first cache validation)
+-- 'CachedModule' encodes its 'metadata' field first, followed by the much
+-- larger AST/parser/typechecker/evaluator payload. Previously we fully
+-- decoded the entire payload before checking whether the cache was even
+-- valid for the current compiler/sources, wasting the decode on every
+-- invalidated cache (e.g. after editing a dependency). We now decode only
+-- the 'CacheMetadata' prefix first (binary's derived product encoding is a
+-- plain field-by-field concatenation with no reordering, so this reads
+-- exactly the same bytes the full decode would read for that field) and
+-- only pay for decoding the rest of the payload once metadata validation
+-- passes.
 loadCachedModule ::
   FilePath -- ^ Cache file path.
   -> IO (Maybe CachedModule) -- ^ Cached module when valid.
@@ -307,13 +375,15 @@ loadCachedModule path = do
       case res of
         Left (_ :: SomeException) -> return Nothing
         Right bytes ->
-          case decodeOrFail (fromStrict bytes) of
+          case runGetOrFail (get :: Get CacheMetadata) (fromStrict bytes) of
             Left _ -> return Nothing
-            Right (_, _, m) -> do
-              valid <- isCacheValid absCachePath m
-              if valid
-                then return (Just m)
-                else return Nothing
+            Right (_, _, meta) -> do
+              valid <- isCacheValidMeta absCachePath meta
+              if not valid
+                then return Nothing
+                else case decodeOrFail (fromStrict bytes) of
+                  Left _ -> return Nothing
+                  Right (_, _, m) -> return (Just m)
 
 -- | Persist a cached module to disk.
 saveCachedModule ::
@@ -340,10 +410,17 @@ isCacheValid ::
   FilePath -- ^ Cache file path.
   -> CachedModule -- ^ Cached module to validate.
   -> IO Bool -- ^ True when metadata matches current sources/compiler.
-isCacheValid path m = do
+isCacheValid path m = isCacheValidMeta path (metadata m)
+
+-- | Check whether cache metadata is valid for the current compiler and
+-- sources, without requiring the full decoded 'CachedModule'.
+isCacheValidMeta ::
+  FilePath -- ^ Cache file path.
+  -> CacheMetadata -- ^ Cache metadata to validate.
+  -> IO Bool -- ^ True when metadata matches current sources/compiler.
+isCacheValidMeta path meta = do
   absCachePath <- canonicalizePathCached path
-  let meta = metadata m
-      sourcePathRaw = replaceExtension absCachePath ".kip"
+  let sourcePathRaw = replaceExtension absCachePath ".kip"
   mCompilerHash <- getCompilerHash
   case mCompilerHash of
     Nothing -> return False
@@ -457,7 +534,7 @@ loadCachedPrelude snapshotPath cache fsm upsCache downsCache = do
                   pst <- fromCachedParserState fsm Nothing upsCache downsCache (preludeParser preludeSnap)
                   let tcSt = fromCachedTCState (preludeTC preludeSnap)
                       evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
-                  evalSt <- rebuildPreludePrimFuncs (preludeLoaded preludeSnap) evalBase
+                  evalSt <- replayPreludePrimStmts (preludePrimStmts preludeSnap) evalBase
                   loadedSet <- Set.fromList <$> mapM canonicalizePathCached (preludeLoaded preludeSnap)
                   return (Just (pst, tcSt, evalSt, loadedSet))
 
@@ -480,6 +557,7 @@ saveCachedPrelude snapshotPath pst tcSt evalSt loaded = do
         Nothing -> return ()
         Just fps -> do
           cachedParser <- toCachedParserState pst
+          primStmts <- collectPreludePrimStmts canonicalLoaded
           let snap =
                 CachedPrelude
                   { preludeCompilerHash = compHash
@@ -488,6 +566,7 @@ saveCachedPrelude snapshotPath pst tcSt evalSt loaded = do
                   , preludeParser = cachedParser
                   , preludeTC = toCachedTCState tcSt
                   , preludeEval = toCachedEvalState evalSt
+                  , preludePrimStmts = primStmts
                   }
           absSnapshotPath <- canonicalizePathCached snapshotPath
           let bytes = toStrict (encode snap)
@@ -538,31 +617,44 @@ fileFingerprint pathRaw = do
         Nothing -> return Nothing
         Just digest -> return (Just (path, digest, size, mtime))
 
--- | Rebuild primitive-function bindings for a restored prelude evaluator.
+-- | Collect the @(source path, 'PrimFunc' statement)@ pairs needed to
+-- rebuild 'evalPrimFuncs' host callbacks for a set of loaded modules.
 --
--- `evalPrimFuncs` contains host callbacks and therefore cannot be serialized.
--- We reconstruct those entries by replaying cached `PrimFunc` statements from
--- each loaded module cache.
-rebuildPreludePrimFuncs :: [FilePath] -> EvalState -> IO EvalState
-rebuildPreludePrimFuncs loaded evalBase = do
+-- `evalPrimFuncs` contains host callbacks and therefore cannot be
+-- serialized directly. This decodes each module's @.iz@ cache once to
+-- extract its 'PrimFunc' statements; the result is small and is persisted
+-- directly in 'CachedPrelude' so future loads never need to touch the
+-- module caches again (see 'replayPreludePrimStmts').
+collectPreludePrimStmts :: [FilePath] -> IO [(FilePath, Stmt Ann)]
+collectPreludePrimStmts loaded = do
   canonicalLoaded <- mapM canonicalizePathCached loaded
-  foldM restoreOne evalBase canonicalLoaded
+  concat <$> mapM collectOne canonicalLoaded
   where
-    restoreOne st srcPath = do
+    collectOne srcPath = do
       let cachePath = cacheFilePath srcPath
       mMod <- loadCachedModule cachePath
       case mMod of
-        Nothing -> return st
-        Just cm -> do
-          let primStmts = [stmt | stmt@PrimFunc {} <- cachedTypedStmts cm]
-          foldM
-            (\acc stmt -> do
-              res <- runEvalM (evalStmtInFile (Just srcPath) stmt) acc
-              case res of
-                Left _ -> return acc
-                Right (_, st') -> return st')
-            st
-            primStmts
+        Nothing -> return []
+        Just cm ->
+          return
+            [ (srcPath, stmt)
+            | stmt@PrimFunc {} <- cachedTypedStmts cm
+            ]
+
+-- | Rebuild primitive-function bindings for a restored prelude evaluator by
+-- replaying pre-collected 'PrimFunc' statements. No file I/O or cache
+-- decoding is needed here; see 'collectPreludePrimStmts' for where the
+-- statements come from.
+replayPreludePrimStmts :: [(FilePath, Stmt Ann)] -> EvalState -> IO EvalState
+replayPreludePrimStmts primStmts evalBase =
+  foldM
+    (\acc (srcPath, stmt) -> do
+      res <- runEvalM (evalStmtInFile (Just srcPath) stmt) acc
+      case res of
+        Left _ -> return acc
+        Right (_, st') -> return st')
+    evalBase
+    primStmts
 
 -- | Get file size and modification time (microseconds since epoch).
 getFileMeta ::
@@ -606,9 +698,20 @@ hashFile path = do
           let digest = hashlazy bytes
           return (Just digest)
 
--- | Hash the currently running compiler executable.
+-- | Fingerprint the currently running compiler executable.
+--
+-- ==== Performance note (Optimization: cheap executable fingerprint)
+-- Previously this SHA256-hashed the entire executable (tens of MB) on
+-- __every__ process invocation to validate module caches, which showed up
+-- as ~30% of sampled main-thread time for short-lived runs. Since the
+-- executable is rewritten (not patched in place) on every build, its
+-- @(size, mtime)@ pair changes whenever the binary changes and is
+-- effectively as reliable an invalidation key as a content hash, at the
+-- cost of a single 'getFileSize'/'getModificationTime' pair instead of a
+-- full read-and-hash. We keep the field named/typed as a 'ByteString'
+-- ("hash") to avoid touching the on-disk cache format or other call sites.
 getCompilerHash ::
-  IO (Maybe ByteString) -- ^ Cached hash of the executable.
+  IO (Maybe ByteString) -- ^ Cached fingerprint of the executable.
 getCompilerHash = do
   cached <- readIORef compilerHashCache
   case cached of
@@ -621,12 +724,13 @@ getCompilerHash = do
           writeIORef compilerHashCache (Just digest)
           return (Just digest)
         Right exePath -> do
-          digest <- hashFile exePath
-          case digest of
-            Just _ -> do
-              writeIORef compilerHashCache digest
-              return digest
-            Nothing -> do
+          mMeta <- try (getFileMeta exePath) :: IO (Either SomeException (Maybe (Integer, Integer)))
+          case mMeta of
+            Right (Just (size, mtime)) -> do
+              let fingerprint = BS8.pack ("kip-exe-" ++ show size ++ "-" ++ show mtime)
+              writeIORef compilerHashCache (Just fingerprint)
+              return (Just fingerprint)
+            _ -> do
               let fallback = hash (BS8.pack ("kip-" ++ showVersion version))
               writeIORef compilerHashCache (Just fallback)
               return (Just fallback)

@@ -1873,7 +1873,7 @@ writeCacheForDoc st uri doc = do
         Nothing -> return ()
         Just compilerHash -> do
           mSourceMeta <- getFileMeta absPath
-          cachedParserState <- toCachedParserState (dsParser doc)
+          cachedParserState <- toCachedParserStateNoMorph (dsParser doc)
           let sourceBytes = encodeUtf8 (dsText doc)
               sourceDigest = hash sourceBytes
               fallbackSourceSize = fromIntegral (BS.length sourceBytes)

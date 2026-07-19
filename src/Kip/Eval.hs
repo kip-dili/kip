@@ -29,7 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Text.Read (readMaybe)
-import Data.Maybe (catMaybes, isNothing, listToMaybe, maybeToList)
+import Data.Maybe (isNothing, listToMaybe, maybeToList)
 import Data.List (find, foldl')
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
@@ -1305,19 +1305,52 @@ inferType e =
           MkEvalState{evalCtors, evalTyCons} <- get
           case lookupCtorByCandidates evalCtors varCandidates of
             Just (tys, resTy)
-              | sameLength tys args -> do
-                  argTys <- mapM inferType args
-                  if Nothing `elem` argTys
-                    then return Nothing
-                    else do
-                      let actuals = catMaybes argTys
-                      case unifyTypes evalTyCons tys actuals of
-                        Just subst -> return (Just (applySubst subst resTy))
-                        Nothing -> return Nothing
+              | sameLength tys args ->
+                  unifyCtorArgsLazy evalTyCons (zip tys args) [] >>= \case
+                    Just subst -> return (Just (applySubst subst resTy))
+                    Nothing -> return Nothing
             _ -> return Nothing
         _ -> return Nothing
     _ -> return Nothing
   where
+    -- | Unify constructor argument types against actual arguments,
+    -- inferring each argument's type only when the expected type still has
+    -- free variables not yet pinned down by the substitution so far.
+    --
+    -- ==== Performance note (Optimization: lazy constructor arg unification)
+    -- The previous implementation called 'mapM inferType' on __every__
+    -- constructor argument up front, before unification even started. For a
+    -- binary constructor like list cons (@eki :: a -> Liste a -> Liste a@),
+    -- inferring the second (recursive tail) argument's type walks the
+    -- entire rest of the list, even though the type variable @a@ is always
+    -- already resolved by the *first* argument alone. That turned every
+    -- 'inferType' call on a list into an O(n) traversal of the whole
+    -- structure, and O(n^2) when called at each step of a recursive
+    -- traversal.
+    --
+    -- Since 'inferType' only ever runs on already-typechecked programs
+    -- (evaluation happens strictly after a successful typecheck pass), an
+    -- argument whose expected type has no free variables left to resolve
+    -- cannot change the constructor's inferred result type -- so its actual
+    -- type never needs to be computed at all. This turns list-cons
+    -- inference into O(1): only the head element's type is ever inferred,
+    -- never the tail's.
+    unifyCtorArgsLazy :: Map.Map Identifier Int
+                      -> [(Ty Ann, Exp Ann)]
+                      -> [(Identifier, Ty Ann)]
+                      -> EvalM (Maybe [(Identifier, Ty Ann)])
+    unifyCtorArgsLazy _ [] subst = return (Just subst)
+    unifyCtorArgsLazy tyCons ((ty, argExp) : rest) subst
+      | all (\v -> v `elem` map fst subst) (tyFreeVars ty) =
+          unifyCtorArgsLazy tyCons rest subst
+      | otherwise = do
+          mArgTy <- inferType argExp
+          case mArgTy of
+            Nothing -> return Nothing
+            Just argTy ->
+              case unifyOneTy tyCons subst (normalizeTy tyCons ty) (normalizeTy tyCons argTy) of
+                Just subst' -> unifyCtorArgsLazy tyCons rest subst'
+                Nothing -> return Nothing
     functionValueType ::
          Map.Map Identifier [([Arg Ann], [Clause Ann])]
       -> Map.Map Identifier [([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))]
@@ -1449,64 +1482,89 @@ unifyTypes :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map'
            -> [Ty Ann] -- ^ Actual types.
            -> Maybe [(Identifier, Ty Ann)] -- ^ Substitution when unification succeeds.
 unifyTypes tyCons expected actual =
-  foldl' go (Just []) (zip expected actual)
-  where
-    -- | Fold step for unification.
-    go :: Maybe [(Identifier, Ty Ann)] -- ^ Current substitution.
-       -> (Ty Ann, Ty Ann) -- ^ Expected and actual types.
-       -> Maybe [(Identifier, Ty Ann)] -- ^ Updated substitution.
-    go Nothing _ = Nothing
-    go (Just subst) (e, a) =
-      unifyOne subst (normalizeTy tyCons e) (normalizeTy tyCons a)
+  foldl' (unifyTypesStep tyCons) (Just []) (zip expected actual)
 
-    -- | Unify a single expected/actual type pair.
-    unifyOne :: [(Identifier, Ty Ann)] -- ^ Current substitution.
-             -> Ty Ann -- ^ Expected type.
-             -> Ty Ann -- ^ Actual type.
-             -> Maybe [(Identifier, Ty Ann)] -- ^ Updated substitution.
-    unifyOne subst e a =
-      case e of
-        TyInt _ ->
-          case a of
-            TyInt _ -> Just subst
-            _ -> Nothing
-        TyVar _ name ->
-          case lookup name subst of
-            Just bound ->
-              if tyEq tyCons bound a
-                then Just subst
-                else Nothing
-            Nothing -> Just ((name, a) : subst)
-        TySkolem _ name ->
-          case a of
-            TySkolem _ name' | name == name' -> Just subst
-            TyVar {} -> Just subst
-            _ -> Nothing
-        TyInd _ n1 ->
-          case a of
-            TyInd _ n2 | n1 == n2 -> Just subst
-            _ -> Nothing
-        TyString _ ->
-          case a of
-            TyString _ -> Just subst
-            _ -> Nothing
-        TyChar _ ->
-          case a of
-            TyChar _ -> Just subst
-            _ -> Nothing
-        Arr _ d1 i1 ->
-          case a of
-            Arr _ d2 i2 -> do
-              subst' <- unifyOne subst d1 d2
-              unifyOne subst' i1 i2
-            _ -> Nothing
-        TyApp _ c1 as1 ->
-          case a of
-            TyApp _ c2 as2
-              | sameLength as1 as2 -> do
-                  subst' <- unifyOne subst c1 c2
-                  foldl' go (Just subst') (zip as1 as2)
-            _ -> Nothing
+-- | Fold step for 'unifyTypes': unify one expected/actual type pair,
+-- threading the substitution built up so far.
+--
+-- Hoisted to the top level (out of 'unifyTypes') so 'inferType' can reuse it
+-- for lazy, argument-by-argument constructor unification; see
+-- 'unifyCtorArgLazy'.
+unifyTypesStep :: Map.Map Identifier Int -- ^ Type constructor arities.
+               -> Maybe [(Identifier, Ty Ann)] -- ^ Current substitution.
+               -> (Ty Ann, Ty Ann) -- ^ Expected and actual types.
+               -> Maybe [(Identifier, Ty Ann)] -- ^ Updated substitution.
+unifyTypesStep _ Nothing _ = Nothing
+unifyTypesStep tyCons (Just subst) (e, a) =
+  unifyOneTy tyCons subst (normalizeTy tyCons e) (normalizeTy tyCons a)
+
+-- | Unify a single expected/actual type pair against a substitution.
+unifyOneTy :: Map.Map Identifier Int -- ^ Type constructor arities.
+           -> [(Identifier, Ty Ann)] -- ^ Current substitution.
+           -> Ty Ann -- ^ Expected type.
+           -> Ty Ann -- ^ Actual type.
+           -> Maybe [(Identifier, Ty Ann)] -- ^ Updated substitution.
+unifyOneTy tyCons subst e a =
+  case e of
+    TyInt _ ->
+      case a of
+        TyInt _ -> Just subst
+        _ -> Nothing
+    TyVar _ name ->
+      case lookup name subst of
+        Just bound ->
+          if tyEq tyCons bound a
+            then Just subst
+            else Nothing
+        Nothing -> Just ((name, a) : subst)
+    TySkolem _ name ->
+      case a of
+        TySkolem _ name' | name == name' -> Just subst
+        TyVar {} -> Just subst
+        _ -> Nothing
+    TyInd _ n1 ->
+      case a of
+        TyInd _ n2 | n1 == n2 -> Just subst
+        _ -> Nothing
+    TyString _ ->
+      case a of
+        TyString _ -> Just subst
+        _ -> Nothing
+    TyChar _ ->
+      case a of
+        TyChar _ -> Just subst
+        _ -> Nothing
+    Arr _ d1 i1 ->
+      case a of
+        Arr _ d2 i2 -> do
+          subst' <- unifyOneTy tyCons subst d1 d2
+          unifyOneTy tyCons subst' i1 i2
+        _ -> Nothing
+    TyApp _ c1 as1 ->
+      case a of
+        TyApp _ c2 as2
+          | sameLength as1 as2 -> do
+              subst' <- unifyOneTy tyCons subst c1 c2
+              foldl' (unifyTypesStep tyCons) (Just subst') (zip as1 as2)
+        _ -> Nothing
+
+-- | Free type variable names occurring in a type.
+--
+-- Types are small, fixed-size expressions (a handful of nodes at most), so
+-- a plain list is cheaper here than allocating a 'Data.Set.Set' for this
+-- module's only consumer, 'unifyCtorArgsLazy'.
+tyFreeVars :: Ty Ann -> [Identifier]
+tyFreeVars ty =
+  case ty of
+    TyVar _ name -> [name]
+    TySkolem {} -> []
+    TyInt {} -> []
+    TyFloat {} -> []
+    TyString {} -> []
+    TyChar {} -> []
+    TyInd {} -> []
+    Arr _ d i -> tyFreeVars d ++ tyFreeVars i
+    TyApp _ c as -> tyFreeVars c ++ concatMap tyFreeVars as
 
 -- | Apply a type substitution to a type.
 applySubst :: [(Identifier, Ty Ann)] -- ^ Substitution bindings.
