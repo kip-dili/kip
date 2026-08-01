@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use Kip in your work, please cite the paper below."
+title: "Kip"
+type: software
+authors:
+  - family-names: "Korkut"
+    given-names: "Joomy"
+    orcid: "https://orcid.org/0000-0001-6784-7108"
+  - family-names: "Keles"
+    given-names: "Alperen"
+    orcid: "https://orcid.org/0009-0000-5734-3598"
+  - family-names: "Akdemir"
+    given-names: "Onur"
+    orcid: "https://orcid.org/0009-0009-5181-2942"
+repository-code: "https://github.com/kip-dili/kip"
+preferred-citation:
+  type: conference-paper
+  title: "Morphosyntactic Programming: Case, Mood, and Type-Directed Disambiguation for Turkish-Like Syntax"
+  authors:
+    - family-names: "Korkut"
+      given-names: "Joomy"
+      orcid: "https://orcid.org/0000-0001-6784-7108"
+    - family-names: "Keles"
+      given-names: "Alperen"
+      orcid: "https://orcid.org/0009-0000-5734-3598"
+    - family-names: "Akdemir"
+      given-names: "Onur"
+      orcid: "https://orcid.org/0009-0009-5181-2942"
+  conference:
+    name: "Human Aspects of Types and Reasoning Assistants (HATRA 2026)"
+  year: 2026
+  url: "https://joomy.korkutblech.com/papers/kip.pdf"
