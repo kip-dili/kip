@@ -11,6 +11,7 @@ jobs:
       image: fpco/stack-build:lts-21.25
     env:
       STACK_ROOT: /tmp/.stack-root
+      STACK_VERSION: "3.11.1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,14 +21,22 @@ jobs:
         with:
           path: |
             /tmp/.stack-root
-          key: ${{ runner.os }}-stack-lts-21_25-v1
+          key: ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-${{ hashFiles('stack.yaml.lock', 'kip.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-stack-
+            ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-
 
       - name: Install Foma
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl gnupg foma libfoma-dev
+
+      - name: Install Stack
+        run: |
+          curl -fsSLo /tmp/stack.tar.gz "https://github.com/commercialhaskell/stack/releases/download/v${STACK_VERSION}/stack-${STACK_VERSION}-linux-x86_64.tar.gz"
+          echo "1fda71e657cd8d355625cc66b61b352699279dfee2664c014a392163bd19a952  /tmp/stack.tar.gz" | sha256sum --check -
+          tar -xzf /tmp/stack.tar.gz -C /tmp
+          install -m 0755 "/tmp/stack-${STACK_VERSION}-linux-x86_64/stack" /usr/local/bin/stack
+          stack --version
 
       - name: Install Node.js 20
         run: |
