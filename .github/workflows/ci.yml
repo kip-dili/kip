@@ -16,12 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache Stack artifacts
-        uses: actions/cache@v4
+      - name: Compute Stack cache key
+        id: stack_cache_key
+        run: |
+          stack_cache_hash=$(sha256sum stack.yaml.lock kip.cabal | sha256sum | cut -d ' ' -f 1)
+          printf 'hash=%s\n' "$stack_cache_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Stack artifacts
+        id: stack_cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             /tmp/.stack-root
-          key: ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-${{ hashFiles('stack.yaml.lock', 'kip.cabal') }}
+          key: ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-${{ steps.stack_cache_key.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-
 
@@ -61,3 +68,11 @@ jobs:
 
       - name: Stack test
         run: stack --allow-different-user test
+
+      - name: Save Stack artifacts
+        if: ${{ steps.stack_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /tmp/.stack-root
+          key: ${{ steps.stack_cache.outputs.cache-primary-key }}
