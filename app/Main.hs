@@ -1872,7 +1872,14 @@ main = do
           (uCache, dCache) <- requireParserCaches
           (_, fsm) <- requireCacheFsm
           let cachePath = cacheFilePath absPath
-          mCached <- liftIO (loadCachedModule cachePath)
+          mCachedRaw <- liftIO (loadCachedModule cachePath)
+          let mCached =
+                case mCachedRaw of
+                  Just cached
+                    | tcOutputModeSupports
+                        (tcOutputMode (fromCachedTCState (cachedTC cached)))
+                        TCOutputCodegen -> Just cached
+                  _ -> Nothing
           case mCached of
             Just cached -> do
               pstCached <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
@@ -2065,6 +2072,7 @@ main = do
     mergeTCState cur cached =
       let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
           mergedRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
+          outputMode = tcOutputMode cur
           -- Rebuild derived signature indices after merge so REPL/LSP lookup
           -- paths keep using the same optimized arity index.
       in emptyTCState
@@ -2079,11 +2087,12 @@ main = do
            , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
            , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
            , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-           , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
+           , tcOutputMode = outputMode
+           , tcResolvedNames = if outputMode >= TCOutputLsp then tcResolvedNames cached ++ tcResolvedNames cur else []
            , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-           , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
-           , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
-           , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
+           , tcResolvedTypes = if outputMode >= TCOutputLsp then tcResolvedTypes cached ++ tcResolvedTypes cur else []
+           , tcDefLocations = if outputMode >= TCOutputLsp then Map.union (tcDefLocations cached) (tcDefLocations cur) else Map.empty
+           , tcFuncSigLocs = if outputMode >= TCOutputLsp then Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur) else Map.empty
            }
 
     -- | Run a single statement in the context of a file.
@@ -2520,7 +2529,7 @@ main = do
                             -> AppM (ParserState, TCState, Set FilePath) -- ^ Loaded parser/TC states.
     loadPreludeCodegenState noPrelude moduleDirs fsm uCache dCache = do
       let pst = newParserStateWithCaches fsm Nothing uCache dCache
-          tcSt = emptyTCState
+          tcSt = setTCOutputMode TCOutputCodegen emptyTCState
       if noPrelude
         then return (pst, tcSt, Set.empty)
         else do
@@ -2531,7 +2540,7 @@ main = do
           -- validated snapshot avoids reparsing and re-typechecking stdlib.
           liftIO (loadCachedPrelude snapshotPath (mkRenderCache uCache dCache) fsm uCache dCache) >>= \case
             Just (pstSnap, tcSnap, _, loadedSnap) ->
-              return (pstSnap, tcSnap, loadedSnap)
+              return (pstSnap, setTCOutputMode TCOutputCodegen tcSnap, loadedSnap)
             Nothing -> do
               path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
               absPath <- liftIO (canonicalizePathCached path)
@@ -2541,7 +2550,7 @@ main = do
                   depPaths <- liftIO $ mapM (canonicalizePathCached . (\(p, _, _, _) -> p)) (dependencies (metadata cached))
                   pst' <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
                   let
-                      tcSt' = fromCachedTCState (cachedTC cached)
+                      tcSt' = setTCOutputMode TCOutputCodegen (fromCachedTCState (cachedTC cached))
                       loaded = Set.fromList (absPath : depPaths)
                   return (pst', tcSt', loaded)
                 Nothing -> do

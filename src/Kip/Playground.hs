@@ -251,7 +251,8 @@ emitJsFilesWithDeps ::
 emitJsFilesWithDeps moduleDirs basePst baseTC _preludeLoaded files progressHooks = do
   preludePath <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
   preludeAbs <- liftIO (canonicalizePathCached preludePath)
-  (preludeStmts, pst', tcSt', loaded') <- emitJsFileWithDeps moduleDirs progressHooks ([], basePst, baseTC, Set.empty) preludeAbs
+  let codegenTC = setTCOutputMode TCOutputCodegen baseTC
+  (preludeStmts, pst', tcSt', loaded') <- emitJsFileWithDeps moduleDirs progressHooks ([], basePst, codegenTC, Set.empty) preludeAbs
   (taggedStmts, _, finalTC, _) <- foldM' (emitJsFileWithDeps moduleDirs progressHooks) (preludeStmts, pst', tcSt', loaded') files
   entryAbs <- liftIO (mapM canonicalizePathCached files)
   let resolvMap = Map.fromList (tcResolvedSigs finalTC)

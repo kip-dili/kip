@@ -30,6 +30,7 @@ module Kip.Runner
   , runFile
   , runStmt
   , loadPreludeState
+  , loadPreludeStateWithMode
   , mkEvalState
   , resolveModulePath
   , resolveBuildTargets
@@ -856,7 +857,14 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
           uCache = rcUpsCache ctx
           dCache = rcDownsCache ctx
       let cachePath = cacheFilePath absPath
-      mCached <- liftIO (loadCachedModule cachePath)
+      mCachedRaw <- liftIO (loadCachedModule cachePath)
+      let mCached =
+            case mCachedRaw of
+              Just cached
+                | tcOutputModeSupports
+                    (tcOutputMode (fromCachedTCState (cachedTC cached)))
+                    (tcOutputMode tcSt) -> Just cached
+              _ -> Nothing
       case mCached of
         Just cached -> do
           let loaded' = Set.insert absPath loaded
@@ -941,6 +949,7 @@ mergeTCState :: TCState -> TCState -> TCState
 mergeTCState cur cached =
   let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
       mergedRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
+      outputMode = tcOutputMode cur
       -- Rebuild derived signature indices after merge so overload lookups
       -- stay fast and deterministic for subsequent checks.
   in emptyTCState
@@ -955,11 +964,12 @@ mergeTCState cur cached =
        , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
        , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
        , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-       , tcResolvedNames = tcResolvedNames cached ++ tcResolvedNames cur
+       , tcOutputMode = outputMode
+       , tcResolvedNames = if outputMode >= TCOutputLsp then tcResolvedNames cached ++ tcResolvedNames cur else []
        , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-       , tcResolvedTypes = tcResolvedTypes cached ++ tcResolvedTypes cur
-       , tcDefLocations = Map.union (tcDefLocations cached) (tcDefLocations cur)
-       , tcFuncSigLocs = Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur)
+       , tcResolvedTypes = if outputMode >= TCOutputLsp then tcResolvedTypes cached ++ tcResolvedTypes cur else []
+       , tcDefLocations = if outputMode >= TCOutputLsp then Map.union (tcDefLocations cached) (tcDefLocations cur) else Map.empty
+       , tcFuncSigLocs = if outputMode >= TCOutputLsp then Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur) else Map.empty
        }
 
 -- | Run a single statement in the context of a file.
@@ -1231,9 +1241,13 @@ uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
 
 -- | Load the prelude module into parser/type/eval states unless disabled.
 loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> MorphCache -> MorphCache -> RenderM (ParserState, TCState, EvalState, Set FilePath)
-loadPreludeState noPrelude moduleDirs cache fsm uCache dCache = do
+loadPreludeState = loadPreludeStateWithMode TCOutputRuntime
+
+-- | Load the prelude with resolution output appropriate for the consumer.
+loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> MorphCache -> MorphCache -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm uCache dCache = do
   let pst = newParserStateWithCaches fsm Nothing uCache dCache
-      tcSt = emptyTCState
+      tcSt = setTCOutputMode outputMode emptyTCState
       evalSt = mkEvalState cache fsm
   if noPrelude
     then return (pst, tcSt, evalSt, Set.empty)
@@ -1242,9 +1256,12 @@ loadPreludeState noPrelude moduleDirs cache fsm uCache dCache = do
       -- ==== Performance note (Optimization: prelude snapshot/image cache)
       -- Restore the merged prelude graph from a validated snapshot when
       -- possible; otherwise load and persist it for future startup runs.
-      liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache) >>= \case
-        Just snapState -> return snapState
-        Nothing -> do
+      mSnapshot <- liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache)
+      case mSnapshot of
+        Just (pstSnap, tcSnap, evalSnap, loadedSnap)
+          | tcOutputModeSupports (tcOutputMode tcSnap) outputMode ->
+              return (pstSnap, setTCOutputMode outputMode tcSnap, evalSnap, loadedSnap)
+        _ -> do
           path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
           let pst' = pst { parserFilePath = Just path }
           state'@(pstLoaded, tcLoaded, evalLoaded, loaded') <-

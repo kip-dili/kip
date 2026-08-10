@@ -127,10 +127,42 @@ import qualified Data.Vector.Mutable as MV
 import qualified Data.Vector.Unboxed.Mutable as MUV
 import Kip.Parser (stripBareCaseSuffix, stripCopulaSuffix)
 
+-- | Extra source-resolution information retained by a typechecking pass.
+data TCOutputMode
+  = TCOutputRuntime
+  | TCOutputCodegen
+  | TCOutputLsp
+  deriving (Eq, Ord, Show, Generic)
+
+instance Binary TCOutputMode
+
+-- | Change output mode, dropping information the new consumer cannot use.
+setTCOutputMode :: TCOutputMode -> TCState -> TCState
+setTCOutputMode mode st =
+  st
+    { tcOutputMode = mode
+    , tcResolvedNames = if mode >= TCOutputLsp then tcResolvedNames st else []
+    , tcResolvedSigs = tcResolvedSigs st
+    , tcResolvedTypes = if mode >= TCOutputLsp then tcResolvedTypes st else []
+    , tcDefLocations = if mode >= TCOutputLsp then tcDefLocations st else Map.empty
+    , tcFuncSigLocs = if mode >= TCOutputLsp then tcFuncSigLocs st else Map.empty
+    }
+
+-- | Whether a cached typechecker state contains everything a consumer needs.
+tcOutputModeSupports :: TCOutputMode -> TCOutputMode -> Bool
+tcOutputModeSupports actual required =
+  case required of
+    TCOutputRuntime -> True
+    TCOutputCodegen -> True
+    TCOutputLsp -> actual >= TCOutputLsp
+
 -- | Record a resolved name at a source span (most-recent wins).
 recordResolvedName :: Span -> Identifier -> TCM ()
 recordResolvedName sp ident =
-  modify (\s -> s { tcResolvedNames = (sp, ident) : tcResolvedNames s })
+  modify (\s ->
+    if tcOutputMode s >= TCOutputLsp
+      then s { tcResolvedNames = (sp, ident) : tcResolvedNames s }
+      else s)
 
 recordResolvedSig :: Span -> Identifier -> [Ty Ann] -> TCM ()
 recordResolvedSig sp ident tys =
@@ -138,16 +170,25 @@ recordResolvedSig sp ident tys =
 
 recordResolvedType :: Span -> Ty Ann -> TCM ()
 recordResolvedType sp ty =
-  modify (\s -> s { tcResolvedTypes = (sp, ty) : tcResolvedTypes s })
+  modify (\s ->
+    if tcOutputMode s >= TCOutputLsp
+      then s { tcResolvedTypes = (sp, ty) : tcResolvedTypes s }
+      else s)
 
 -- | Merge definition locations from a file (latest wins).
 recordDefLocations :: FilePath -> Map.Map Identifier Span -> TCM ()
 recordDefLocations path defs =
-  modify (\s -> s { tcDefLocations = Map.union (Map.map (path,) defs) (tcDefLocations s) })
+  modify (\s ->
+    if tcOutputMode s >= TCOutputLsp
+      then s { tcDefLocations = Map.union (Map.map (path,) defs) (tcDefLocations s) }
+      else s)
 
 recordFuncSigLocations :: FilePath -> Map.Map (Identifier, [Ty Ann]) Span -> TCM ()
 recordFuncSigLocations path defs =
-  modify (\s -> s { tcFuncSigLocs = Map.union (Map.map (path,) defs) (tcFuncSigLocs s) })
+  modify (\s ->
+    if tcOutputMode s >= TCOutputLsp
+      then s { tcFuncSigLocs = Map.union (Map.map (path,) defs) (tcFuncSigLocs s) }
+      else s)
 
 -- | Type checker state for names, signatures, and constructors.
 data TCState =
@@ -177,6 +218,7 @@ data TCState =
     , tcCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
     , tcTyCons :: !(Map.Map Identifier Int) -- ^ Type constructor arities.
     , tcInfinitives :: !(Set.Set Identifier) -- ^ Infinitive (effectful) functions.
+    , tcOutputMode :: !TCOutputMode -- ^ Resolution information retained for the consumer.
     , tcResolvedNames :: ![(Span, Identifier)] -- ^ Resolved variable names by span.
     , tcResolvedSigs :: ![(Span, (Identifier, [Ty Ann]))] -- ^ Resolved function signatures by span.
     , tcResolvedTypes :: ![(Span, Ty Ann)] -- ^ Resolved variable types by span.
@@ -210,6 +252,7 @@ instance Binary TCState where
     B.put (Map.toList tcCtors)
     B.put (Map.toList tcTyCons)
     B.put tcInfinitives
+    B.put tcOutputMode
     B.put tcResolvedNames
     B.put tcResolvedSigs
     B.put tcResolvedTypes
@@ -226,6 +269,7 @@ instance Binary TCState where
     ctors <- Map.fromList <$> B.get
     tyCons <- Map.fromList <$> B.get
     infinitives <- B.get
+    outputMode <- B.get
     resolvedNames <- B.get
     resolvedSigs <- B.get
     resolvedTypes <- B.get
@@ -234,11 +278,11 @@ instance Binary TCState where
     let byArity = buildFuncSigsByArity funcSigs
     let retByName = buildFuncRetByName funcSigRets
     let namesByArity = buildFuncNamesByArity funcs
-    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName funcEffectsByArity varTys vals ctors tyCons infinitives resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
+    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName funcEffectsByArity varTys vals ctors tyCons infinitives outputMode resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty [] [] [] Map.empty Map.empty 0 Map.empty
+emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty TCOutputRuntime [] [] [] Map.empty Map.empty 0 Map.empty
 
 -- | Prepend a single value to the list stored under a key in a 'Map.Map'.
 --

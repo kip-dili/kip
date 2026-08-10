@@ -72,7 +72,7 @@ import Kip.Eval (EvalState)
 import Kip.Parser
 import Kip.Render
 import qualified Kip.Render as Render
-import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeState, locateDataFile)
+import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeStateWithMode, locateDataFile)
 import Kip.TypeCheck
 import Language.Foma
 
@@ -304,7 +304,7 @@ initState = do
   cwd <- getExecutablePath
   let moduleDirs = [libDir, takeDirectory cwd]
   let ctx = RenderCtx LangEn renderCache fsm upsCache downsCache
-  (baseParser, baseTC, _, _) <- runReaderT (loadPreludeState False moduleDirs renderCache fsm upsCache downsCache) ctx
+  (baseParser, baseTC, _, _) <- runReaderT (loadPreludeStateWithMode TCOutputLsp False moduleDirs renderCache fsm upsCache downsCache) ctx
   newMVar LspState
     { lsCache = renderCache
     , lsFsm = fsm
@@ -1874,10 +1874,13 @@ loadCachedDoc st uri text =
                   cachedHash = sourceHash (metadata cached)
               if textHash == cachedHash
                 then do
-                  pstCached <- fromCachedParserState (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (cachedParser cached)
                   let tcCached = fromCachedTCState (cachedTC cached)
-                      stmts = cachedTypedStmts cached
-                  return (Just (pstCached, tcCached, stmts))
+                  if tcOutputModeSupports (tcOutputMode tcCached) TCOutputLsp
+                    then do
+                      pstCached <- fromCachedParserState (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (cachedParser cached)
+                      let stmts = cachedTypedStmts cached
+                      return (Just (pstCached, tcCached, stmts))
+                    else return Nothing
                 else return Nothing  -- Text in memory differs from cached version
 
 -- | Type-check statements without evaluation.
