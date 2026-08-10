@@ -7,7 +7,8 @@ module Kip.Cache where
 
 import GHC.Generics (Generic)
 import Data.Binary
-import Data.Binary.Get (runGetOrFail)
+import Data.Binary.Get (runGetOrFail, getWord8, getWord16be, getWord32be, getWord64be, getByteString)
+import Data.Binary.Put (putWord8, putWord16be, putWord32be, putWord64be, putByteString)
 import Data.Word
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
@@ -17,7 +18,7 @@ import System.FilePath
 import System.Directory
 import System.Environment (getExecutablePath)
 import Control.Exception (try, SomeException)
-import Control.Monad (when, foldM)
+import Control.Monad (when, foldM, replicateM)
 import Data.List (delete, foldl')
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
@@ -95,7 +96,65 @@ data CacheMetadata = CacheMetadata
   , dependencies :: ![(FilePath, ByteString, Integer, Integer)]  -- ^ (path, hash, size, mtime) for deps.
   } deriving (Generic)
 
-instance Binary CacheMetadata
+-- | Explicit, fixed-width metadata encoding for cache format stability.
+instance Binary CacheMetadata where
+  put CacheMetadata{..} = do
+    putHash compilerHash
+    putHash sourceHash
+    putWord64be (fromIntegral sourceSize)
+    putWord64be (fromIntegral sourceMTime)
+    putWord32be (fromIntegral (length dependencies))
+    mapM_ putDependency dependencies
+    where
+      putDependency (path, digest, size, mtime) = do
+        put path
+        putHash digest
+        putWord64be (fromIntegral size)
+        putWord64be (fromIntegral mtime)
+
+  get = do
+    compilerHash <- getHash
+    sourceHash <- getHash
+    sourceSize <- fromIntegral <$> getWord64be
+    sourceMTime <- fromIntegral <$> getWord64be
+    dependencyCount <- getWord32be
+    dependencies <- replicateM (fromIntegral dependencyCount) getDependency
+    return CacheMetadata{..}
+    where
+      getDependency = do
+        path <- get
+        digest <- getHash
+        size <- fromIntegral <$> getWord64be
+        mtime <- fromIntegral <$> getWord64be
+        return (path, digest, size, mtime)
+
+putHash :: ByteString -> Put
+putHash digest = do
+  putWord8 (fromIntegral (BS.length digest))
+  putByteString digest
+
+getHash :: Get ByteString
+getHash = getWord8 >>= getByteString . fromIntegral
+
+cacheMagic :: Word32
+cacheMagic = 0x4b49505a -- "KIPZ"
+
+cacheFormatVersion :: Word16
+cacheFormatVersion = 1
+
+putCacheHeader :: CacheMetadata -> Put
+putCacheHeader meta = do
+  putWord32be cacheMagic
+  putWord16be cacheFormatVersion
+  put meta
+
+getCacheHeader :: Get CacheMetadata
+getCacheHeader = do
+  magic <- getWord32be
+  when (magic /= cacheMagic) (fail "Invalid Kip module-cache magic")
+  version <- getWord16be
+  when (version /= cacheFormatVersion) (fail "Unsupported Kip module-cache version")
+  get
 
 -- | Fully cached module payload.
 data CachedModule = CachedModule
@@ -112,15 +171,15 @@ data CachedModule = CachedModule
 -- the AST or AST/parser prefix and skip the typechecker payload entirely.
 instance Binary CachedModule where
   put CachedModule{..} = do
-    put metadata
-    put (encodeSection cachedTypedStmts)
-    put (encodeSection cachedParser)
-    put (encodeSection cachedTC)
+    putCacheHeader metadata
+    putSection 1 cachedTypedStmts
+    putSection 2 cachedParser
+    putSection 3 cachedTC
   get = do
-    metadata <- get
-    stmtsBytes <- get
-    parserBytes <- get
-    tcBytes <- get
+    metadata <- getCacheHeader
+    stmtsBytes <- getSection 1
+    parserBytes <- getSection 2
+    tcBytes <- getSection 3
     cachedTypedStmts <- decodeSection stmtsBytes
     cachedParser <- decodeSection parserBytes
     cachedTC <- decodeSection tcBytes
@@ -128,6 +187,20 @@ instance Binary CachedModule where
 
 encodeSection :: Binary a => a -> ByteString
 encodeSection = toStrict . encode
+
+putSection :: Binary a => Word8 -> a -> Put
+putSection tag value = do
+  let bytes = encodeSection value
+  putWord8 tag
+  putWord32be (fromIntegral (BS.length bytes))
+  putByteString bytes
+
+getSection :: Word8 -> Get ByteString
+getSection expectedTag = do
+  tag <- getWord8
+  when (tag /= expectedTag) (fail "Unexpected module-cache section tag")
+  sectionLength <- getWord32be
+  getByteString (fromIntegral sectionLength)
 
 decodeSection :: Binary a => ByteString -> Get a
 decodeSection bytes =
@@ -535,7 +608,7 @@ loadCachedModule path = do
       case res of
         Left (_ :: SomeException) -> return Nothing
         Right bytes ->
-          case runGetOrFail (get :: Get CacheMetadata) (fromStrict bytes) of
+          case runGetOrFail getCacheHeader (fromStrict bytes) of
             Left _ -> return Nothing
             Right (_, _, meta) -> do
               valid <- isCacheValidMeta absCachePath meta
@@ -551,7 +624,7 @@ loadCachedTypedStmts path =
   loadCachedSections path getStmtsPrefix (\(meta, _) -> meta) (\(_, stmtsBytes) -> decodeSectionValue stmtsBytes)
   where
     getStmtsPrefix :: Get (CacheMetadata, ByteString)
-    getStmtsPrefix = (,) <$> get <*> get
+    getStmtsPrefix = (,) <$> getCacheHeader <*> getSection 1
 
 -- | Load the typed-statement and parser sections without decoding typechecker
 -- state.  This is the exact prefix needed by LSP workspace definition scans.
@@ -560,7 +633,7 @@ loadCachedAstParser path =
   loadCachedSections path getAstParserPrefix (\(meta, _, _) -> meta) decodePrefix
   where
     getAstParserPrefix :: Get (CacheMetadata, ByteString, ByteString)
-    getAstParserPrefix = (,,) <$> get <*> get <*> get
+    getAstParserPrefix = (,,) <$> getCacheHeader <*> getSection 1 <*> getSection 2
 
     decodePrefix (_, stmtsBytes, parserBytes) = do
       stmts <- decodeSectionValue stmtsBytes
