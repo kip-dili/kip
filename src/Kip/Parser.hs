@@ -83,9 +83,10 @@ import Data.List
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe (maybeToList, mapMaybe, listToMaybe, isJust, isNothing, fromMaybe)
 import qualified Data.Map.Strict as M
+import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
 import Control.Applicative (optional)
-import Control.Monad (foldM, forM, forM_, guard, unless, when)
+import Control.Monad (foldM, forM, forM_, guard, unless, void, when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, get, put, modify, runStateT)
@@ -223,6 +224,12 @@ TRmorph lookups are expensive, so we cache:
 -}
 type MorphCache = HT.BasicHashTable Text [Text]
 
+-- | A source token indexed by its character offset.
+data LexToken
+  = LexWord !Text
+  | LexWhitespace !Int
+  | LexPunctuation !Char
+
 {-# INLINE stripSuffixAny #-}
 stripSuffixAny :: [Text] -> Text -> Maybe Text
 stripSuffixAny suffixes txt = go suffixes
@@ -345,6 +352,7 @@ data ParserState =
     , parserFuncAritiesByName :: !(M.Map Text (Set.Set Int))
     , parserDefSpans :: !(M.Map Identifier [Span])
     , parserFilePath :: !(Maybe FilePath)
+    , parserLexTokens :: !(IM.IntMap LexToken)
     , parserUpsCache :: !MorphCache
     , parserDownsCache :: !MorphCache
     }
@@ -486,6 +494,7 @@ newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes f
       , parserFuncAritiesByName = arityByName
       , parserDefSpans = defSpans
       , parserFilePath = mFilePath
+      , parserLexTokens = IM.empty
       , parserUpsCache = upsCache
       , parserDownsCache = downsCache
       }
@@ -584,9 +593,44 @@ ordNubAppend xs ys = xs ++ reverse extrasRev
           let !seen' = Set.insert z seen
           in (seen', z : acc)
 
+-- | Tokenize words, whitespace, and punctuation once, keyed by source offset.
+tokenizeSource :: Text -> IM.IntMap LexToken
+tokenizeSource = go 0 IM.empty
+  where
+    go !offset !tokens txt =
+      case T.uncons txt of
+        Nothing -> tokens
+        Just (c, rest)
+          | isSpace c ->
+              let (tailSpace, remaining) = T.span isSpace rest
+                  !len = 1 + T.length tailSpace
+              in go (offset + len) (IM.insert offset (LexWhitespace len) tokens) remaining
+          | isWordChar c ->
+              let (tailWord, remaining) = T.span isWordChar rest
+                  !token = T.cons c tailWord
+                  !len = T.length token
+              in go (offset + len) (IM.insert offset (LexWord token) tokens) remaining
+          | otherwise ->
+              go (offset + 1) (IM.insert offset (LexPunctuation c) tokens) rest
+
+-- | Attach a temporary token index for one parser invocation.
+withLexTokens :: Text -> ParserState -> ParserState
+withLexTokens source st = st { parserLexTokens = tokenizeSource source }
+
+-- | Do not retain source slices after parsing finishes.
+clearLexTokens :: ParserState -> ParserState
+clearLexTokens st = st { parserLexTokens = IM.empty }
+
 -- | Whitespace parser.
 ws :: KipParser () -- ^ No result.
-ws = L.space space1 empty empty <?> "boşluk"
+ws = cachedSpace <?> "boşluk"
+  where
+    cachedSpace = do
+      offset <- getOffset
+      MkParserState{parserLexTokens} <- getP
+      case IM.lookup offset parserLexTokens of
+        Just (LexWhitespace len) -> void (takeP Nothing len)
+        _ -> L.space space1 empty empty
 
 -- | Parse a period token with surrounding whitespace.
 period :: KipParser () -- ^ No result.
@@ -612,7 +656,12 @@ name = T.pack <$> ((:) <$> letterChar <*> many (digitChar <|> letterChar))
 
 -- | Parse a single word token.
 word :: KipParser Text -- ^ Parsed word.
-word = takeWhile1P (Just "kelime") isWordChar
+word = do
+  offset <- getOffset
+  MkParserState{parserLexTokens} <- getP
+  case IM.lookup offset parserLexTokens of
+    Just (LexWord token) -> takeP (Just "kelime") (T.length token)
+    _ -> takeWhile1P (Just "kelime") isWordChar
 
 -- | Parse multiple words separated by whitespace.
 multiword :: KipParser Text -- ^ Parsed multiword.
@@ -4288,7 +4337,9 @@ parseFromRepl :: ParserState -- ^ Initial parser state.
               -> Outer (Either (ParseErrorBundle Text ParserError) (Stmt Ann, ParserState)) -- ^ Parsed statement and state.
 parseFromRepl st input = do
   let stripped = removeComments input
-  (res, st') <- runStateT (runParserT parseStmt "Kip" stripped) st
+      tokenizedSt = withLexTokens stripped st
+  (res, parsedSt) <- runStateT (runParserT parseStmt "Kip" stripped) tokenizedSt
+  let st' = clearLexTokens parsedSt
   case res of
     Right stmt@(ExpStmt e)
       | Just ambErr <- ambiguousBareReplError st' stripped e ->
@@ -4304,7 +4355,9 @@ parseExpFromRepl :: ParserState -- ^ Initial parser state.
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann)) -- ^ Parsed expression.
 parseExpFromRepl st input = do
   let stripped = removeComments input
-  (res, st') <- runStateT (runParserT p "Kip" stripped) st
+      tokenizedSt = withLexTokens stripped st
+  (res, parsedSt) <- runStateT (runParserT p "Kip" stripped) tokenizedSt
+  let st' = clearLexTokens parsedSt
   case res of
     Right e
       | Just ambErr <- ambiguousBareReplError st' stripped e ->
@@ -4328,7 +4381,8 @@ parseExpFromRepl st input = do
 parseForDebug :: ParserState -> Text
               -> Outer (Either (ParseErrorBundle Text ParserError) (Stmt Ann, Text))
 parseForDebug st input = do
-  (res, _) <- runStateT (runParserT p "Kip" (removeComments input)) st
+  let stripped = removeComments input
+  (res, _) <- runStateT (runParserT p "Kip" stripped) (withLexTokens stripped st)
   return res
   where
     p = do
@@ -4343,7 +4397,9 @@ parseExpForDebug :: ParserState -> Text
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann, Text))
 parseExpForDebug st input = do
   let stripped = removeComments input
-  (res, st') <- runStateT (runParserT p "Kip" stripped) st
+      tokenizedSt = withLexTokens stripped st
+  (res, parsedSt) <- runStateT (runParserT p "Kip" stripped) tokenizedSt
+  let st' = clearLexTokens parsedSt
   case res of
     Right (e, remaining)
       | Just ambErr <- ambiguousBareReplError st' stripped e ->
@@ -4500,7 +4556,9 @@ parseFromFile :: ParserState -- ^ Initial parser state.
               -> Outer (Either (ParseErrorBundle Text ParserError) ([Stmt Ann], ParserState)) -- ^ Parsed statements and state.
 parseFromFile st input = do
   let stripped = removeComments input
-  (res, st') <- runStateT (runParserT p "Kip" stripped) st
+      tokenizedSt = withLexTokens stripped st
+  (res, parsedSt) <- runStateT (runParserT p "Kip" stripped) tokenizedSt
+  let st' = clearLexTokens parsedSt
   case res of
     Right stmts -> return (Right (stmts, st'))
     Left err ->
