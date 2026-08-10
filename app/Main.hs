@@ -2048,6 +2048,7 @@ main = do
                                 , sourceHash = sourceDigest
                                 , sourceSize = srcSize
                                 , sourceMTime = srcMTime
+                                , dependencyRootHash = dependencyMerkleRoot depHashes
                                 , dependencies = depHashes
                                 }
                               cachedModule = CachedModule

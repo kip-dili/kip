@@ -928,6 +928,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                             , sourceHash = sourceDigest
                             , sourceSize = srcSize
                             , sourceMTime = srcMTime
+                            , dependencyRootHash = dependencyMerkleRoot depHashes
                             , dependencies = depHashes
                             }
                           cachedModule = CachedModule

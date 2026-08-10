@@ -87,12 +87,18 @@ reverseDepGraphCache = unsafePerformIO (newIORef Map.empty)
 dirtySourcesCache :: IORef (Set.Set FilePath)
 dirtySourcesCache = unsafePerformIO (newIORef Set.empty)
 
+-- | Content-addressed dependency roots validated in this process.
+{-# NOINLINE validatedDependencyRoots #-}
+validatedDependencyRoots :: IORef (Set.Set ByteString)
+validatedDependencyRoots = unsafePerformIO (newIORef Set.empty)
+
 -- | Metadata stored alongside cached modules for validation.
 data CacheMetadata = CacheMetadata
   { compilerHash :: !ByteString          -- ^ SHA256 of the compiler executable.
   , sourceHash   :: !ByteString          -- ^ SHA256 of the source file.
   , sourceSize   :: !Integer             -- ^ Source file size in bytes.
   , sourceMTime  :: !Integer             -- ^ Source file mtime in microseconds.
+  , dependencyRootHash :: !ByteString    -- ^ Merkle root of direct dependency fingerprints.
   , dependencies :: ![(FilePath, ByteString, Integer, Integer)]  -- ^ (path, hash, size, mtime) for deps.
   } deriving (Generic)
 
@@ -103,6 +109,7 @@ instance Binary CacheMetadata where
     putHash sourceHash
     putWord64be (fromIntegral sourceSize)
     putWord64be (fromIntegral sourceMTime)
+    putHash dependencyRootHash
     putWord32be (fromIntegral (length dependencies))
     mapM_ putDependency dependencies
     where
@@ -117,6 +124,7 @@ instance Binary CacheMetadata where
     sourceHash <- getHash
     sourceSize <- fromIntegral <$> getWord64be
     sourceMTime <- fromIntegral <$> getWord64be
+    dependencyRootHash <- getHash
     dependencyCount <- getWord32be
     dependencies <- replicateM (fromIntegral dependencyCount) getDependency
     return CacheMetadata{..}
@@ -140,7 +148,16 @@ cacheMagic :: Word32
 cacheMagic = 0x4b49505a -- "KIPZ"
 
 cacheFormatVersion :: Word16
-cacheFormatVersion = 1
+cacheFormatVersion = 2
+
+-- | Stable Merkle root for a module's direct dependency leaves.
+dependencyMerkleRoot :: [(FilePath, ByteString, Integer, Integer)] -> ByteString
+dependencyMerkleRoot deps =
+  hashlazy
+    (encode
+      [ (path, digest)
+      | (path, digest, _, _) <- deps
+      ])
 
 putCacheHeader :: CacheMetadata -> Put
 putCacheHeader meta = do
@@ -728,10 +745,17 @@ isCacheValidMeta path meta = do
       if not sourceOk
         then markDirtySource sourcePath >> return False
         else do
-          depsValid <- mapM (\(depPathRaw, depHash, depSize, depMTime) -> do
-            depPath <- canonicalizePathCached depPathRaw
-            verifyPath depPath depHash depSize depMTime) (dependencies meta)
-          return (and depsValid)
+          rootValidated <- Set.member (dependencyRootHash meta) <$> readIORef validatedDependencyRoots
+          if rootValidated
+            then return True
+            else do
+              depsValid <- mapM (\(depPathRaw, depHash, depSize, depMTime) -> do
+                depPath <- canonicalizePathCached depPathRaw
+                verifyPath depPath depHash depSize depMTime) (dependencies meta)
+              let allValid = and depsValid
+              when allValid
+                (modifyIORef' validatedDependencyRoots (Set.insert (dependencyRootHash meta)))
+              return allValid
 
     -- | Verify a file by fast metadata check and fallback hashing.
     -- This avoids hashing unchanged dependencies on hot build paths.

@@ -1948,6 +1948,7 @@ writeCacheForDoc st uri doc = do
                 , sourceHash = sourceDigest
                 , sourceSize = srcSize
                 , sourceMTime = srcMTime
+                , dependencyRootHash = dependencyMerkleRoot []
                 , dependencies = []
                 }
           let cachedModule = CachedModule
