@@ -1252,11 +1252,9 @@ tcClause :: [Arg Ann] -- ^ Argument signature.
          -> Clause Ann -- ^ Clause to check.
          -> TCM (Clause Ann) -- ^ Type-checked clause.
 tcClause args isInfinitive (Clause pat body) = do
-  pat' <- normalizePatForArgs pat args
+  (pat', patTys, patSpans) <- analyzePatForArgs pat args
   let argNames = map argIdent args
       patNames = nub (patIdentifiers pat ++ patIdentifiers pat')
-  patTys <- inferPatTypes pat' args
-  patSpans <- inferPatTypesWithSpans pat' args
   mapM_ (uncurry recordResolvedType) patSpans
   forM_ args (\((_, ann), ty) -> recordResolvedType (annSpan ann) ty)
   let argTys = map (\((ident, _), ty) -> (ident, ty)) args
@@ -1683,24 +1681,27 @@ inferReturnType clauses = do
     firstJust (Just t:_) = Just t
     firstJust (Nothing:rest) = firstJust rest
 
--- | Normalize constructor sub-patterns to constructor-signature order when
--- | grammatical cases make the mapping unique.
-normalizePatForArgs :: Pat Ann -- ^ Pattern to normalize.
-                    -> [Arg Ann] -- ^ Scrutinee arguments for the pattern.
-                    -> TCM (Pat Ann) -- ^ Pattern in constructor argument order.
-normalizePatForArgs pat args =
+-- | Normalize a pattern and infer all bound-variable types in one traversal.
+-- The third result retains the source span for each inferred binding so LSP
+-- consumers do not need to walk the same pattern again.
+analyzePatForArgs :: Pat Ann -- ^ Pattern to normalize and inspect.
+                  -> [Arg Ann] -- ^ Scrutinee arguments for the pattern.
+                  -> TCM (Pat Ann, [(Identifier, Ty Ann)], [(Span, Ty Ann)])
+analyzePatForArgs pat args =
   case (pat, args) of
-    (PWildcard _, _) -> return pat
-    (PVar _ _, _) -> return pat
-    (PIntLit _ _, _) -> return pat
-    (PFloatLit _ _, _) -> return pat
-    (PStrLit _ _, _) -> return pat
-    (PCharLit _ _, _) -> return pat
+    (PWildcard _, _) -> emptyResult pat
+    (PVar name ann, (_, ty):_) -> return (pat, [(name, ty)], [(annSpan ann, ty)])
+    (PVar _ _, _) -> emptyResult pat
+    (PIntLit _ _, _) -> emptyResult pat
+    (PFloatLit _ _, _) -> emptyResult pat
+    (PStrLit _ _, _) -> emptyResult pat
+    (PCharLit _ _, _) -> emptyResult pat
     (PListLit pats, (_, scrutTy):_) -> do
       MkTCState{tcTyCons} <- get
       let elemTy = extractListElemTypeMap tcTyCons scrutTy
-      pats' <- mapM (\p -> normalizePatForArgs p [dummyArg elemTy]) pats
-      return (PListLit pats')
+      results <- mapM (\p -> analyzePatForArgs p [dummyArg elemTy]) pats
+      let (pats', bindings, spans) = combineResults results
+      return (PListLit pats', bindings, spans)
     (PCtor (ctor, ann) pats, (_, scrutTy):_) -> do
       MkTCState{tcCtors, tcTyCons} <- get
       case Map.lookup ctor tcCtors of
@@ -1715,17 +1716,31 @@ normalizePatForArgs pat args =
                        if length patsOrdered < length argTys'
                          then drop (length argTys' - length patsOrdered) argTys'
                          else argTys'
-                 pats' <-
+                 results <-
                    sequence
-                     [ normalizePatForArgs p [dummyArg ty]
+                     [ analyzePatForArgs p [dummyArg ty]
                      | (p, ty) <- zip patsOrdered argTysAligned
                      ]
-                 return (PCtor (ctor, ann) pats')
-               Nothing -> return pat
-        Nothing -> return pat
-    _ -> return pat
+                 let (pats', bindings, spans) = combineResults results
+                 return (PCtor (ctor, ann) pats', bindings, spans)
+               Nothing -> do
+                 let sp = case pats of
+                            (PVar _ patAnn):_ -> annSpan patAnn
+                            (PWildcard patAnn):_ -> annSpan patAnn
+                            _ -> annSpan (annTy scrutTy)
+                 mCtors <- ctorsForType scrutTy
+                 let available = maybe [] (map ctorName) mCtors
+                 lift (throwE (PatternTypeMismatch ctor resTy scrutTy available sp))
+        Nothing -> emptyResult pat
+    _ -> emptyResult pat
   where
     dummyArg ty = ((([], T.pack "_"), mkAnn Nom NoSpan), ty)
+    emptyResult p = return (p, [], [])
+    combineResults results =
+      ( map (\(p, _, _) -> p) results
+      , concatMap (\(_, bindings, _) -> bindings) results
+      , concatMap (\(_, _, spans) -> spans) results
+      )
 
 -- | Reorder constructor sub-patterns by their cases when the mapping is unique.
 -- Falls back to the written order when cases are repeated or incomplete.
@@ -1808,92 +1823,9 @@ withVarTypes tys m = do
 inferPatTypes :: Pat Ann -- ^ Pattern to inspect.
               -> [Arg Ann] -- ^ Constructor argument types.
               -> TCM [(Identifier, Ty Ann)] -- ^ Inferred bindings.
-inferPatTypes pat args =
-  case (pat, args) of
-    (PWildcard _, _) -> return []
-    (PVar n ann, (_, ty):_) -> return [(n, ty)]
-    (PIntLit _ _, _) -> return []
-    (PFloatLit _ _, _) -> return []
-    (PStrLit _ _, _) -> return []
-    (PCharLit _ _, _) -> return []
-    (PListLit pats, (_, scrutTy):_) -> do
-      MkTCState{tcTyCons} <- get
-      -- For list patterns, infer the element type from the scrutinee type
-      -- List type is represented as nested applications of eki constructor
-      -- We need to extract the element type and apply it to each pattern
-      let elemTy = extractListElemTypeMap tcTyCons scrutTy
-      concat <$> mapM (\p -> inferPatTypes p [(undefined, elemTy)]) pats
-    (PCtor (ctor, _) pats, (_, scrutTy):_) -> do
-      MkTCState{tcCtors, tcTyCons} <- get
-      case Map.lookup ctor tcCtors of
-        Just (argTys, resTy) ->
-          let resTyNorm = stripTyCaseForMatch resTy
-              scrutTyNorm = stripTyCaseForMatch scrutTy
-          in case unifyTypes (Map.toList tcTyCons) [resTyNorm] [scrutTyNorm] of
-            Just subst -> do
-              let argTys' = map (applySubst subst) argTys
-                  -- Nested patterns match from the right, so we align argument
-                  -- types with the pattern list by dropping leading args when
-                  -- the constructor has more parameters than the pattern specifies.
-                  argTysAligned =
-                    if length pats < length argTys'
-                      then drop (length argTys' - length pats) argTys'
-                      else argTys'
-              -- Recursively infer types for nested patterns
-              bindings <- sequence
-                [ inferPatTypes p [((([], T.pack "_"), mkAnn Nom NoSpan), ty)]
-                | (p, ty) <- zip pats argTysAligned
-                ]
-              return (concat bindings)
-            Nothing -> do
-              -- Pattern type doesn't match scrutinee type
-              let sp = case pats of
-                         (PVar _ ann):_ -> annSpan ann
-                         (PWildcard ann):_ -> annSpan ann
-                         _ -> annSpan (annTy scrutTy)
-              mCtors <- ctorsForType scrutTy
-              let available = maybe [] (map ctorName) mCtors
-              lift (throwE (PatternTypeMismatch ctor resTy scrutTy available sp))
-        Nothing -> return []  -- Constructor not found - might be undefined, let other checks handle it
-    _ -> return []
-
--- | Infer types for identifiers bound in a pattern, returning their spans.
-inferPatTypesWithSpans :: Pat Ann -- ^ Pattern to inspect.
-                       -> [Arg Ann] -- ^ Constructor argument types.
-                       -> TCM [(Span, Ty Ann)] -- ^ Inferred bindings with spans.
-inferPatTypesWithSpans pat args =
-  case (pat, args) of
-    (PWildcard _, _) -> return []
-    (PVar _ ann, (_, ty):_) -> return [(annSpan ann, ty)]
-    (PIntLit _ _, _) -> return []
-    (PFloatLit _ _, _) -> return []
-    (PStrLit _ _, _) -> return []
-    (PCharLit _ _, _) -> return []
-    (PListLit pats, (_, scrutTy):_) -> do
-      MkTCState{tcTyCons} <- get
-      let elemTy = extractListElemTypeMap tcTyCons scrutTy
-      concat <$> mapM (\p -> inferPatTypesWithSpans p [(undefined, elemTy)]) pats
-    (PCtor (ctor, _) pats, (_, scrutTy):_) -> do
-      MkTCState{tcCtors, tcTyCons} <- get
-      case Map.lookup ctor tcCtors of
-        Just (argTys, resTy) ->
-          let resTyNorm = stripTyCaseForMatch resTy
-              scrutTyNorm = stripTyCaseForMatch scrutTy
-          in case unifyTypes (Map.toList tcTyCons) [resTyNorm] [scrutTyNorm] of
-            Just subst -> do
-              let argTys' = map (applySubst subst) argTys
-                  argTysAligned =
-                    if length pats < length argTys'
-                      then drop (length argTys' - length pats) argTys'
-                      else argTys'
-              bindings <- sequence
-                [ inferPatTypesWithSpans p [((([], T.pack "_"), mkAnn Nom NoSpan), ty)]
-                | (p, ty) <- zip pats argTysAligned
-                ]
-              return (concat bindings)
-            Nothing -> return []
-        Nothing -> return []
-    _ -> return []
+inferPatTypes pat args = do
+  (_, bindings, _) <- analyzePatForArgs pat args
+  return bindings
 
 -- | Normalize type-case annotations for constructor-pattern unification.
 --
