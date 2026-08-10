@@ -281,33 +281,38 @@ generateEditDistance1 word =
   dedupStable (deletes ++ transposes ++ replaces ++ inserts)
   where
     turkishAlphabet :: [Char]
-    turkishAlphabet = T.unpack (T.pack "abcçdefgğhıijklmnoöprsştuüvyzqwx")
+    turkishAlphabet = "abcçdefgğhıijklmnoöprsştuüvyzqwx"
 
-    n = T.length word
+    -- Share each prefix and suffix slice across all edit families. In
+    -- particular, replacements no longer re-slice and re-index the word for
+    -- every alphabet character.
+    chars = T.unpack word
+    prefixes = T.inits word
+    suffixes = T.tails word
+    positions = zip3 prefixes chars (drop 1 suffixes)
+    boundaries = zip prefixes suffixes
 
     deletes =
-      [ T.take i word <> T.drop (i + 1) word
-      | i <- [0 .. n - 1]
+      [ T.concat [prefix, suffix]
+      | (prefix, _, suffix) <- positions
       ]
 
     transposes =
-      [ T.take i word
-          <> T.singleton (T.index word (i + 1))
-          <> T.singleton (T.index word i)
-          <> T.drop (i + 2) word
-      | i <- [0 .. n - 2]
+      [ T.concat [prefix, T.singleton next, T.singleton current, suffix]
+      | (prefix, current, afterCurrent) <- positions
+      , Just (next, suffix) <- [T.uncons afterCurrent]
       ]
 
     replaces =
-      [ T.take i word <> T.singleton c <> T.drop (i + 1) word
-      | i <- [0 .. n - 1]
+      [ T.concat [prefix, T.singleton c, suffix]
+      | (prefix, current, suffix) <- positions
       , c <- turkishAlphabet
-      , c /= T.index word i
+      , c /= current
       ]
 
     inserts =
-      [ T.take i word <> T.singleton c <> T.drop i word
-      | i <- [0 .. n]
+      [ T.concat [prefix, T.singleton c, suffix]
+      | (prefix, suffix) <- boundaries
       , c <- turkishAlphabet
       ]
 
