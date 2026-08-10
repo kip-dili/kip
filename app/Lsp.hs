@@ -2975,12 +2975,11 @@ loadDefsForFile st path = do
       moduleRoots = map (addTrailingPathSeparator . normalise) (lsModuleDirs st)
       isStdlib = any (`isPrefixOf` normalized) moduleRoots
   let cachePath = cacheFilePath absPath
-  mCached <- loadCachedModule cachePath
-  case mCached of
-    Just cached -> do
-      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) (cachedParser cached)
-      let stmts = cachedTypedStmts cached
-          defSpans =
+  mCachedPrefix <- loadCachedAstParser cachePath
+  case mCachedPrefix of
+    Just (stmts, cachedParserState) -> do
+      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) cachedParserState
+      let defSpans =
             if isStdlib
               then defSpansFromParserIncludeBase stmts pst
               else defSpansFromParser (lsBaseParser st) stmts pst

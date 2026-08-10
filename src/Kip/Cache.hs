@@ -105,7 +105,37 @@ data CachedModule = CachedModule
   , cachedTC      :: !CachedTCState -- ^ Type checker state snapshot.
   } deriving (Generic)
 
-instance Binary CachedModule
+-- | Sectioned module-cache encoding.
+--
+-- Each consumer-facing payload has its own length-prefixed byte section.  A
+-- full load remains transparent, while lightweight consumers can decode only
+-- the AST or AST/parser prefix and skip the typechecker payload entirely.
+instance Binary CachedModule where
+  put CachedModule{..} = do
+    put metadata
+    put (encodeSection cachedTypedStmts)
+    put (encodeSection cachedParser)
+    put (encodeSection cachedTC)
+  get = do
+    metadata <- get
+    stmtsBytes <- get
+    parserBytes <- get
+    tcBytes <- get
+    cachedTypedStmts <- decodeSection stmtsBytes
+    cachedParser <- decodeSection parserBytes
+    cachedTC <- decodeSection tcBytes
+    return CachedModule{..}
+
+encodeSection :: Binary a => a -> ByteString
+encodeSection = toStrict . encode
+
+decodeSection :: Binary a => ByteString -> Get a
+decodeSection bytes =
+  case decodeOrFail (fromStrict bytes) of
+    Left (_, _, err) -> fail err
+    Right (remaining, _, value)
+      | BL.null remaining -> return value
+      | otherwise -> fail "Trailing bytes in cache section"
 
 -- | Cached prelude snapshot payload used for cold-start acceleration.
 --
@@ -515,6 +545,57 @@ loadCachedModule path = do
                   Left _ -> return Nothing
                   Right (_, _, m) -> return (Just m)
 
+-- | Load only the typed-statement section from a valid module cache.
+loadCachedTypedStmts :: FilePath -> IO (Maybe [Stmt Ann])
+loadCachedTypedStmts path =
+  loadCachedSections path getStmtsPrefix (\(meta, _) -> meta) (\(_, stmtsBytes) -> decodeSectionValue stmtsBytes)
+  where
+    getStmtsPrefix :: Get (CacheMetadata, ByteString)
+    getStmtsPrefix = (,) <$> get <*> get
+
+-- | Load the typed-statement and parser sections without decoding typechecker
+-- state.  This is the exact prefix needed by LSP workspace definition scans.
+loadCachedAstParser :: FilePath -> IO (Maybe ([Stmt Ann], CachedParserState))
+loadCachedAstParser path =
+  loadCachedSections path getAstParserPrefix (\(meta, _, _) -> meta) decodePrefix
+  where
+    getAstParserPrefix :: Get (CacheMetadata, ByteString, ByteString)
+    getAstParserPrefix = (,,) <$> get <*> get <*> get
+
+    decodePrefix (_, stmtsBytes, parserBytes) = do
+      stmts <- decodeSectionValue stmtsBytes
+      parserState <- decodeSectionValue parserBytes
+      return (stmts, parserState)
+
+-- | Read, validate, and decode a selected cache prefix.
+loadCachedSections :: FilePath -> Get prefix -> (prefix -> CacheMetadata) -> (prefix -> Either String value) -> IO (Maybe value)
+loadCachedSections path getPrefix prefixMetadata decodePrefix = do
+  absCachePath <- canonicalizePathCached path
+  exists <- doesFileExist absCachePath
+  if not exists
+    then return Nothing
+    else do
+      res <- try (BS.readFile absCachePath)
+      case res of
+        Left (_ :: SomeException) -> return Nothing
+        Right bytes ->
+          case runGetOrFail getPrefix (fromStrict bytes) of
+            Left _ -> return Nothing
+            Right (_, _, prefix) -> do
+              let meta = prefixMetadata prefix
+              valid <- isCacheValidMeta absCachePath meta
+              if not valid
+                then return Nothing
+                else return (either (const Nothing) Just (decodePrefix prefix))
+
+decodeSectionValue :: Binary a => ByteString -> Either String a
+decodeSectionValue bytes =
+  case decodeOrFail (fromStrict bytes) of
+    Left (_, _, err) -> Left err
+    Right (remaining, _, value)
+      | BL.null remaining -> Right value
+      | otherwise -> Left "Trailing bytes in cache section"
+
 -- | Persist a cached module to disk.
 saveCachedModule ::
   FilePath -- ^ Cache file path.
@@ -762,13 +843,13 @@ collectPreludePrimStmts loaded = do
   where
     collectOne srcPath = do
       let cachePath = cacheFilePath srcPath
-      mMod <- loadCachedModule cachePath
-      case mMod of
+      mStmts <- loadCachedTypedStmts cachePath
+      case mStmts of
         Nothing -> return []
-        Just cm ->
+        Just stmts ->
           return
             [ (srcPath, stmt)
-            | stmt@PrimFunc {} <- cachedTypedStmts cm
+            | stmt@PrimFunc {} <- stmts
             ]
 
 -- | Rebuild primitive-function bindings for a restored prelude evaluator by
