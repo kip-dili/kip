@@ -51,6 +51,7 @@ import Kip.TypeCheck
 import qualified Kip.TypeCheck as TC
 import Kip.Render
 import Kip.Cache
+import Kip.MorphTracking
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
 import Kip.Runner (Lang(..), renderEvalError, locateDataFile)
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts)
@@ -1999,6 +2000,7 @@ main = do
                       primRefs = collectNonInfinitiveRefs stmts
                   foldM' (runTypedStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) (pst', tcSt', evalSt', loaded') stmts
             Nothing -> do
+              morphToken <- liftIO beginMorphTracking
               input <- liftIO (TIO.readFile path)
               liftIO (parseFromFile pst input) >>= \case
                 Left err -> do
@@ -2033,12 +2035,14 @@ main = do
                           Nothing -> do
                             digest <- hash <$> BS.readFile p
                             return (p, digest, 0, 0)) depPaths
+                      morphDelta <- liftIO (finishMorphTracking morphToken)
                       mCompilerHash <- liftIO getCompilerHash
                       case mCompilerHash of
                         Nothing -> return ()
                         Just compilerHash -> do
                           mSourceMeta <- liftIO (getFileMeta absPath)
-                          cachedParserState <- liftIO (toCachedParserStateDelta pst pst')
+                          cachedParserBase <- liftIO (toCachedParserStateDelta pst pst')
+                          let cachedParserState = attachMorphDelta morphDelta cachedParserBase
                           let sourceBytes = encodeUtf8 input
                               sourceDigest = hash sourceBytes
                               fallbackSourceSize = fromIntegral (BS.length sourceBytes)

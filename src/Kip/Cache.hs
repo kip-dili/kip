@@ -39,6 +39,7 @@ import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncSigsByArity, build
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import Kip.Render (RenderCache, renderExpValue)
+import Kip.MorphTracking (MorphDelta(..))
 import Paths_kip (version)
 
 -- | Memoized file hash cache for the current process.
@@ -373,6 +374,15 @@ toCachedParserStateDelta base current =
       , pupsCache = []
       , pdownsCache = []
       }
+
+-- | Attach the O(number-of-genuine-misses) morphology delta collected while
+-- compiling one module.
+attachMorphDelta :: MorphDelta -> CachedParserState -> CachedParserState
+attachMorphDelta MorphDelta{..} cached =
+  cached
+    { pupsCache = morphUpsDelta
+    , pdownsCache = morphDownsDelta
+    }
 
 -- | Restore a parser state from its cached representation.
 --

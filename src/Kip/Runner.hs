@@ -75,6 +75,7 @@ import Paths_kip (getDataFileName)
 import Language.Foma
 import Kip.AST
 import Kip.Cache
+import Kip.MorphTracking
 import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalStmtInFile, evalRender)
 import qualified Kip.Eval as Eval
 import Kip.Parser
@@ -880,6 +881,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                   primRefs = collectNonInfinitiveRefs stmts
               foldM' (runTypedStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) (pst', tcSt', evalSt', loaded') stmts
         Nothing -> do
+          morphToken <- liftIO beginMorphTracking
           input <- liftIO (TIO.readFile path)
           liftIO (parseFromFile pst { parserFilePath = Just path } input) >>= \case
             Left err -> do
@@ -913,12 +915,14 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                       Nothing -> do
                         digest <- hash <$> BS.readFile p
                         return (p, digest, 0, 0)) depPaths
+                  morphDelta <- liftIO (finishMorphTracking morphToken)
                   mCompilerHash <- liftIO getCompilerHash
                   case mCompilerHash of
                     Nothing -> return ()
                     Just compilerHash -> do
                       mSourceMeta <- liftIO (getFileMeta absPath)
-                      cachedParserState <- liftIO (toCachedParserStateDelta pst pst')
+                      cachedParserBase <- liftIO (toCachedParserStateDelta pst pst')
+                      let cachedParserState = attachMorphDelta morphDelta cachedParserBase
                       let sourceBytes = encodeUtf8 input
                           sourceDigest = hash sourceBytes
                           fallbackSourceSize = fromIntegral (BS.length sourceBytes)

@@ -109,6 +109,7 @@ import qualified Text.Megaparsec.Char.Lexer as L
 
 import Language.Foma
 import Kip.AST
+import Kip.MorphTracking
 
 -- | Parser-specific error categories for human-friendly rendering.
 data ParserError
@@ -1591,7 +1592,9 @@ upsCached s = do
     Just res -> return res
     Nothing -> do
       res <- liftIO (ups fsm s)
-      liftIO $ HT.insert parserUpsCache s res
+      liftIO $ do
+        HT.insert parserUpsCache s res
+        recordMorphInsert MorphUps s res
       return res
 
 -- | Cached batch morphology analysis lookup.
@@ -1609,7 +1612,7 @@ upsCachedBatch surfaces = do
       else liftIO (upsBatch fsm missing)
   let fetchedMap = M.fromList (zip missing fetched)
   liftIO $
-    mapM_ (uncurry (HT.insert parserUpsCache)) (zip missing fetched)
+    mapM_ (\(key, value) -> HT.insert parserUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve surfaces cached)
 
@@ -1623,7 +1626,9 @@ downsCached s = do
     Just res -> return res
     Nothing -> do
       res <- liftIO (downs fsm s)
-      liftIO $ HT.insert parserDownsCache s res
+      liftIO $ do
+        HT.insert parserDownsCache s res
+        recordMorphInsert MorphDowns s res
       return res
 
 -- | Cached batch morphology generation lookup.
@@ -1641,7 +1646,7 @@ downsCachedBatch stems = do
       else liftIO (downsBatch fsm missing)
   let fetchedMap = M.fromList (zip missing fetched)
   liftIO $
-    mapM_ (uncurry (HT.insert parserDownsCache)) (zip missing fetched)
+    mapM_ (\(key, value) -> HT.insert parserDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve stems cached)
 

@@ -45,6 +45,7 @@ import qualified Data.HashTable.IO as HT
 import Language.Foma
 import Kip.AST
 import Kip.Eval (EvalState, evalCtors)
+import Kip.MorphTracking
 
 -- | Cache for morphology calls.
 type MorphCache = HT.BasicHashTable Text [Text]
@@ -79,6 +80,7 @@ upsCached RenderCache{rcUpsCache} fsm s = do
     Nothing -> do
       res <- ups fsm s
       HT.insert rcUpsCache s res
+      recordMorphInsert MorphUps s res
       return res
 
 -- | Cached batch morphology analysis lookup.
@@ -93,7 +95,7 @@ upsCachedBatch RenderCache{rcUpsCache} fsm words = do
   let missing = stableNub [w | (w, Nothing) <- zip words cached]
   fetched <- if null missing then return [] else upsBatch fsm missing
   let fetchedMap = M.fromList (zip missing fetched)
-  mapM_ (uncurry (HT.insert rcUpsCache)) (zip missing fetched)
+  mapM_ (\(key, value) -> HT.insert rcUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
   let resolve w = fromMaybe (fromMaybe [] (M.lookup w fetchedMap))
   return (zipWith resolve words cached)
 
@@ -109,6 +111,7 @@ downsCached RenderCache{rcDownsCache} fsm s = do
     Nothing -> do
       res <- downs fsm s
       HT.insert rcDownsCache s res
+      recordMorphInsert MorphDowns s res
       return res
 
 -- | Cached batch morphology generation lookup.
@@ -123,7 +126,7 @@ downsCachedBatch RenderCache{rcDownsCache} fsm stems = do
   let missing = stableNub [s | (s, Nothing) <- zip stems cached]
   fetched <- if null missing then return [] else downsBatch fsm missing
   let fetchedMap = M.fromList (zip missing fetched)
-  mapM_ (uncurry (HT.insert rcDownsCache)) (zip missing fetched)
+  mapM_ (\(key, value) -> HT.insert rcDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve stems cached)
 
