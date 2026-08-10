@@ -18,9 +18,11 @@ import System.Directory
 import System.Environment (getExecutablePath)
 import Control.Exception (try, SomeException)
 import Control.Monad (when, foldM)
+import Data.List (delete, foldl')
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import qualified Data.HashMap.Strict as HM
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
@@ -32,7 +34,7 @@ import qualified Data.HashTable.IO as HT
 
 import Kip.AST
 import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
-import Kip.TypeCheck (TCState(..), buildFuncSigsByArity, buildFuncRetByName)
+import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncNamesByArity, buildFuncSigsByArity, buildFuncRetByName, emptyTCState)
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import Kip.Render (RenderCache, renderExpValue)
@@ -222,6 +224,37 @@ toCachedParserStateNoMorph ps =
       , pdownsCache = []
       }
 
+-- | Cache only parser declarations introduced since the input state.
+toCachedParserStateDelta ::
+  ParserState -- ^ State before parsing the module.
+  -> ParserState -- ^ State immediately after parsing the module.
+  -> IO CachedParserState
+toCachedParserStateDelta base current =
+  return
+    CachedParserState
+      { pctx = Set.toList (parserCtx current `Set.difference` parserCtx base)
+      , pctors = listDelta (parserCtors current) (parserCtors base)
+      , ptyParams = listDelta (parserTyParams current) (parserTyParams base)
+      , ptyCons = listDelta (parserTyCons current) (parserTyCons base)
+      , ptyMods = listDelta (parserTyMods current) (parserTyMods base)
+      , pprimTypes = listDelta (parserPrimTypes current) (parserPrimTypes base)
+      , pfuncArities =
+          Map.mapMaybeWithKey
+            (\name arities ->
+              let added = arities `Set.difference` Map.findWithDefault Set.empty name (parserFuncArities base)
+              in if Set.null added then Nothing else Just added)
+            (parserFuncArities current)
+      , pdefSpans =
+          Map.mapMaybeWithKey
+            (\name spans ->
+              let previous = Map.findWithDefault [] name (parserDefSpans base)
+                  added = drop (length previous) spans
+              in if null added then Nothing else Just added)
+            (parserDefSpans current)
+      , pupsCache = []
+      , pdownsCache = []
+      }
+
 -- | Restore a parser state from its cached representation.
 --
 -- ==== Performance note (Optimization 10)
@@ -241,6 +274,32 @@ fromCachedParserState fsm cachePath upsCache downsCache CachedParserState{..} = 
   -- lookup) are rebuilt consistently after cache restore.
   return (newParserStateWithCtxAndCaches fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath upsCache downsCache)
 
+-- | Apply a cached parser delta to the state accumulated by earlier modules.
+fromCachedParserStateDelta ::
+  FSM
+  -> Maybe FilePath
+  -> MorphCache
+  -> MorphCache
+  -> ParserState
+  -> CachedParserState
+  -> IO ParserState
+fromCachedParserStateDelta fsm cachePath upsCache downsCache base cached = do
+  delta <- fromCachedParserState fsm cachePath upsCache downsCache cached
+  return
+    (newParserStateWithCtxAndCaches
+      fsm
+      (Set.union (parserCtx delta) (parserCtx base))
+      (parserCtors delta ++ parserCtors base)
+      (parserTyParams delta ++ parserTyParams base)
+      (parserTyCons delta ++ parserTyCons base)
+      (parserTyMods delta ++ parserTyMods base)
+      (parserPrimTypes delta ++ parserPrimTypes base)
+      (Map.unionWith Set.union (parserFuncArities delta) (parserFuncArities base))
+      (Map.unionWith (++) (parserDefSpans base) (parserDefSpans delta))
+      cachePath
+      upsCache
+      downsCache)
+
 -- | Cached wrapper for the type checker state.
 newtype CachedTCState = CachedTCState TCState
   deriving (Generic)
@@ -252,6 +311,76 @@ toCachedTCState ::
   TCState -- ^ Type checker state to wrap.
   -> CachedTCState -- ^ Wrapped cached state.
 toCachedTCState = CachedTCState
+
+-- | Cache only typechecker entries introduced or changed by one module load.
+toCachedTCStateDelta :: TCState -> TCState -> CachedTCState
+toCachedTCStateDelta base current =
+  CachedTCState
+    (emptyTCState
+      { tcCtx = tcCtx current `Set.difference` tcCtx base
+      , tcFuncs = multiMapDelta (tcFuncs base) (tcFuncs current)
+      , tcFuncSigs = multiMapDelta (tcFuncSigs base) (tcFuncSigs current)
+      , tcFuncSigRets = mapDelta (tcFuncSigRets base) (tcFuncSigRets current)
+      , tcFuncEffectsByArity =
+          HM.filterWithKey
+            (\key value -> HM.lookup key (tcFuncEffectsByArity base) /= Just value)
+            (tcFuncEffectsByArity current)
+      , tcVarTys = listDelta (tcVarTys current) (tcVarTys base)
+      , tcVals = mapDelta (tcVals base) (tcVals current)
+      , tcCtors = mapDelta (tcCtors base) (tcCtors current)
+      , tcTyCons = mapDelta (tcTyCons base) (tcTyCons current)
+      , tcInfinitives = tcInfinitives current `Set.difference` tcInfinitives base
+      , tcOutputMode = tcOutputMode current
+      , tcResolvedNames = listDelta (tcResolvedNames current) (tcResolvedNames base)
+      , tcResolvedSigs = listDelta (tcResolvedSigs current) (tcResolvedSigs base)
+      , tcResolvedTypes = listDelta (tcResolvedTypes current) (tcResolvedTypes base)
+      , tcDefLocations = mapDelta (tcDefLocations base) (tcDefLocations current)
+      , tcFuncSigLocs = mapDelta (tcFuncSigLocs base) (tcFuncSigLocs current)
+      })
+
+-- | Remove one occurrence of every baseline element while preserving the
+-- order of entries introduced by the current module.
+listDelta :: Eq a => [a] -> [a] -> [a]
+listDelta = foldl' (flip delete)
+
+multiMapDelta :: (Ord key, Eq value) => Map.Map key [value] -> Map.Map key [value] -> Map.Map key [value]
+multiMapDelta base =
+  Map.mapMaybeWithKey $ \key values ->
+    let added = listDelta values (Map.findWithDefault [] key base)
+    in if null added then Nothing else Just added
+
+mapDelta :: (Ord key, Eq value) => Map.Map key value -> Map.Map key value -> Map.Map key value
+mapDelta base =
+  Map.filterWithKey $ \key value -> Map.lookup key base /= Just value
+
+-- | Merge one cached typechecker delta into the accumulated state.
+mergeCachedTCState :: TCState -> TCState -> TCState
+mergeCachedTCState current delta =
+  let mergedFuncs = Map.unionWith (++) (tcFuncs delta) (tcFuncs current)
+      mergedSigs = Map.unionWith (++) (tcFuncSigs delta) (tcFuncSigs current)
+      mergedRets = Map.union (tcFuncSigRets delta) (tcFuncSigRets current)
+      outputMode = tcOutputMode current
+  in emptyTCState
+      { tcCtx = Set.union (tcCtx current) (tcCtx delta)
+      , tcFuncs = mergedFuncs
+      , tcFuncNamesByArity = buildFuncNamesByArity mergedFuncs
+      , tcFuncSigs = mergedSigs
+      , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
+      , tcFuncSigRets = mergedRets
+      , tcFuncRetByName = buildFuncRetByName mergedRets
+      , tcFuncEffectsByArity = HM.union (tcFuncEffectsByArity delta) (tcFuncEffectsByArity current)
+      , tcVarTys = tcVarTys delta ++ tcVarTys current
+      , tcVals = Map.union (tcVals delta) (tcVals current)
+      , tcCtors = Map.union (tcCtors delta) (tcCtors current)
+      , tcTyCons = Map.union (tcTyCons delta) (tcTyCons current)
+      , tcInfinitives = Set.union (tcInfinitives current) (tcInfinitives delta)
+      , tcOutputMode = outputMode
+      , tcResolvedNames = if outputMode >= TCOutputLsp then tcResolvedNames delta ++ tcResolvedNames current else []
+      , tcResolvedSigs = tcResolvedSigs delta ++ tcResolvedSigs current
+      , tcResolvedTypes = if outputMode >= TCOutputLsp then tcResolvedTypes delta ++ tcResolvedTypes current else []
+      , tcDefLocations = if outputMode >= TCOutputLsp then Map.union (tcDefLocations delta) (tcDefLocations current) else Map.empty
+      , tcFuncSigLocs = if outputMode >= TCOutputLsp then Map.union (tcFuncSigLocs delta) (tcFuncSigLocs current) else Map.empty
+      }
 
 -- | Unwrap a cached type checker state.
 --

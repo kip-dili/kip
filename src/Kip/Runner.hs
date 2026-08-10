@@ -871,7 +871,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
           if buildOnly
             then return (pst, tcSt, evalSt, loaded')
             else do
-              pst' <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
+              pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
               let tcSt' = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                   evalSt' = evalSt
                   stmts = cachedTypedStmts cached
@@ -918,7 +918,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                     Nothing -> return ()
                     Just compilerHash -> do
                       mSourceMeta <- liftIO (getFileMeta absPath)
-                      cachedParserState <- liftIO (toCachedParserStateNoMorph pstFinal)
+                      cachedParserState <- liftIO (toCachedParserStateDelta pst pst')
                       let sourceBytes = encodeUtf8 input
                           sourceDigest = hash sourceBytes
                           fallbackSourceSize = fromIntegral (BS.length sourceBytes)
@@ -935,7 +935,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                             , cachedStmts = stmts
                             , cachedTypedStmts = typedStmts
                             , cachedParser = cachedParserState
-                            , cachedTC = toCachedTCState tcSt'
+                            , cachedTC = toCachedTCStateDelta tcSt tcSt'
                             }
                       liftIO (saveCachedModule cachePath cachedModule)
                   return (pstFinal, tcSt', evalSt', loaded')
@@ -946,31 +946,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
 -- signature order stays stable with the source module that produced the
 -- cache. Current-state entries are retained for keys not present in cache.
 mergeTCState :: TCState -> TCState -> TCState
-mergeTCState cur cached =
-  let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
-      mergedRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
-      outputMode = tcOutputMode cur
-      -- Rebuild derived signature indices after merge so overload lookups
-      -- stay fast and deterministic for subsequent checks.
-  in emptyTCState
-       { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
-       , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
-       , tcFuncSigs = mergedSigs
-       , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
-       , tcFuncSigRets = mergedRets
-       , tcFuncRetByName = buildFuncRetByName mergedRets
-       , tcVarTys = tcVarTys cached ++ tcVarTys cur
-       , tcVals = Map.union (tcVals cached) (tcVals cur)
-       , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
-       , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
-       , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-       , tcOutputMode = outputMode
-       , tcResolvedNames = if outputMode >= TCOutputLsp then tcResolvedNames cached ++ tcResolvedNames cur else []
-       , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-       , tcResolvedTypes = if outputMode >= TCOutputLsp then tcResolvedTypes cached ++ tcResolvedTypes cur else []
-       , tcDefLocations = if outputMode >= TCOutputLsp then Map.union (tcDefLocations cached) (tcDefLocations cur) else Map.empty
-       , tcFuncSigLocs = if outputMode >= TCOutputLsp then Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur) else Map.empty
-       }
+mergeTCState = mergeCachedTCState
 
 -- | Run a single statement in the context of a file.
 runStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath)

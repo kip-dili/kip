@@ -1882,13 +1882,13 @@ main = do
                   _ -> Nothing
           case mCached of
             Just cached -> do
-              pstCached <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
+              pstCached <- liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
               let loaded' = Set.insert absPath loaded
                   tcCached = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                   stmts = cachedTypedStmts cached
-              (_, _, newStmtsRev, loaded'') <-
+              (pstFinal, tcFinal, newStmtsRev, loaded'') <-
                 foldM' (collectCachedStmt moduleDirs absPath) (pstCached, tcCached, [], loaded') stmts
-              return (pstCached, tcCached, newStmtsRev ++ accStmtsRev, loaded'')
+              return (pstFinal, tcFinal, newStmtsRev ++ accStmtsRev, loaded'')
             Nothing -> do
               input <- liftIO (TIO.readFile path)
               liftIO (parseFromFile pst input) >>= \case
@@ -1990,7 +1990,7 @@ main = do
               if buildOnly
                 then return (pst, tcSt, evalSt, loaded')
                 else do
-                  pst' <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
+                  pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
                   let tcSt' = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                       evalSt' = evalSt
                       stmts = cachedTypedStmts cached
@@ -2038,7 +2038,7 @@ main = do
                         Nothing -> return ()
                         Just compilerHash -> do
                           mSourceMeta <- liftIO (getFileMeta absPath)
-                          cachedParserState <- liftIO (toCachedParserStateNoMorph pstFinal)
+                          cachedParserState <- liftIO (toCachedParserStateDelta pst pst')
                           let sourceBytes = encodeUtf8 input
                               sourceDigest = hash sourceBytes
                               fallbackSourceSize = fromIntegral (BS.length sourceBytes)
@@ -2055,7 +2055,7 @@ main = do
                                 , cachedStmts = stmts
                                 , cachedTypedStmts = typedStmts
                                 , cachedParser = cachedParserState
-                                , cachedTC = toCachedTCState tcSt'
+                                , cachedTC = toCachedTCStateDelta tcSt tcSt'
                                 }
                           liftIO (saveCachedModule cachePath cachedModule)
 
@@ -2069,31 +2069,7 @@ main = do
     mergeTCState :: TCState -- ^ Current TC state.
                  -> TCState -- ^ Cached TC state.
                  -> TCState -- ^ Combined TC state.
-    mergeTCState cur cached =
-      let mergedSigs = Map.union (tcFuncSigs cached) (tcFuncSigs cur)
-          mergedRets = Map.union (tcFuncSigRets cached) (tcFuncSigRets cur)
-          outputMode = tcOutputMode cur
-          -- Rebuild derived signature indices after merge so REPL/LSP lookup
-          -- paths keep using the same optimized arity index.
-      in emptyTCState
-           { tcCtx = Set.union (tcCtx cur) (tcCtx cached)
-           , tcFuncs = Map.union (tcFuncs cached) (tcFuncs cur)
-           , tcFuncSigs = mergedSigs
-           , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
-           , tcFuncSigRets = mergedRets
-           , tcFuncRetByName = buildFuncRetByName mergedRets
-           , tcVarTys = tcVarTys cached ++ tcVarTys cur
-           , tcVals = Map.union (tcVals cached) (tcVals cur)
-           , tcCtors = Map.union (tcCtors cached) (tcCtors cur)
-           , tcTyCons = Map.union (tcTyCons cached) (tcTyCons cur)
-           , tcInfinitives = Set.union (tcInfinitives cur) (tcInfinitives cached)
-           , tcOutputMode = outputMode
-           , tcResolvedNames = if outputMode >= TCOutputLsp then tcResolvedNames cached ++ tcResolvedNames cur else []
-           , tcResolvedSigs = tcResolvedSigs cached ++ tcResolvedSigs cur
-           , tcResolvedTypes = if outputMode >= TCOutputLsp then tcResolvedTypes cached ++ tcResolvedTypes cur else []
-           , tcDefLocations = if outputMode >= TCOutputLsp then Map.union (tcDefLocations cached) (tcDefLocations cur) else Map.empty
-           , tcFuncSigLocs = if outputMode >= TCOutputLsp then Map.union (tcFuncSigLocs cached) (tcFuncSigLocs cur) else Map.empty
-           }
+    mergeTCState = mergeCachedTCState
 
     -- | Run a single statement in the context of a file.
     runStmt :: Bool -- ^ Whether to show definitions.
@@ -2513,7 +2489,7 @@ main = do
       let pst = newParserStateWithCaches fsm (Just path) uCache dCache
       let cachePath = cacheFilePath absPath
       liftIO (loadCachedModule cachePath) >>= \case
-        Just cached -> liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
+        Just cached -> liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
         Nothing -> do
           input <- liftIO (TIO.readFile path)
           liftIO (parseFromFile pst input) >>= \case
@@ -2543,20 +2519,9 @@ main = do
               return (pstSnap, setTCOutputMode TCOutputCodegen tcSnap, loadedSnap)
             Nothing -> do
               path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
-              absPath <- liftIO (canonicalizePathCached path)
-              let cachePath = cacheFilePath absPath
-              liftIO (loadCachedModule cachePath) >>= \case
-                Just cached -> do
-                  depPaths <- liftIO $ mapM (canonicalizePathCached . (\(p, _, _, _) -> p)) (dependencies (metadata cached))
-                  pst' <- liftIO (fromCachedParserState fsm (Just path) uCache dCache (cachedParser cached))
-                  let
-                      tcSt' = setTCOutputMode TCOutputCodegen (fromCachedTCState (cachedTC cached))
-                      loaded = Set.fromList (absPath : depPaths)
-                  return (pst', tcSt', loaded)
-                Nothing -> do
-                  let pstFile = pst { parserFilePath = Just path }
-                  (pst', tcSt', _, loaded') <- collectFileStmts moduleDirs (pstFile, tcSt, [], Set.empty) path
-                  return (pst', tcSt', loaded')
+              let pstFile = pst { parserFilePath = Just path }
+              (pst', tcSt', _, loaded') <- collectFileStmts moduleDirs (pstFile, tcSt, [], Set.empty) path
+              return (pst', tcSt', loaded')
 
     -- | Load the prelude module into parser/type/eval states unless disabled.
     loadPreludeState :: Bool -- ^ Whether to skip the prelude.

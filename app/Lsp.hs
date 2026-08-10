@@ -1875,10 +1875,11 @@ loadCachedDoc st uri text =
                   cachedHash = sourceHash (metadata cached)
               if textHash == cachedHash
                 then do
-                  let tcCached = fromCachedTCState (cachedTC cached)
-                  if tcOutputModeSupports (tcOutputMode tcCached) TCOutputLsp
+                  let tcDelta = fromCachedTCState (cachedTC cached)
+                  if tcOutputModeSupports (tcOutputMode tcDelta) TCOutputLsp
                     then do
-                      pstCached <- fromCachedParserState (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (cachedParser cached)
+                      pstCached <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) (cachedParser cached)
+                      let tcCached = mergeCachedTCState (lsBaseTC st) tcDelta
                       let stmts = cachedTypedStmts cached
                       return (Just (pstCached, tcCached, stmts))
                     else return Nothing
@@ -1937,7 +1938,7 @@ writeCacheForDoc st uri doc = do
         Nothing -> return ()
         Just compilerHash -> do
           mSourceMeta <- getFileMeta absPath
-          cachedParserState <- toCachedParserStateNoMorph (dsParser doc)
+          cachedParserState <- toCachedParserStateDelta (lsBaseParser st) (dsParser doc)
           let sourceBytes = encodeUtf8 (dsText doc)
               sourceDigest = hash sourceBytes
               fallbackSourceSize = fromIntegral (BS.length sourceBytes)
@@ -1954,7 +1955,7 @@ writeCacheForDoc st uri doc = do
                 , cachedStmts = dsStmts doc
                 , cachedTypedStmts = dsStmts doc
                 , cachedParser = cachedParserState
-                , cachedTC = toCachedTCState (dsTC doc)
+                , cachedTC = toCachedTCStateDelta (lsBaseTC st) (dsTC doc)
                 }
           saveCachedModule cachePath cachedModule
 
@@ -2978,7 +2979,7 @@ loadDefsForFile st path = do
   mCached <- loadCachedModule cachePath
   case mCached of
     Just cached -> do
-      pst <- fromCachedParserState (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (cachedParser cached)
+      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) (cachedParser cached)
       let stmts = cachedStmts cached
           defSpans =
             if isStdlib
