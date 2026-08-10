@@ -51,7 +51,10 @@ import System.Directory (doesFileExist, listDirectory, doesDirectoryExist)
 import System.Environment (getExecutablePath)
 import System.FilePath (takeDirectory, takeExtension, (</>), normalise, addTrailingPathSeparator)
 import System.IO (hPutStrLn, stderr)
+import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
+import Control.Exception (finally)
+import Data.Int (Int32)
 
 import Language.LSP.Server
 import Language.LSP.Protocol.Types
@@ -108,6 +111,16 @@ data LspState = LspState
   , lsDocs :: Map.Map Uri DocState
     -- | Workspace definition index for cross-file go-to-definition.
   , lsDefIndex :: Map.Map Identifier Location
+    -- | Versioned document-analysis workers, keyed by URI.
+  , lsAnalysisJobs :: Map.Map Uri AnalysisJob
+    -- | Monotonic identifier used to prevent stale-worker ABA races.
+  , lsNextAnalysisJob :: !Int
+  }
+
+-- | A cancellable document-analysis worker.
+data AnalysisJob = AnalysisJob
+  { ajId :: !Int
+  , ajThread :: !ThreadId
   }
 
 -- | Information about a bound variable with its scope.
@@ -303,6 +316,8 @@ initState = do
     , lsLatestText = Map.empty
     , lsDocs = Map.empty
     , lsDefIndex = Map.empty
+    , lsAnalysisJobs = Map.empty
+    , lsNextAnalysisJob = 0
     }
 
 -- | Handlers
@@ -310,16 +325,18 @@ onDidOpen :: TNotificationMessage 'Method_TextDocumentDidOpen -> LspM Config ()
 onDidOpen msg = do
   let doc = msg ^. L.params . L.textDocument
       uri = doc ^. L.uri
+      version = doc ^. L.version
       text = doc ^. L.text
   withState $ \s ->
     return (s { lsLatestText = Map.insert uri text (lsLatestText s) }, ())
-  processDocument uri text True
+  scheduleDocumentAnalysis uri text (Just version) True False
 
 onDidChange :: TNotificationMessage 'Method_TextDocumentDidChange -> LspM Config ()
 onDidChange msg = do
   st <- readState
   let params = msg ^. L.params
       uri = params ^. L.textDocument . L.uri
+      version = params ^. L.textDocument . L.version
       changes = params ^. L.contentChanges
       mOld = lookupLatestTextByUri uri st
   oldText <- case mOld of
@@ -328,19 +345,21 @@ onDidChange msg = do
   let newText = applyContentChanges oldText changes
   withState $ \s ->
     return (s { lsLatestText = Map.insert uri newText (lsLatestText s) }, ())
-  processDocument uri newText True
+  scheduleDocumentAnalysis uri newText (Just version) True True
 
 onDidClose :: TNotificationMessage 'Method_TextDocumentDidClose -> LspM Config ()
 onDidClose msg = do
   let uri = msg ^. L.params . L.textDocument . L.uri
-  withState $ \s ->
+  mWorker <- withState $ \s ->
     return
       ( s
           { lsDocs = Map.delete uri (lsDocs s)
           , lsLatestText = Map.delete uri (lsLatestText s)
+          , lsAnalysisJobs = Map.delete uri (lsAnalysisJobs s)
           }
-      , ()
+      , ajThread <$> Map.lookup uri (lsAnalysisJobs s)
       )
+  liftIO (mapM_ killThread mWorker)
 
 onDidSave :: TNotificationMessage 'Method_TextDocumentDidSave -> LspM Config ()
 onDidSave msg = do
@@ -1675,33 +1694,74 @@ offsetsAtRange txt startPos endPos
     utf16Width c =
       if ord c > 0xFFFF then 2 else 1
 
+-- | Delay applied to edit-triggered analysis so bursts collapse to one job.
+analysisDebounceMicros :: Int
+analysisDebounceMicros = 50000
+
+-- | Start a versioned document-analysis worker and cancel its predecessor.
+scheduleDocumentAnalysis :: Uri -> Text -> Maybe Int32 -> Bool -> Bool -> LspM Config ()
+scheduleDocumentAnalysis uri text version publish debounce = do
+  env <- getLspEnv
+  Config var <- getConfig
+  oldWorker <- liftIO $ modifyMVar var $ \st -> do
+    let jobId = lsNextAnalysisJob st
+        oldThread = ajThread <$> Map.lookup uri (lsAnalysisJobs st)
+        worker = do
+          when debounce (threadDelay analysisDebounceMicros)
+          runLspT env (processDocument jobId uri text version publish)
+    thread <- forkIO (worker `finally` clearAnalysisJob var uri jobId)
+    let job = AnalysisJob jobId thread
+    return
+      ( st
+          { lsAnalysisJobs = Map.insert uri job (lsAnalysisJobs st)
+          , lsNextAnalysisJob = jobId + 1
+          }
+      , oldThread
+      )
+  liftIO (mapM_ killThread oldWorker)
+
+-- | Remove a completed worker without deleting a newer replacement.
+clearAnalysisJob :: MVar LspState -> Uri -> Int -> IO ()
+clearAnalysisJob var uri jobId =
+  modifyMVar var $ \st ->
+    let jobs = lsAnalysisJobs st
+    in case Map.lookup uri jobs of
+         Just job | ajId job == jobId ->
+           return (st { lsAnalysisJobs = Map.delete uri jobs }, ())
+         _ -> return (st, ())
+
 -- | Parse/typecheck a document and optionally publish diagnostics.
 --
 -- This is the entry point for document change handling. It replaces the
 -- cached 'DocState' with the newly analyzed one and merges definition
 -- spans into the workspace index.
-processDocument :: Uri -> Text -> Bool -> LspM Config ()
-processDocument uri text publish = do
+processDocument :: Int -> Uri -> Text -> Maybe Int32 -> Bool -> LspM Config ()
+processDocument jobId uri text version publish = do
   st <- readState
-  (doc, diags) <- liftIO (analyzeDocument st uri text)
-  stNow <- readState
-  let stale =
-        case lookupLatestTextByUri uri stNow of
-          Just latest -> latest /= text
-          Nothing -> False
-  if stale
+  let current = maybe False ((== jobId) . ajId) (Map.lookup uri (lsAnalysisJobs st))
+  if not current
     then return ()
     else do
-      when publish $ do
+      (doc, diags) <- liftIO (analyzeDocument st uri text)
+      accepted <- withState $ \s ->
+        let stillCurrent = maybe False ((== jobId) . ajId) (Map.lookup uri (lsAnalysisJobs s))
+            textCurrent = lookupLatestTextByUri uri s == Just text
+        in if stillCurrent && textCurrent
+             then
+               let defsForDoc = defLocationsForUri uri (dsDefSpans doc)
+                   merged = Map.union (lsDefIndex s) defsForDoc
+               in return
+                    ( s
+                        { lsDocs = Map.insert uri doc (lsDocs s)
+                        , lsDefIndex = merged
+                        }
+                    , True
+                    )
+             else return (s, False)
+      when (accepted && publish) $ do
         let bySource = partitionBySource diags
             bySource' = Map.insertWith (<>) (Just "kip") mempty bySource
-        publishDiagnostics 100 (toNormalizedUri uri) Nothing bySource'
-      withState $ \s ->
-        let defsForDoc = defLocationsForUri uri (dsDefSpans doc)
-            merged = Map.union (lsDefIndex s) defsForDoc
-        in return (s { lsDocs = Map.insert uri doc (lsDocs s)
-                     , lsDefIndex = merged
-                     }, ())
+        publishDiagnostics 100 (toNormalizedUri uri) version bySource'
 
 -- | Analyze a document and produce a fresh 'DocState'.
 --
