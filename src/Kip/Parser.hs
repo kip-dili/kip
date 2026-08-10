@@ -4222,7 +4222,9 @@ dropScrutinee allowScrutinee argNames vars =
 -- | Strip nested block comments from source text.
 removeComments :: Text -- ^ Raw source text.
                -> Text -- ^ Source without comments.
-removeComments = TL.toStrict . TB.toLazyText . go 0
+removeComments input
+  | not ("(*" `T.isInfixOf` input) = input
+  | otherwise = TL.toStrict (TB.toLazyText (go 0 input))
   where
     -- | Recursive comment stripper with nesting depth.
     go :: Int -- ^ Current nesting depth.
