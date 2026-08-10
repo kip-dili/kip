@@ -1966,6 +1966,12 @@ parseExpWithCtx' useCtx allowMatch =
                   let argNames = [scrutName]
                   pats <- mapM expToPatArg patArgs
                   let pat = PCtor (dropCondSuffixName fnExp base, annFromExp fnExp) pats
+                  case scrutExp of
+                    Var {} -> do
+                      scrutPat <- expToPatArg scrutExp
+                      rejectRepeatedPatternBinders
+                        (PCtor (dropCondSuffixName fnExp base, annFromExp fnExp) (scrutPat : pats))
+                    _ -> rejectRepeatedPatternBinders pat
                   lexeme (char ',')
                   let patVarNames = extractPatVars pat
                   body <- withPatVars patVarNames (parseExpWithCtx' useCtx allowMatch)
@@ -2017,7 +2023,7 @@ parseExpWithCtx' useCtx allowMatch =
                      -> KipParser (Pat Ann) -- ^ Parsed pattern.
     parsePatternCont allowScrutinee argNames =
       (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
-      (parseExpAny >>= expToPat allowScrutinee argNames)
+      (parseExpAny >>= checkedExpToPat allowScrutinee argNames)
     -- | Infer the scrutinee expression and name from an explicit scrutinee.
     inferScrutineeFromExp :: Exp Ann -- ^ Scrutinee expression.
                           -> KipParser (Exp Ann, Identifier) -- ^ Scrutinee and identifier.
@@ -3010,7 +3016,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
           case mClause of
             Just clause -> return clause
             Nothing -> do
-              pat <- expToPat allowScrutinee argNames patExp
+              pat <- checkedExpToPat allowScrutinee argNames patExp
               -- Extract pattern variables from the converted pattern
               let patVarNames = extractPatVars pat
               lexeme (char ',')
@@ -3050,7 +3056,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               clause <- try $ do
                 lexeme (char ',')
                 patExp <- parsePatExp
-                pat <- expToPat allowScrutinee argNames patExp
+                pat <- checkedExpToPat allowScrutinee argNames patExp
                 lexeme (char ',')
                 let patVarNames = extractPatVars pat
                 body <- withPatVars patVarNames parseExp
@@ -3119,7 +3125,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                  -> KipParser (Pat Ann) -- ^ Parsed pattern.
     parsePattern allowScrutinee argNames =
       (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
-      try (parsePatExp >>= expToPat allowScrutinee argNames)
+      try (parsePatExp >>= checkedExpToPat allowScrutinee argNames)
     -- | Look ahead for a binding expression start.
     bindStartLookahead :: KipParser Bool -- ^ True when a binding start is found.
     bindStartLookahead = do
@@ -3507,13 +3513,43 @@ extractPatVarsWithSpans pat =
     PCharLit _ _ -> []
     PListLit pats -> concatMap extractPatVarsWithSpans pats
 
+-- | Convert an expression to a pattern and reject duplicate binders.
+checkedExpToPat :: Bool -- ^ Whether to allow scrutinee expressions.
+                -> [Identifier] -- ^ Bound pattern names.
+                -> Exp Ann -- ^ Expression to convert.
+                -> KipParser (Pat Ann) -- ^ Validated pattern.
+checkedExpToPat allowScrutinee argNames expItem = do
+  pat <- expToPat allowScrutinee argNames expItem
+  rejectRepeatedPatternBinders pat
+  return pat
+
+-- | Reject a pattern that binds the same identifier more than once.
+rejectRepeatedPatternBinders :: Pat Ann -> KipParser ()
+rejectRepeatedPatternBinders pat =
+  case collect Set.empty pat of
+    Left (ident, sp) -> customFailure (ErrPatternBinderRepeated ident sp)
+    Right _ -> return ()
+  where
+    collect seen patternItem =
+      case patternItem of
+        PWildcard _ -> Right seen
+        PVar ident ann
+          | ident `Set.member` seen -> Left (ident, annSpan ann)
+          | otherwise -> Right (Set.insert ident seen)
+        PCtor _ pats -> foldM collect seen pats
+        PIntLit _ _ -> Right seen
+        PFloatLit _ _ -> Right seen
+        PStrLit _ _ -> Right seen
+        PCharLit _ _ -> Right seen
+        PListLit pats -> foldM collect seen pats
+
 -- | Parse a match expression with optional context filtering.
 parseMatchExpr :: Bool -- ^ Whether to use context when resolving names.
                -> KipParser (Exp Ann) -- ^ Parsed match expression.
 parseMatchExpr useCtx = do
   (patExp, scrutVar, scrutName) <- parseFirstPattern
   let argNames = [scrutName]
-  pat <- expToPat True argNames patExp
+  pat <- checkedExpToPat True argNames patExp
   let patVarNames = extractPatVars pat
   lexeme (char ',')
   -- Add pattern variables to context when parsing body
@@ -3550,7 +3586,7 @@ parseMatchExpr useCtx = do
           patExp <- parseWildcardOrExp
           pat <- case patExp of
                    Nothing -> return (PWildcard (Nom, NoSpan))
-                   Just e -> expToPat False argNames e
+                   Just e -> checkedExpToPat False argNames e
           let clausePatVars = extractPatVars pat
           lexeme (char ',')
           body <- withPatVars clausePatVars (parseExpWithCtx useCtx)
@@ -3567,7 +3603,7 @@ parseMatchExpr useCtx = do
                  -> KipParser (Pat Ann) -- ^ Parsed pattern.
     parsePattern allowScrutinee argNames =
       (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
-      (parseExpAny >>= expToPat allowScrutinee argNames)
+      (parseExpAny >>= checkedExpToPat allowScrutinee argNames)
     -- | Infer the scrutinee expression and its name.
     inferScrutinee :: Exp Ann -- ^ Pattern expression.
                    -> KipParser (Exp Ann, Identifier) -- ^ Scrutinee and name.
@@ -4437,13 +4473,7 @@ parseFromFile st input = do
   let stripped = removeComments input
   (res, st') <- runStateT (runParserT p "Kip" stripped) st
   case res of
-    Right stmts ->
-      case findRepeatedPatternBinderText (parserFilePath st) stripped of
-        Just (ident, sp) ->
-          case runParser (customFailure (ErrPatternBinderRepeated ident sp)) "Kip" stripped of
-            Left err' -> return (Left err')
-            Right _ -> return (Right (stmts, st'))
-        Nothing -> return (Right (stmts, st'))
+    Right stmts -> return (Right (stmts, st'))
     Left err ->
       -- When a repeated-arg pattern slips into a branch that produces a
       -- generic syntax error, we prefer a targeted custom error so tests
