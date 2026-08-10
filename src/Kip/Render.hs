@@ -1248,13 +1248,13 @@ renderVerbAsImperative cache fsm surface lemma candidates = do
     if null positiveImperatives
       then return Nothing
       else do
-        formsByAnalysis <- mapM (\an -> map T.unpack <$> downsCached cache fsm (T.pack an)) positiveImperatives
+        formsByAnalysis <- map (map T.unpack) <$> downsCachedBatch cache fsm (map T.pack positiveImperatives)
         return (chooseShortest (concat formsByAnalysis))
   fromDerivedImperatives <-
     if null derivedImperativeTags
       then return Nothing
       else do
-        formsByAnalysis <- mapM (\an -> map T.unpack <$> downsCached cache fsm (T.pack an)) derivedImperativeTags
+        formsByAnalysis <- map (map T.unpack) <$> downsCachedBatch cache fsm (map T.pack derivedImperativeTags)
         return (chooseShortest (concat formsByAnalysis))
   case fromPositiveImperatives of
     Just surfaceForm -> return surfaceForm
