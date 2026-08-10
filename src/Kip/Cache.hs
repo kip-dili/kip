@@ -34,7 +34,7 @@ import qualified Data.HashTable.IO as HT
 
 import Kip.AST
 import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
-import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncNamesByArity, buildFuncSigsByArity, buildFuncRetByName, emptyTCState)
+import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncSigsByArity, buildFuncRetByName, emptyTCState)
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import Kip.Render (RenderCache, renderExpValue)
@@ -358,15 +358,18 @@ mergeCachedTCState current delta =
   let mergedFuncs = Map.unionWith (++) (tcFuncs delta) (tcFuncs current)
       mergedSigs = Map.unionWith (++) (tcFuncSigs delta) (tcFuncSigs current)
       mergedRets = Map.union (tcFuncSigRets delta) (tcFuncSigRets current)
+      mergedNamesByArity = HM.unionWith Set.union (tcFuncNamesByArity delta) (tcFuncNamesByArity current)
+      mergedSigsByArity = HM.unionWith (++) (tcFuncSigsByArity delta) (tcFuncSigsByArity current)
+      mergedRetByName = HM.unionWith Map.union (tcFuncRetByName delta) (tcFuncRetByName current)
       outputMode = tcOutputMode current
   in emptyTCState
       { tcCtx = Set.union (tcCtx current) (tcCtx delta)
       , tcFuncs = mergedFuncs
-      , tcFuncNamesByArity = buildFuncNamesByArity mergedFuncs
+      , tcFuncNamesByArity = mergedNamesByArity
       , tcFuncSigs = mergedSigs
-      , tcFuncSigsByArity = buildFuncSigsByArity mergedSigs
+      , tcFuncSigsByArity = mergedSigsByArity
       , tcFuncSigRets = mergedRets
-      , tcFuncRetByName = buildFuncRetByName mergedRets
+      , tcFuncRetByName = mergedRetByName
       , tcFuncEffectsByArity = HM.union (tcFuncEffectsByArity delta) (tcFuncEffectsByArity current)
       , tcVarTys = tcVarTys delta ++ tcVarTys current
       , tcVals = Map.union (tcVals delta) (tcVals current)
