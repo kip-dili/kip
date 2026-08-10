@@ -1581,7 +1581,7 @@ upsCachedBatch [] = return []
 upsCachedBatch surfaces = do
   MkParserState{fsm, parserUpsCache} <- getP
   cached <- liftIO $ mapM (HT.lookup parserUpsCache) surfaces
-  let missing = [s | (s, Nothing) <- zip surfaces cached]
+  let missing = ordNub [s | (s, Nothing) <- zip surfaces cached]
   fetched <-
     if null missing
       then return []
@@ -1613,7 +1613,7 @@ downsCachedBatch [] = return []
 downsCachedBatch stems = do
   MkParserState{fsm, parserDownsCache} <- getP
   cached <- liftIO (mapM (HT.lookup parserDownsCache) stems)
-  let missing = [s | (s, Nothing) <- zip stems cached]
+  let missing = ordNub [s | (s, Nothing) <- zip stems cached]
   fetched <-
     if null missing
       then return []

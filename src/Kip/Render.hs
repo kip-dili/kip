@@ -37,6 +37,7 @@ import Data.List (intercalate, maximumBy, minimumBy, find, isInfixOf, isSuffixOf
 import qualified Data.Bifunctor as B
 import Data.Maybe (fromMaybe, catMaybes, listToMaybe, maybeToList)
 import qualified Data.Map.Strict as M
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.HashTable.IO as HT
@@ -89,7 +90,7 @@ upsCachedBatch :: RenderCache -- ^ Render cache.
 upsCachedBatch _ _ [] = return []
 upsCachedBatch RenderCache{rcUpsCache} fsm words = do
   cached <- mapM (HT.lookup rcUpsCache) words
-  let missing = [w | (w, Nothing) <- zip words cached]
+  let missing = stableNub [w | (w, Nothing) <- zip words cached]
   fetched <- if null missing then return [] else upsBatch fsm missing
   let fetchedMap = M.fromList (zip missing fetched)
   mapM_ (uncurry (HT.insert rcUpsCache)) (zip missing fetched)
@@ -119,12 +120,21 @@ downsCachedBatch :: RenderCache -- ^ Render cache.
 downsCachedBatch _ _ [] = return []
 downsCachedBatch RenderCache{rcDownsCache} fsm stems = do
   cached <- mapM (HT.lookup rcDownsCache) stems
-  let missing = [s | (s, Nothing) <- zip stems cached]
+  let missing = stableNub [s | (s, Nothing) <- zip stems cached]
   fetched <- if null missing then return [] else downsBatch fsm missing
   let fetchedMap = M.fromList (zip missing fetched)
   mapM_ (uncurry (HT.insert rcDownsCache)) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve stems cached)
+
+-- | Remove duplicates while preserving first-occurrence order.
+stableNub :: Ord a => [a] -> [a]
+stableNub = go Set.empty
+  where
+    go _ [] = []
+    go seen (x:xs)
+      | x `Set.member` seen = go seen xs
+      | otherwise = x : go (Set.insert x seen) xs
 
 -- | Render a dotted identifier to a single dash-separated string.
 prettyIdent :: Identifier -- ^ Identifier to render.
