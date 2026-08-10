@@ -102,7 +102,6 @@ data CachedModule = CachedModule
   , cachedTypedStmts :: ![Stmt Ann] -- ^ Type-checked statements.
   , cachedParser  :: !CachedParserState -- ^ Parser state snapshot.
   , cachedTC      :: !CachedTCState -- ^ Type checker state snapshot.
-  , cachedEval    :: !CachedEvalState -- ^ Evaluator state snapshot.
   } deriving (Generic)
 
 instance Binary CachedModule

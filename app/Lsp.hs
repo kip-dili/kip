@@ -65,7 +65,7 @@ import Crypto.Hash.SHA256 (hash)
 
 import Kip.AST
 import Kip.Cache
-import Kip.Eval (EvalState, emptyEvalState)
+import Kip.Eval (EvalState)
 import Kip.Parser
 import Kip.Render
 import qualified Kip.Render as Render
@@ -1891,7 +1891,6 @@ writeCacheForDoc st uri doc = do
                 , cachedTypedStmts = dsStmts doc
                 , cachedParser = cachedParserState
                 , cachedTC = toCachedTCState (dsTC doc)
-                , cachedEval = toCachedEvalState emptyEvalState
                 }
           saveCachedModule cachePath cachedModule
 

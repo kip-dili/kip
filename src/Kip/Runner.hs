@@ -928,7 +928,6 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                             , cachedTypedStmts = typedStmts
                             , cachedParser = cachedParserState
                             , cachedTC = toCachedTCState tcSt'
-                            , cachedEval = toCachedEvalState evalSt'
                             }
                       liftIO (saveCachedModule cachePath cachedModule)
                   return (pstFinal, tcSt', evalSt', loaded')

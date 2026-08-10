@@ -2049,7 +2049,6 @@ main = do
                                 , cachedTypedStmts = typedStmts
                                 , cachedParser = cachedParserState
                                 , cachedTC = toCachedTCState tcSt'
-                                , cachedEval = toCachedEvalState evalSt'
                                 }
                           liftIO (saveCachedModule cachePath cachedModule)
 
