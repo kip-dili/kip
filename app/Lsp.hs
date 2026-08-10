@@ -111,6 +111,8 @@ data LspState = LspState
   , lsDocs :: Map.Map Uri DocState
     -- | Workspace definition index for cross-file go-to-definition.
   , lsDefIndex :: Map.Map Identifier Location
+    -- | Whether all workspace roots have been scanned into 'lsDefIndex'.
+  , lsDefIndexComplete :: !Bool
     -- | Versioned document-analysis workers, keyed by URI.
   , lsAnalysisJobs :: Map.Map Uri AnalysisJob
     -- | Monotonic identifier used to prevent stale-worker ABA races.
@@ -269,7 +271,8 @@ onSetTrace :: TNotificationMessage 'Method_SetTrace -> LspM Config ()
 onSetTrace _ = return ()
 
 onDidChangeWatchedFiles :: TNotificationMessage 'Method_WorkspaceDidChangeWatchedFiles -> LspM Config ()
-onDidChangeWatchedFiles _ = return ()
+onDidChangeWatchedFiles _ =
+  withState $ \s -> return (s { lsDefIndexComplete = False }, ())
 
 onCancelRequest _ = return ()
 
@@ -316,6 +319,7 @@ initState = do
     , lsLatestText = Map.empty
     , lsDocs = Map.empty
     , lsDefIndex = Map.empty
+    , lsDefIndexComplete = False
     , lsAnalysisJobs = Map.empty
     , lsNextAnalysisJob = 0
     }
@@ -1266,8 +1270,7 @@ onDefinition req respond = do
                                 Just loc -> respond (Right (InL (Definition (InR [loc]))))
                                 Nothing -> do
                                   let currentDefs = defLocationsForUri uri (dsDefSpans doc)
-                                  idx <- liftIO (buildDefinitionIndex st uri currentDefs)
-                                  withState $ \s -> return (s { lsDefIndex = idx }, ())
+                                  idx <- ensureDefinitionIndex st uri currentDefs
                                   case lookupDefLocPreferExternal uri keysCtor idx of
                                     Nothing -> respondEmptyOrTypeFallback
                                     Just loc -> respond (Right (InL (Definition (InR [loc]))))
@@ -1285,8 +1288,7 @@ onDefinition req respond = do
                             Just loc -> respond (Right (InL (Definition (InR [loc]))))
                             Nothing -> do
                               let currentDefs = defLocationsForUri uri (dsDefSpans doc)
-                              idx <- liftIO (buildDefinitionIndex st uri currentDefs)
-                              withState $ \s -> return (s { lsDefIndex = idx }, ())
+                              idx <- ensureDefinitionIndex st uri currentDefs
                               case lookupDefLocPreferExternal uri keysCtor idx of
                                 Nothing -> respondEmptyOrTypeFallback
                                 Just loc -> respond (Right (InL (Definition (InR [loc]))))
@@ -1333,8 +1335,7 @@ onDefinition req respond = do
                             Just loc -> respond (Right (InL (Definition (InR [loc]))))
                             Nothing -> do
                               let currentDefs = defLocationsForUri uri (dsDefSpans doc)
-                              idx <- liftIO (buildDefinitionIndex st uri currentDefs)
-                              withState $ \s -> return (s { lsDefIndex = idx }, ())
+                              idx <- ensureDefinitionIndex st uri currentDefs
                               case lookupDefLocPreferExternal uri resolvedKeys idx of
                                 Nothing -> respondEmptyOrTypeFallback
                                 Just loc -> respond (Right (InL (Definition (InR [loc]))))
@@ -2874,6 +2875,27 @@ defLocationFromSig sig tcSt =
   case Map.lookup sig (tcFuncSigLocs tcSt) of
     Just (path, sp) -> Just (Location (filePathToUri path) (spanToRange sp))
     Nothing -> Nothing
+
+-- | Populate the workspace definition index at most once between invalidations.
+-- A completed index also represents negative lookups, so an unknown identifier
+-- does not trigger another recursive workspace scan on every request.
+ensureDefinitionIndex :: LspState -> Uri -> Map.Map Identifier Location -> LspM Config (Map.Map Identifier Location)
+ensureDefinitionIndex st uri currentDefs
+  | lsDefIndexComplete st = return (lsDefIndex st)
+  | otherwise = do
+      scanned <- liftIO (buildDefinitionIndex st uri currentDefs)
+      withState $ \current ->
+        if lsDefIndexComplete current
+          then return (current, lsDefIndex current)
+          else
+            let merged = Map.union (lsDefIndex current) scanned
+            in return
+                 ( current
+                     { lsDefIndex = merged
+                     , lsDefIndexComplete = True
+                     }
+                 , merged
+                 )
 
 -- | Build a definition index for the workspace and standard library.
 --
