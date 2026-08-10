@@ -1952,7 +1952,6 @@ writeCacheForDoc st uri doc = do
                 }
           let cachedModule = CachedModule
                 { metadata = meta
-                , cachedStmts = dsStmts doc
                 , cachedTypedStmts = dsStmts doc
                 , cachedParser = cachedParserState
                 , cachedTC = toCachedTCStateDelta (lsBaseTC st) (dsTC doc)
@@ -2980,7 +2979,7 @@ loadDefsForFile st path = do
   case mCached of
     Just cached -> do
       pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) (cachedParser cached)
-      let stmts = cachedStmts cached
+      let stmts = cachedTypedStmts cached
           defSpans =
             if isStdlib
               then defSpansFromParserIncludeBase stmts pst

@@ -100,8 +100,7 @@ instance Binary CacheMetadata
 -- | Fully cached module payload.
 data CachedModule = CachedModule
   { metadata      :: !CacheMetadata -- ^ Cache validation metadata.
-  , cachedStmts   :: ![Stmt Ann] -- ^ Parsed statements.
-  , cachedTypedStmts :: ![Stmt Ann] -- ^ Type-checked statements.
+  , cachedTypedStmts :: ![Stmt Ann] -- ^ Type-checked statements, retaining source spans for indexing.
   , cachedParser  :: !CachedParserState -- ^ Parser state snapshot.
   , cachedTC      :: !CachedTCState -- ^ Type checker state snapshot.
   } deriving (Generic)

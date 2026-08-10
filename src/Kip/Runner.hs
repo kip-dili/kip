@@ -932,7 +932,6 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                             }
                           cachedModule = CachedModule
                             { metadata = meta
-                            , cachedStmts = stmts
                             , cachedTypedStmts = typedStmts
                             , cachedParser = cachedParserState
                             , cachedTC = toCachedTCStateDelta tcSt tcSt'

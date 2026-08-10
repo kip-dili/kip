@@ -2052,7 +2052,6 @@ main = do
                                 }
                               cachedModule = CachedModule
                                 { metadata = meta
-                                , cachedStmts = stmts
                                 , cachedTypedStmts = typedStmts
                                 , cachedParser = cachedParserState
                                 , cachedTC = toCachedTCStateDelta tcSt tcSt'
