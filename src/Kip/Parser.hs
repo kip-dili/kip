@@ -320,13 +320,19 @@ data ParserState =
     { fsm :: FSM
     , parserCtx :: !(Set.Set Identifier)
     , parserCtors :: ![Identifier]
+    , parserCtorSet :: !(Set.Set Identifier)
     , parserTyParams :: ![Identifier]
+    , parserTyParamSet :: !(Set.Set Identifier)
     , parserTyCons :: ![(Identifier, Int)]
+    , parserTyConsMap :: !(M.Map Identifier Int)
     -- | Cached type-constructor names to avoid rebuilding @map fst parserTyCons@
     -- on hot lookup paths.
     , parserTyConsNames :: ![Identifier]
+    , parserTyConsNameSet :: !(Set.Set Identifier)
     , parserTyMods :: ![(Identifier, [Identifier])]
     , parserPrimTypes :: ![Identifier]
+    , parserPrimTypeSet :: !(Set.Set Identifier)
+    , parserTypeScopeSet :: !(Set.Set Identifier)
     , parserFuncArities :: !(M.Map Identifier (Set.Set Int))
     -- | Secondary index used by hot-path overload checks.
     --
@@ -421,8 +427,8 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  let !tyConsNames = map fst tyCons
-  MkParserState fsm' ctx ctors tyParams tyCons tyConsNames tyMods primTypes M.empty M.empty M.empty mFilePath upsCache <$> HT.new
+  downsCache <- HT.new
+  return (newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache downsCache)
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -430,8 +436,8 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared ups cache.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
-newParserStateWithCaches fsm' =
-  MkParserState fsm' Set.empty [] [] [] [] [] [] M.empty M.empty M.empty
+newParserStateWithCaches fsm' mFilePath upsCache downsCache =
+  newParserStateWithCtxAndCaches fsm' Set.empty [] [] [] [] [] M.empty M.empty mFilePath upsCache downsCache
 
 -- | Create a parser state with context and shared caches.
 --
@@ -451,20 +457,37 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> MorphCache -- ^ Shared ups cache.
                                -> MorphCache -- ^ Shared downs cache.
                                -> ParserState -- ^ Parser state.
-newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities =
-  let !tyConsNames = map fst tyCons
+newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities defSpans mFilePath upsCache downsCache =
+  let !ctorSet = Set.fromList ctors
+      !tyParamSet = Set.fromList tyParams
+      !tyConsMap = M.fromList tyCons
+      !tyConsNames = map fst tyCons
+      !tyConsNameSet = M.keysSet tyConsMap
+      !primTypeSet = Set.fromList primTypes
+      !typeScopeSet = Set.unions [tyParamSet, tyConsNameSet, primTypeSet]
       !arityByName = funcAritiesNameIndex funcArities
   in MkParserState
-    fsm'
-    ctx
-    ctors
-    tyParams
-    tyCons
-    tyConsNames
-    tyMods
-    primTypes
-    funcArities
-    arityByName
+      { fsm = fsm'
+      , parserCtx = ctx
+      , parserCtors = ctors
+      , parserCtorSet = ctorSet
+      , parserTyParams = tyParams
+      , parserTyParamSet = tyParamSet
+      , parserTyCons = tyCons
+      , parserTyConsMap = tyConsMap
+      , parserTyConsNames = tyConsNames
+      , parserTyConsNameSet = tyConsNameSet
+      , parserTyMods = tyMods
+      , parserPrimTypes = primTypes
+      , parserPrimTypeSet = primTypeSet
+      , parserTypeScopeSet = typeScopeSet
+      , parserFuncArities = funcArities
+      , parserFuncAritiesByName = arityByName
+      , parserDefSpans = defSpans
+      , parserFilePath = mFilePath
+      , parserUpsCache = upsCache
+      , parserDownsCache = downsCache
+      }
 
 -- | Get the current parser state.
 getP :: KipParser ParserState -- ^ Current parser state.
@@ -1310,25 +1333,24 @@ Current approach: Try exact match, then morphology with base-form matching.
 resolveTypeCandidatePreferCtx :: Identifier -- ^ Surface type identifier.
                               -> KipParser (Identifier, Case) -- ^ Resolved type identifier and case.
 resolveTypeCandidatePreferCtx ident = do
-  MkParserState{parserTyConsNames, parserTyParams, parserPrimTypes} <- getP
-  let tyNames = parserTyConsNames ++ parserTyParams ++ parserPrimTypes
+  MkParserState{parserTypeScopeSet} <- getP
   let normalizeCandidate (name, cas) = do
         base <- normalizeTypeHead name
-        if base `elem` tyNames
+        if base `Set.member` parserTypeScopeSet
           then return (base, cas)
           else return (name, cas)
   case stripBareCaseSuffix ident of
-    Just (base, cas) | base `elem` tyNames -> return (base, cas)
+    Just (base, cas) | base `Set.member` parserTypeScopeSet -> return (base, cas)
     _ ->
-      if ident `elem` tyNames
+      if ident `Set.member` parserTypeScopeSet
         then return (ident, Nom)
         else do
           candidates <- estimateCandidates False ident
-          let filtered = filter (\(ident', _) -> ident' `elem` tyNames) candidates
+          let filtered = filter (\(ident', _) -> ident' `Set.member` parserTypeScopeSet) candidates
           case preferInflected filtered of
             x:_ -> normalizeCandidate x
             [] -> do
-              mMatch <- matchCtxByInflection (Set.fromList tyNames) ident candidates
+              mMatch <- matchCtxByInflection parserTypeScopeSet ident candidates
               case mMatch of
                 Just matched -> normalizeCandidate matched
                 Nothing -> resolveCandidatePreferCtx ident
@@ -1383,9 +1405,8 @@ normalizeTypeHead ident@(mods, word) =
 resolveTypeCandidateLoose :: Identifier -- ^ Surface type identifier.
                           -> KipParser (Identifier, Case) -- ^ Resolved type identifier and case.
 resolveTypeCandidateLoose ident = do
-  MkParserState{parserTyConsNames, parserTyParams, parserPrimTypes} <- getP
-  let tyNames = parserTyConsNames ++ parserTyParams ++ parserPrimTypes
-      -- Check if identifier matches a primitive type pattern
+  MkParserState{parserTypeScopeSet} <- getP
+  let -- Check if identifier matches a primitive type pattern
       isPrimType base = isIntType base || isFloatType base || isStringType base || isCharType base
   -- First try morphology analysis to extract case if present
   mCandidates <- optional (estimateCandidates False ident)
@@ -1393,7 +1414,7 @@ resolveTypeCandidateLoose ident = do
     Just candidates -> do
       -- Check if any candidate's base form is in tyNames or matches a primitive pattern
       let tyMatchesWithCase = [(base, cas) | (base, cas) <- candidates,
-                                              base `elem` tyNames || isPrimType base]
+                                              base `Set.member` parserTypeScopeSet || isPrimType base]
       case preferInflected tyMatchesWithCase of
         x:_ -> return x  -- Prefer inflected forms
         [] -> case tyMatchesWithCase of
@@ -1812,12 +1833,9 @@ parseExpWithCtx' useCtx allowMatch =
           (rawIdent, sp'') <- withSpan identifierNotKeyword
           candidates <- estimateCandidates False rawIdent
           let ann'' = mkAnn (pickCase False candidates) sp''
-          MkParserState{parserPrimTypes, parserTyConsNames} <- getP
-          let tyNames = parserTyConsNames
-              primSet = Set.fromList parserPrimTypes
-              tySet = Set.fromList tyNames
-              isPrim ident = ident `Set.member` primSet
-              knownCandidate = find (`Set.member` tySet) (map fst candidates)
+          MkParserState{parserPrimTypeSet, parserTyConsNameSet} <- getP
+          let isPrim ident = ident `Set.member` parserPrimTypeSet
+              knownCandidate = find (`Set.member` parserTyConsNameSet) (map fst candidates)
               resolvedName = fromMaybe rawIdent knownCandidate
           case resolvedName of
             ident
@@ -1825,7 +1843,7 @@ parseExpWithCtx' useCtx allowMatch =
               | isPrim ident && isFloatType ident -> return (TyFloat ann'')
               | isPrim ident && isStringType ident -> return (TyString ann'')
               | isPrim ident && isCharType ident -> return (TyChar ann'')
-              | ident `elem` tyNames -> return (TyInd ann'' ident)
+              | ident `Set.member` parserTyConsNameSet -> return (TyInd ann'' ident)
               | otherwise -> return (TyInd ann'' ident)
     -- | Parse a let expression with "dersek".
     letExp :: KipParser (Exp Ann) -- ^ Parsed let expression.
@@ -1873,12 +1891,9 @@ parseExpWithCtx' useCtx allowMatch =
           (rawIdent, sp') <- withSpan identifierNotKeyword
           candidates <- estimateCandidates False rawIdent
           let ann' = mkAnn (pickCase False candidates) sp'
-          MkParserState{parserPrimTypes, parserTyConsNames} <- getP
-          let tyNames = parserTyConsNames
-              primSet = Set.fromList parserPrimTypes
-              tySet = Set.fromList tyNames
-              isPrim ident = ident `Set.member` primSet
-              knownCandidate = find (`Set.member` tySet) (map fst candidates)
+          MkParserState{parserPrimTypeSet, parserTyConsNameSet} <- getP
+          let isPrim ident = ident `Set.member` parserPrimTypeSet
+              knownCandidate = find (`Set.member` parserTyConsNameSet) (map fst candidates)
               resolvedName = fromMaybe rawIdent knownCandidate
           case resolvedName of
             ident
@@ -1886,7 +1901,7 @@ parseExpWithCtx' useCtx allowMatch =
               | isPrim ident && isFloatType ident -> return (TyFloat ann')
               | isPrim ident && isStringType ident -> return (TyString ann')
               | isPrim ident && isCharType ident -> return (TyChar ann')
-              | ident `Set.member` tySet -> return (TyInd ann' ident)
+              | ident `Set.member` parserTyConsNameSet -> return (TyInd ann' ident)
               | otherwise -> return (TyInd ann' ident)
     -- | Parse comma-separated sequence expressions.
     seqExp :: KipParser (Exp Ann) -- ^ Parsed sequence expression.
@@ -2082,12 +2097,12 @@ parseExpWithCtx' useCtx allowMatch =
               | not (null fnArgs)
               , annCase ann /= Gen
               , isJust (stripCopulaSuffix (snd name)) -> do
-                  MkParserState{parserCtx, parserCtors, parserFuncArities} <- getP
+                  MkParserState{parserCtx, parserCtorSet, parserFuncArities} <- getP
                   let localBoundIds =
                         [ ident
                         | (ident, _) <- candidates
                         , ident `Set.member` parserCtx
-                        , ident `notElem` parserCtors
+                        , ident `Set.notMember` parserCtorSet
                         , not (M.member ident parserFuncArities)
                         ]
                   if null localBoundIds
@@ -2259,9 +2274,8 @@ parseExpWithCtx' useCtx allowMatch =
                      -> Exp Ann -- ^ Candidate type expression.
                      -> KipParser (Maybe (Exp Ann)) -- ^ Casted expression if possible.
     tryApplyTypeCase x y = do
-      MkParserState{parserTyParams, parserTyConsNames, parserPrimTypes, parserCtx} <- getP
-      let tyNames = parserTyConsNames ++ parserTyParams ++ parserPrimTypes
-          preferCase :: [(Identifier, Case)] -- ^ Candidate identifiers.
+      MkParserState{parserTypeScopeSet, parserCtx} <- getP
+      let preferCase :: [(Identifier, Case)] -- ^ Candidate identifiers.
                      -> Case -- ^ Preferred case.
                      -> [(Identifier, Case)] -- ^ Filtered candidates.
           preferCase candidates cas =
@@ -2274,14 +2288,14 @@ parseExpWithCtx' useCtx allowMatch =
           let originalCase = annCase annY
               isInflected = originalCase `elem` [P3s, Acc, Gen, Dat, Loc, Abl]
           -- Check if any candidate is in context but NOT a type name (i.e., it's a function)
-          let isFuncCandidate = any (\(ident, _) -> ident `Set.member` parserCtx && ident `notElem` tyNames) candidates
+          let isFuncCandidate = any (\(ident, _) -> ident `Set.member` parserCtx && ident `Set.notMember` parserTypeScopeSet) candidates
           -- Don't apply type cast if inflected OR if it's a function candidate
           if isInflected || isFuncCandidate
             then return Nothing  -- Don't apply type casting if it could be a function call
             else do
               mResolved <- optional (resolveTypeCandidatePreferCtx name)
               case mResolved of
-                Just (ident, cas) | ident `elem` tyNames ->
+                Just (ident, cas) | ident `Set.member` parserTypeScopeSet ->
                   return $
                     case x of
                       Var annX name candX ->
@@ -2438,13 +2452,19 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       (n, nameSpan, params, _mods) <- try typeHeadParens <|> primTyInline
       recordDefSpan n nameSpan
       let paramIdents = [ident | TyVar _ ident <- params]
+          !paramSet = Set.fromList paramIdents
       lexeme (string "olsun")
       period
-      modifyP (\ps -> ps { parserCtx = Set.insert n (Set.fromList paramIdents `Set.union` parserCtx ps)
+      modifyP (\ps -> ps { parserCtx = Set.insert n (paramSet `Set.union` parserCtx ps)
                          , parserTyParams = paramIdents ++ parserTyParams ps
+                         , parserTyParamSet = paramSet `Set.union` parserTyParamSet ps
                          , parserTyCons = (n, length params) : parserTyCons ps
+                         , parserTyConsMap = M.insert n (length params) (parserTyConsMap ps)
                          , parserTyConsNames = n : parserTyConsNames ps
+                         , parserTyConsNameSet = Set.insert n (parserTyConsNameSet ps)
                          , parserPrimTypes = n : parserPrimTypes ps
+                         , parserPrimTypeSet = Set.insert n (parserPrimTypeSet ps)
+                         , parserTypeScopeSet = Set.insert n (paramSet `Set.union` parserTypeScopeSet ps)
                          })
       return (PrimType n params)
     -- | Parse inline type head for primTy, stopping before "olsun".
@@ -2537,10 +2557,15 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       recordDefSpan n nameSpan
       -- Extract parameter identifiers from TyVar nodes for parser state
       let paramIdents = map (\(TyVar _ ident) -> ident) params
-      modifyP (\ps -> ps { parserCtx = Set.insert n (Set.fromList paramIdents `Set.union` parserCtx ps)
+          !paramSet = Set.fromList paramIdents
+      modifyP (\ps -> ps { parserCtx = Set.insert n (paramSet `Set.union` parserCtx ps)
                              , parserTyParams = paramIdents ++ parserTyParams ps
+                             , parserTyParamSet = paramSet `Set.union` parserTyParamSet ps
                              , parserTyCons = (n, length params) : parserTyCons ps
+                             , parserTyConsMap = M.insert n (length params) (parserTyConsMap ps)
                              , parserTyConsNames = n : parserTyConsNames ps
+                             , parserTyConsNameSet = Set.insert n (parserTyConsNameSet ps)
+                             , parserTypeScopeSet = Set.insert n (paramSet `Set.union` parserTypeScopeSet ps)
                              , parserTyMods =
                                  case mods of
                                    [] -> parserTyMods ps
@@ -2560,8 +2585,10 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             ["Constructor '", snd ctorName, "' normalizes to '", snd normalizedCtorName,
              "' which matches type name '", snd n, "' and creates parsing ambiguity"]))
       -- Extract constructor names (now from ((Identifier, Ann), [Ty Ann]))
-      modifyP (\ps -> ps { parserCtx = Set.insert n (Set.fromList ctorNames `Set.union` parserCtx ps)
+      let !ctorSet = Set.fromList ctorNames
+      modifyP (\ps -> ps { parserCtx = Set.insert n (ctorSet `Set.union` parserCtx ps)
                          , parserCtors = ctorNames ++ parserCtors ps
+                         , parserCtorSet = ctorSet `Set.union` parserCtorSet ps
                          })
       return (NewType n params ctors)
     -- | Parse a type head (name and parameters).
@@ -2754,21 +2781,20 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
             case candidates of
               (ident, _):_ -> ident
               [] -> rawIdent
-      MkParserState{parserPrimTypes, parserTyConsNames} <- getP
-      let tyNames = parserTyConsNames
+      MkParserState{parserPrimTypeSet, parserTyConsNameSet} <- getP
       -- Check if it's a known type directly
       case candidates of
         (ident, _):_
-          | ident `elem` parserPrimTypes && isIntType ident -> return (TyInt ann)
+          | ident `Set.member` parserPrimTypeSet && isIntType ident -> return (TyInt ann)
         (ident, _):_
-          | ident `elem` parserPrimTypes && isFloatType ident -> return (TyFloat ann)
+          | ident `Set.member` parserPrimTypeSet && isFloatType ident -> return (TyFloat ann)
         (ident, _):_
-          | ident `elem` parserPrimTypes && isStringType ident -> return (TyString ann)
+          | ident `Set.member` parserPrimTypeSet && isStringType ident -> return (TyString ann)
         (ident, _):_
-          | ident `elem` parserPrimTypes && isCharType ident -> return (TyChar ann)
+          | ident `Set.member` parserPrimTypeSet && isCharType ident -> return (TyChar ann)
         _ -> do
           -- If not a known type, try extracting base form with TRmorph for P3s support
-          let tryAsTyName name = name `elem` tyNames || name `elem` parserPrimTypes
+          let tryAsTyName name = name `Set.member` parserTyConsNameSet || name `Set.member` parserPrimTypeSet
           if tryAsTyName nameForTy
             then return (TyInd ann nameForTy)
             else do
@@ -2941,15 +2967,15 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                        -> KipParser (Ty Ann) -- ^ Parsed type.
     typeFromIdentLoose rawIdent sp = do
       (name, cas) <- resolveTypeCandidateLoose rawIdent
-      MkParserState{parserPrimTypes} <- getP
+      MkParserState{parserPrimTypeSet} <- getP
       let ann = mkAnn cas sp
-      if name `elem` parserPrimTypes && isIntType name
+      if name `Set.member` parserPrimTypeSet && isIntType name
         then return (TyInt ann)
-        else if name `elem` parserPrimTypes && isFloatType name
+        else if name `Set.member` parserPrimTypeSet && isFloatType name
           then return (TyFloat ann)
-          else if name `elem` parserPrimTypes && isStringType name
+          else if name `Set.member` parserPrimTypeSet && isStringType name
             then return (TyString ann)
-            else if name `elem` parserPrimTypes && isCharType name
+            else if name `Set.member` parserPrimTypeSet && isCharType name
               then return (TyChar ann)
               else return (TyVar ann name)
     -- | Parse a function body without explicit clauses.
@@ -2969,10 +2995,10 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
         Match _ scrutinee _ ->
           case scrutinee of
             Var {varName, varCandidates} -> do
-              MkParserState{parserCtx, parserCtors} <- getP
+              MkParserState{parserCtx, parserCtorSet} <- getP
               let candidateNames = map fst varCandidates
                   isArg = any (`elem` argNames) (varName : candidateNames)
-                  isCtor = any (`elem` parserCtors) candidateNames
+                  isCtor = any (`Set.member` parserCtorSet) candidateNames
                   inScope = any (`Set.member` parserCtx) candidateNames
               return (isArg || (isCtor && inScope))
             _ -> return False
@@ -3189,15 +3215,19 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     parseTypeWithCase :: KipParser (Ty Ann) -- ^ Parsed type.
     parseTypeWithCase =
       try (parens parseTypeWithCase) <|> try parseModifiedType <|> do
-        MkParserState{parserTyParams, parserTyCons, parserTyConsNames, parserPrimTypes} <- getP
-        let tyNames = parserTyConsNames
-            primNames = parserPrimTypes
-            typeScope = tyNames ++ parserTyParams ++ primNames
-            !tyNamesSet = Set.fromList tyNames
-            !tyParamsSet = Set.fromList parserTyParams
-            !primNamesSet = Set.fromList primNames
-            !typeScopeSet = Set.fromList typeScope
-            !tyArityMap = M.fromList parserTyCons
+        MkParserState
+          { parserTyParams
+          , parserTyParamSet
+          , parserTyConsMap
+          , parserTyConsNameSet
+          , parserPrimTypeSet
+          , parserTypeScopeSet
+          } <- getP
+        let !tyNamesSet = parserTyConsNameSet
+            !tyParamsSet = parserTyParamSet
+            !primNamesSet = parserPrimTypeSet
+            !typeScopeSet = parserTypeScopeSet
+            !tyArityMap = parserTyConsMap
         let
             -- | Require a type identifier to be in scope.
             requireInCtx :: Identifier -- ^ Type identifier to check.
@@ -3363,17 +3393,10 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
               requireInCtx name
               -- Validate arity: check if this type constructor accepts the right number of arguments
               let numArgs = length collected
-                  mArity = lookup name parserTyCons
-                  mArityFast = M.lookup name tyArityMap
-                  arityMatches = case mArity of
-                    Just expectedArity -> numArgs == expectedArity
-                    Nothing ->
-                      -- Primitives have arity 0, type params shouldn't appear as constructors here
-                      (name `Set.member` primNamesSet) && (numArgs == 0)
-                  arityMatchesFast = case mArityFast of
+                  arityMatches = case M.lookup name tyArityMap of
                     Just expectedArity -> numArgs == expectedArity
                     Nothing -> (name `Set.member` primNamesSet) && (numArgs == 0)
-              guard (arityMatches && arityMatchesFast)  -- Allow backtracking if arity doesn't match
+              guard arityMatches  -- Allow backtracking if arity doesn't match
               let cas' = preferSurfaceCase rawIdent cas
                   ann = mkAnn cas' sp
               if name `Set.member` primNamesSet && isIntType name
@@ -3463,7 +3486,7 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
 
 -- | Extract pattern variable names from a pattern expression.
 -- This must check if identifiers are constructors to distinguish variables.
-extractPatVarNamesInContext :: [Identifier] -- ^ Constructor identifiers.
+extractPatVarNamesInContext :: Set.Set Identifier -- ^ Constructor identifiers.
                             -> Exp Ann -- ^ Pattern expression.
                             -> [Identifier] -- ^ Pattern variable names.
 extractPatVarNamesInContext ctx e =
@@ -3828,16 +3851,16 @@ expToPat :: Bool -- ^ Whether to allow scrutinee expressions.
          -> Exp Ann -- ^ Expression to convert.
          -> KipParser (Pat Ann) -- ^ Parsed pattern.
 expToPat allowScrutinee argNames e = do
-  MkParserState{parserCtors} <- getP
+  MkParserState{parserCtorSet} <- getP
   mCondPat <- condSurfaceToPat allowScrutinee argNames e
   case mCondPat of
     Just pat -> return pat
     Nothing ->
       case e of
         Var ann name candidates ->
-          case selectCondNameInCtors parserCtors candidates of
+          case selectCondNameInCtors parserCtorSet candidates of
             Nothing -> do
-              mCondCtor <- condCtorFallback parserCtors candidates
+              mCondCtor <- condCtorFallback parserCtorSet candidates
               case mCondCtor of
                 Just ctorName -> return (PCtor (ctorName, ann) [])
                 Nothing ->
@@ -3847,10 +3870,10 @@ expToPat allowScrutinee argNames e = do
                     _ -> return (PVar name (mkAnn (annCase ann) (annSpan ann)))
             Just ctorName -> return (PCtor (ctorName, ann) [])
         App _ (Var ann _ candidates) es -> do
-          ctorName <- case selectCondNameInCtors parserCtors candidates of
+          ctorName <- case selectCondNameInCtors parserCtorSet candidates of
             Just n -> return n
             Nothing -> do
-              mCondCtor <- condCtorFallback parserCtors candidates
+              mCondCtor <- condCtorFallback parserCtorSet candidates
               case mCondCtor of
                 Just n -> return n
                 Nothing -> customFailure ErrPatternExpected
@@ -3974,9 +3997,9 @@ expToPat allowScrutinee argNames e = do
         Ascribe ann _ _ -> annCase ann
     resolveCondCtorName :: Identifier -> KipParser Identifier
     resolveCondCtorName ident@(mods, surface) = do
-      MkParserState{parserCtors} <- getP
+      MkParserState{parserCtorSet} <- getP
       candidates <- estimateCandidates False ident
-      case selectCondNameInCtors parserCtors candidates of
+      case selectCondNameInCtors parserCtorSet candidates of
         Just ctorName -> return ctorName
         Nothing -> do
           -- Secondary pass: inspect raw TRmorph analyses directly and try
@@ -3987,24 +4010,24 @@ expToPat allowScrutinee argNames e = do
                 | analysis <- analyses
                 , Just (root, cas) <- [getPossibleCase analysis]
                 ]
-          case selectCondNameInCtors parserCtors morphCandidates of
+          case selectCondNameInCtors parserCtorSet morphCandidates of
             Just ctorName -> return ctorName
             Nothing -> do
-              mFallback <- condCtorFallback parserCtors (candidates ++ morphCandidates)
+              mFallback <- condCtorFallback parserCtorSet (candidates ++ morphCandidates)
               case mFallback of
                 Just ctorName -> return ctorName
                 Nothing -> return ident
-    condCtorFallback :: [Identifier] -> [(Identifier, Case)] -> KipParser (Maybe Identifier)
+    condCtorFallback :: Set.Set Identifier -> [(Identifier, Case)] -> KipParser (Maybe Identifier)
     condCtorFallback ctors candidates = do
       let stripped = mapMaybe (stripCondSuffixIdent . fst) candidates
       case stripped of
         (ident:_) -> do
-          let direct = if ident `elem` ctors then Just ident else Nothing
+          let direct = if ident `Set.member` ctors then Just ident else Nothing
           case direct of
             Just _ -> return direct
             Nothing -> do
               ident' <- normalizePossessive ident
-              return (if ident' `elem` ctors then Just ident' else Nothing)
+              return (if ident' `Set.member` ctors then Just ident' else Nothing)
         [] -> return Nothing
     stripCondSuffixIdent (mods, word) = do
       base <- stripCondSuffix word
@@ -4065,10 +4088,10 @@ expToPat allowScrutinee argNames e = do
 expToPatArg :: Exp Ann -- ^ Expression to convert.
             -> KipParser (Pat Ann) -- ^ Parsed pattern.
 expToPatArg e = do
-  MkParserState{parserCtors} <- getP
+  MkParserState{parserCtorSet} <- getP
   case e of
     Var ann name candidates ->
-      case selectCondNameInCtors parserCtors candidates of
+      case selectCondNameInCtors parserCtorSet candidates of
         Just ctorName -> return (PCtor (ctorName, ann) [])
         Nothing ->
           case preferInflected candidates of
@@ -4076,7 +4099,7 @@ expToPatArg e = do
             _ -> return (PVar name (mkAnn (annCase ann) (annSpan ann)))
     App _ (Var ann _ candidates) es -> do
       -- Nested constructor pattern - check if the function is a constructor
-      case selectCondNameInCtors parserCtors candidates of
+      case selectCondNameInCtors parserCtorSet candidates of
         Just ctorName -> do
           pats <- mapM expToPatArg es
           return (PCtor (ctorName, ann) pats)
@@ -4137,26 +4160,25 @@ expToPatArg e = do
             _ -> firstVar xs
 
 -- | Select a constructor name only when it is in scope.
-selectCondNameInCtors :: [Identifier] -- ^ Constructor identifiers.
+selectCondNameInCtors :: Set.Set Identifier -- ^ Constructor identifiers.
                       -> [(Identifier, Case)] -- ^ Candidate identifiers.
                       -> Maybe Identifier -- ^ Selected constructor.
 selectCondNameInCtors ctors candidates =
-  case [name | (name, cas) <- candidates, cas == Cond, name `Set.member` ctorSet] of
+  case [name | (name, cas) <- candidates, cas == Cond, name `Set.member` ctors] of
     n:_ -> Just n
     [] ->
-      case [name | (name, _) <- candidates, name `Set.member` ctorSet] of
+      case [name | (name, _) <- candidates, name `Set.member` ctors] of
         n:_ -> Just n
         [] ->
           case strippedCondMatches of
             n:_ -> Just n
             [] -> Nothing
   where
-    ctorSet = Set.fromList ctors
     strippedCondMatches =
       [ base
       | (name, _) <- candidates
       , Just base <- [stripCondSuffixIdent name]
-      , base `Set.member` ctorSet
+      , base `Set.member` ctors
       ]
     stripCondSuffixIdent (mods, word) = do
       base <- stripCondSuffix word
