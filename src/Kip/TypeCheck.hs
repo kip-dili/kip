@@ -190,6 +190,19 @@ recordFuncSigLocations path defs =
       then s { tcFuncSigLocs = Map.union (Map.map (path,) defs) (tcFuncSigLocs s) }
       else s)
 
+-- | Compact typechecking summary for a value definition.
+--
+-- Most definitions have a type immediately after their declaration is
+-- checked, so retaining the entire expression only increases cache size and
+-- repeats inference at every reference.  Expressions are kept solely for the
+-- uncommon case whose type depends on declarations introduced later.
+data TCValueSummary
+  = KnownValueType !(Ty Ann)
+  | DeferredValueExp !(Exp Ann)
+  deriving (Eq, Generic)
+
+instance Binary TCValueSummary
+
 -- | Type checker state for names, signatures, and constructors.
 data TCState =
   MkTCState
@@ -214,7 +227,7 @@ data TCState =
     , tcFuncRetByName :: !(HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann)))
     , tcFuncEffectsByArity :: !(HM.HashMap (Identifier, Int) Bool) -- ^ Effectful-function flag indexed by (name, arity).
     , tcVarTys :: ![(Identifier, Ty Ann)] -- ^ Variable type bindings (list for shadowing).
-    , tcVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings for inlining.
+    , tcVals :: !(Map.Map Identifier TCValueSummary) -- ^ Value type summaries for inference.
     , tcCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
     , tcTyCons :: !(Map.Map Identifier Int) -- ^ Type constructor arities.
     , tcInfinitives :: !(Set.Set Identifier) -- ^ Infinitive (effectful) functions.
@@ -1099,8 +1112,9 @@ tcStmt stmt =
               -- Type error: inferred type doesn't match declared type with rigid type variables
               lift (throwE (NoType NoSpan))
           Nothing -> return ()
+      let valueSummary = maybe (DeferredValueExp e') KnownValueType mInferredTy
       modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
-                                           , tcVals = Map.insert name e' (tcVals s)
+                                           , tcVals = Map.insert name valueSummary (tcVals s)
                                            }))
       return (Defn name ty e')
     Function name args ty body isInfinitive -> do
@@ -1498,7 +1512,8 @@ inferType e = inferTypeUncached
             Just ty -> return (Just ty)
             Nothing ->
               case lookupByCandidatesMap tcVals varCandidates of
-                Just v -> inferType v
+                Just (KnownValueType ty) -> return (Just ty)
+                Just (DeferredValueExp v) -> inferType v
                 Nothing ->
                   case lookupByCandidatesMap tcCtors varCandidates of
                     Just (argTys, ty) ->
