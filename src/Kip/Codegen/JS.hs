@@ -60,21 +60,56 @@ import qualified Kip.Primitive as Prim
 data CodegenCtx = MkCodegenCtx
   { sectionableFns :: Set.Set Identifier
   , resolvedCallNames :: Map.Map Span Text
-  , functionSigMap :: Map.Map (Identifier, [Ty Ann]) Text
   , overloadRegistry :: Map.Map (Identifier, [Ty Ann]) Text
-  , primFuncMap :: Map.Map (Identifier, [Ty Ann]) Text
+  , callTargetsByIdent :: Map.Map Identifier [CallTarget]
+  , callTargetsByRoot :: Map.Map Text [CallTarget]
+  , callTargetsByIdentArity :: Map.Map (Identifier, Int) [CallTarget]
+  , callTargetsByRootArity :: Map.Map (Text, Int) [CallTarget]
   , localScope :: [Identifier]
   , currentFunction :: Maybe (Identifier, [Ty Ann], Text)
   }
+
+type CallTarget = ([Ty Ann], Text)
 
 data DefRef
   = RefExact Identifier [Ty Ann]
   | RefName Identifier
   deriving (Eq, Ord, Show)
 
+-- | Build exact/root and exact-arity/root-arity call-target indexes.
+--
+-- 'Map.insertWith (flip (++))' preserves the user-before-primitive ordering of
+-- the source target list, matching the former ordered 'Map.toList' scans.
+buildCallTargetIndexes
+  :: [(Identifier, CallTarget)]
+  -> ( Map.Map Identifier [CallTarget]
+     , Map.Map Text [CallTarget]
+     , Map.Map (Identifier, Int) [CallTarget]
+     , Map.Map (Text, Int) [CallTarget]
+     )
+buildCallTargetIndexes = foldl' add (Map.empty, Map.empty, Map.empty, Map.empty)
+  where
+    add (byIdent, byRoot, byIdentArity, byRootArity) (ident@(_, root), target@(sig, _)) =
+      let arity = length sig
+      in ( Map.insertWith (flip (++)) ident [target] byIdent
+         , Map.insertWith (flip (++)) root [target] byRoot
+         , Map.insertWith (flip (++)) (ident, arity) [target] byIdentArity
+         , Map.insertWith (flip (++)) (root, arity) [target] byRootArity
+         )
+
 -- | Empty codegen context used by standalone helpers/tests.
 emptyCodegenCtx :: CodegenCtx
-emptyCodegenCtx = MkCodegenCtx Set.empty Map.empty Map.empty Map.empty Map.empty [] Nothing
+emptyCodegenCtx = MkCodegenCtx
+  { sectionableFns = Set.empty
+  , resolvedCallNames = Map.empty
+  , overloadRegistry = Map.empty
+  , callTargetsByIdent = Map.empty
+  , callTargetsByRoot = Map.empty
+  , callTargetsByIdentArity = Map.empty
+  , callTargetsByRootArity = Map.empty
+  , localScope = []
+  , currentFunction = Nothing
+  }
 
 -- | Build codegen context from resolved call signatures and program statements.
 buildCodegenCtx :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> CodegenCtx
@@ -118,12 +153,20 @@ buildCodegenCtx resolvMap stmts =
         in case Map.lookup (ident, sig) prims of
              Just primName -> primName
              Nothing -> Map.findWithDefault (toJsIdent ident) (ident, sig) registry
+      targetEntries =
+        [ (ident, (sig, jsName))
+        | ((ident, sig), jsName) <- Map.toList userFuncs ++ Map.toList prims
+        ]
+      (targetsByIdent, targetsByRoot, targetsByIdentArity, targetsByRootArity) =
+        buildCallTargetIndexes targetEntries
   in MkCodegenCtx
        { sectionableFns = sectionable
        , resolvedCallNames = resolvedNames
-       , functionSigMap = userFuncs
        , overloadRegistry = registry
-       , primFuncMap = prims
+       , callTargetsByIdent = targetsByIdent
+       , callTargetsByRoot = targetsByRoot
+       , callTargetsByIdentArity = targetsByIdentArity
+       , callTargetsByRootArity = targetsByRootArity
        , localScope = []
        , currentFunction = Nothing
        }
@@ -197,8 +240,7 @@ resolveCurrentFunction ctx candidates args =
 -- | Fallback call resolution using candidate identifiers and lightweight hints.
 resolveByCandidates :: CodegenCtx -> [Identifier] -> [Exp Ann] -> Maybe Text
 resolveByCandidates ctx candidates args =
-  let raw = concatMap (callTargetsForIdent ctx) candidates
-      byArity = filter (\(sig, _) -> length sig == length args) raw
+  let byArity = concatMap (\ident -> callTargetsForIdentAtArity ctx ident (length args)) candidates
       exact = filterByArgHints byArity args
   in case exact of
        [(_, jsName)] -> Just jsName
@@ -215,25 +257,30 @@ resolveByCandidates ctx candidates args =
 
 -- | Collect all possible JS targets for an identifier in the current program.
 callTargetsForIdent :: CodegenCtx -> Identifier -> [([Ty Ann], Text)]
-callTargetsForIdent ctx ident =
-  let userFuncs =
-        [ (sig, jsName)
-        | ((name, sig), jsName) <- Map.toList (functionSigMap ctx)
-        , identMatches name ident
-        ]
-      prims =
-        [ (sig, jsName)
-        | ((name, sig), jsName) <- Map.toList (primFuncMap ctx)
-        , identMatches name ident
-        ]
-  in uniqTargets (userFuncs ++ prims)
+callTargetsForIdent ctx ident@(mods, root)
+  | null mods = Map.findWithDefault [] root (callTargetsByRoot ctx)
+  | otherwise =
+      uniqTargets
+        ( Map.findWithDefault [] ident (callTargetsByIdent ctx)
+          ++ Map.findWithDefault [] ([], root) (callTargetsByIdent ctx)
+        )
+
+-- | Look up call targets by identifier and exact arity.
+callTargetsForIdentAtArity :: CodegenCtx -> Identifier -> Int -> [CallTarget]
+callTargetsForIdentAtArity ctx ident@(mods, root) arity
+  | null mods = Map.findWithDefault [] (root, arity) (callTargetsByRootArity ctx)
+  | otherwise =
+      uniqTargets
+        ( Map.findWithDefault [] (ident, arity) (callTargetsByIdentArity ctx)
+          ++ Map.findWithDefault [] (([], root), arity) (callTargetsByIdentArity ctx)
+        )
 
 -- | Resolve section-call targets using fixed-argument case/type hints.
 sectionTargetsForIdent :: CodegenCtx -> Exp Ann -> Identifier -> [([Ty Ann], Text)]
 sectionTargetsForIdent ctx fixedArg ident =
   let fixedIdx = if annCase (annExp fixedArg) == Ins then 0 else 1
       hint = inferSimpleTy fixedArg
-      targets = filter (\(sig, _) -> length sig == 2) (callTargetsForIdent ctx ident)
+      targets = callTargetsForIdentAtArity ctx ident 2
       hinted =
         case hint of
           Just simpleTy ->
