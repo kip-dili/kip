@@ -103,7 +103,8 @@ import GHC.Generics (Generic)
 import Data.Binary (Binary, Get)
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Binary as B
-import Data.Word (Word8)
+import Data.Word (Word8, Word16)
+import Data.Bits ((.&.), (.|.), bit, setBit, testBit)
 import Kip.AST
 import qualified Kip.Primitive as Prim
 
@@ -117,7 +118,6 @@ import Data.List (find, foldl', intersect, nub, zipWith4)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust, maybeToList, listToMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
-import qualified Data.IntSet as IntSet
 import Data.STRef (modifySTRef', newSTRef, readSTRef, writeSTRef)
 import System.FilePath (FilePath)
 import qualified Data.Set as Set
@@ -831,25 +831,28 @@ data UniqueMatch
 -- | Match provided argument cases to expected signature cases for partial application.
 -- Returns expected argument indices matched by each provided argument, in order.
 --
--- ==== Performance note (Optimization: uniqueness scan state machine)
+-- ==== Performance note (Optimization: compact used-position mask)
 -- Matching uses a small strict state machine (`NoMatch/OneMatch/ManyMatches`)
--- with an `IntSet` of used indices, avoiding intermediate candidate lists.
+-- with an integer bitset of used indices, avoiding tree nodes and intermediate
+-- candidate lists. 'Integer' remains correct for arbitrary arity while using
+-- a single limb for ordinary signatures.
 matchPartialCaseIndices :: [Case] -> [Case] -> Maybe [Int]
-matchPartialCaseIndices expectedCases = go IntSet.empty
+matchPartialCaseIndices expectedCases = go 0
   where
-    go _ [] = Just []
-    go used (pc:pcs) =
+    go :: Integer -> [Case] -> Maybe [Int]
+    go !_ [] = Just []
+    go !used (pc:pcs) =
       case uniqueMatchIndex used pc of
-        OneMatch i -> (i :) <$> go (IntSet.insert i used) pcs
+        OneMatch i -> (i :) <$> go (setBit used i) pcs
         _ -> Nothing
 
-    uniqueMatchIndex :: IntSet.IntSet -> Case -> UniqueMatch
+    uniqueMatchIndex :: Integer -> Case -> UniqueMatch
     uniqueMatchIndex used pc = scan 0 NoMatch expectedCases
       where
         scan idx acc [] = acc
         scan idx acc (ec:rest)
           | ec /= pc = scan (idx + 1) acc rest
-          | IntSet.member idx used = scan (idx + 1) acc rest
+          | testBit used idx = scan (idx + 1) acc rest
           | otherwise =
               case acc of
                 NoMatch -> scan (idx + 1) (OneMatch idx) rest
@@ -1233,18 +1236,40 @@ reorderByCases :: forall a.
                -> Maybe [a] -- ^ Reordered values when possible.
 reorderByCases expected actual xs
   | length expected /= length actual = Nothing
-  | Set.size expectedSet /= length expected = Nothing
-  | Set.size actualSet /= length actual = Nothing
-  | expectedSet /= actualSet = Nothing
+  | not expectedUnique = Nothing
+  | not actualUnique = Nothing
+  | expectedMask /= actualMask = Nothing
   | otherwise = mapM pick expected
   where
-    expectedSet = Set.fromList expected
-    actualSet = Set.fromList actual
-    mapping = Map.fromList (zip actual xs)
+    (expectedMask, expectedUnique) = caseSetMask expected
+    (actualMask, actualUnique) = caseSetMask actual
+    mapping = zip actual xs
     -- | Pick the value corresponding to a case.
     pick :: Case -- ^ Desired case.
          -> Maybe a -- ^ Selected value.
-    pick cas = Map.lookup cas mapping
+    pick cas = lookup cas mapping
+
+-- | Encode a grammatical case as one bit in a compact mask.
+caseBit :: Case -> Word16
+caseBit cas =
+  case cas of
+    Nom -> bit 0
+    Acc -> bit 1
+    Dat -> bit 2
+    Loc -> bit 3
+    Abl -> bit 4
+    Gen -> bit 5
+    Ins -> bit 6
+    Cond -> bit 7
+    P3s -> bit 8
+
+-- | Build a case mask and report whether every case occurred at most once.
+caseSetMask :: [Case] -> (Word16, Bool)
+caseSetMask = foldl' step (0, True)
+  where
+    step (!mask, !unique) cas =
+      let !caseFlag = caseBit cas
+      in (mask .|. caseFlag, unique && mask .&. caseFlag == 0)
 
 -- | Type-check a clause in the context of argument types.
 tcClause :: [Arg Ann] -- ^ Argument signature.
