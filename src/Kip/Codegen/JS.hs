@@ -59,7 +59,7 @@ import qualified Kip.Primitive as Prim
 
 data CodegenCtx = MkCodegenCtx
   { sectionableFns :: Set.Set Identifier
-  , resolvedSigs :: Map.Map Span (Identifier, [Ty Ann])
+  , resolvedCallNames :: Map.Map Span Text
   , functionSigMap :: Map.Map (Identifier, [Ty Ann]) Text
   , overloadRegistry :: Map.Map (Identifier, [Ty Ann]) Text
   , primFuncMap :: Map.Map (Identifier, [Ty Ann]) Text
@@ -109,9 +109,18 @@ buildCodegenCtx resolvMap stmts =
         | PrimFunc ident args _ _ <- stmts
         , let argTys = normalizeSig (map argType args)
         ]
+      -- Typechecker resolutions are authoritative. Compile them to final JS
+      -- symbols once instead of normalizing and probing signature maps at
+      -- every call/value occurrence.
+      resolvedNames = Map.map resolveTarget resolvMap
+      resolveTarget (ident, argTys) =
+        let sig = normalizeSig argTys
+        in case Map.lookup (ident, sig) prims of
+             Just primName -> primName
+             Nothing -> Map.findWithDefault (toJsIdent ident) (ident, sig) registry
   in MkCodegenCtx
        { sectionableFns = sectionable
-       , resolvedSigs = resolvMap
+       , resolvedCallNames = resolvedNames
        , functionSigMap = userFuncs
        , overloadRegistry = registry
        , primFuncMap = prims
@@ -154,12 +163,8 @@ lookupOverloadName ctx name argTys =
 -- | Look up the JS name for a call site using the resolved signature.
 lookupCallName :: CodegenCtx -> Span -> Exp Ann -> [Exp Ann] -> Text
 lookupCallName ctx span' fallback args =
-  case Map.lookup span' (resolvedSigs ctx) of
-    Just (resolvedName, resolvedArgTys) ->
-      let sig = normalizeSig resolvedArgTys
-      in case Map.lookup (resolvedName, sig) (primFuncMap ctx) of
-        Just primName -> primName
-        Nothing -> lookupOverloadName ctx resolvedName sig
+  case Map.lookup span' (resolvedCallNames ctx) of
+    Just resolvedName -> resolvedName
     Nothing -> fallbackCallName ctx fallback args
 
 -- | Best-effort call target recovery when no span-based resolution exists.
@@ -924,13 +929,8 @@ codegenExpWith ctx exp' =
 -- target discovery and picks a unique JS target if all candidates agree.
 lookupValueName :: CodegenCtx -> Ann -> Identifier -> [(Identifier, Case)] -> Maybe Text
 lookupValueName ctx annExp varName varCandidates =
-  case Map.lookup (annSpan annExp) (resolvedSigs ctx) of
-    Just (resolvedName, resolvedArgTys) ->
-      let sig = normalizeSig resolvedArgTys
-      in Just $
-           case Map.lookup (resolvedName, sig) (primFuncMap ctx) of
-             Just primName -> primName
-             Nothing -> lookupOverloadName ctx resolvedName sig
+  case Map.lookup (annSpan annExp) (resolvedCallNames ctx) of
+    Just resolvedName -> Just resolvedName
     Nothing | annCase annExp /= Ins ->
       Nothing
     Nothing | null varCandidates ->
