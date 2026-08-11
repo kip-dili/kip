@@ -2512,22 +2512,77 @@ unifyTypes :: [(Identifier, Int)] -- ^ Type constructor arities.
            -> [Ty Ann] -- ^ Expected types.
            -> [Ty Ann] -- ^ Actual types.
            -> Maybe Subst -- ^ Substitution when unification succeeds.
-unifyTypes tyCons expected actual = runST $ do
-  let normalizedPairs = zip (map (normalizeTy tyCons) expected) (map (normalizeTy tyCons) actual)
-      varIdents = Set.toList (foldl' collectPairVars Set.empty normalizedPairs)
-      varCount = length varIdents
-      varToIx = Map.fromList (zip varIdents [0 ..])
-      ixToVar = V.fromList varIdents
-      iPairs = map (toPairITy varToIx) normalizedPairs
-  parent <- MUV.new varCount
-  rank <- MUV.replicate varCount (0 :: Int)
-  binds <- MV.replicate varCount Nothing
-  initParents parent 0 varCount
-  ok <- unifyPairs parent rank binds iPairs
-  if ok
-    then Just <$> freezeSubst ixToVar parent rank binds
-    else return Nothing
+unifyTypes tyCons expected actual
+  | not (sameLength expected actual) = Nothing
+  | otherwise =
+      let normalizedPairs = zip (map (normalizeTy tyCons) expected) (map (normalizeTy tyCons) actual)
+      in case fastUnify normalizedPairs of
+           Just result -> result
+           Nothing -> runFullUnifier normalizedPairs
   where
+    -- | Run the mutable union-find only after cheap immutable checks miss.
+    runFullUnifier normalizedPairs = runST $ do
+      let varIdents = Set.toList (foldl' collectPairVars Set.empty normalizedPairs)
+          varCount = length varIdents
+          varToIx = Map.fromList (zip varIdents [0 ..])
+          ixToVar = V.fromList varIdents
+          iPairs = map (toPairITy varToIx) normalizedPairs
+      parent <- MUV.new varCount
+      rank <- MUV.replicate varCount (0 :: Int)
+      binds <- MV.replicate varCount Nothing
+      initParents parent 0 varCount
+      ok <- unifyPairs parent rank binds iPairs
+      if ok
+        then Just <$> freezeSubst ixToVar parent rank binds
+        else return Nothing
+
+    -- | Result of a cheap pre-unification check.
+    --
+    -- Outer 'Nothing' means "fall through to union-find"; an inner 'Nothing'
+    -- is an authoritative concrete mismatch.
+    fastUnify :: [(Ty Ann, Ty Ann)] -> Maybe (Maybe Subst)
+    fastUnify pairs
+      | all (uncurry sameNormalizedTy) pairs = Just (Just Map.empty)
+      | otherwise =
+          case pairs of
+            [(TyVar _ ident, ty)]
+              | not (isArrow ty)
+              , not (containsFlexibleVar ty) -> Just (Just (Map.singleton ident ty))
+            _
+              | all (\(e, a) -> not (containsFlexibleVar e) && not (containsFlexibleVar a)) pairs ->
+                  Just Nothing
+              | otherwise -> Nothing
+
+    -- | Exact normalized shape equality, ignoring source annotations.
+    sameNormalizedTy :: Ty Ann -> Ty Ann -> Bool
+    sameNormalizedTy left right =
+      case (left, right) of
+        (TyInt _, TyInt _) -> True
+        (TyFloat _, TyFloat _) -> True
+        (TyString _, TyString _) -> True
+        (TyChar _, TyChar _) -> True
+        (TyVar _ x, TyVar _ y) -> x == y
+        (TySkolem _ x, TySkolem _ y) -> x == y
+        (TyInd _ x, TyInd _ y) -> x == y
+        (Arr _ d1 i1, Arr _ d2 i2) -> sameNormalizedTy d1 d2 && sameNormalizedTy i1 i2
+        (TyApp _ c1 as1, TyApp _ c2 as2) ->
+          sameLength as1 as2
+            && sameNormalizedTy c1 c2
+            && and (zipWith sameNormalizedTy as1 as2)
+        _ -> False
+
+    containsFlexibleVar :: Ty Ann -> Bool
+    containsFlexibleVar ty =
+      case ty of
+        TyVar {} -> True
+        Arr _ d i -> containsFlexibleVar d || containsFlexibleVar i
+        TyApp _ ctor args -> containsFlexibleVar ctor || any containsFlexibleVar args
+        _ -> False
+
+    isArrow :: Ty Ann -> Bool
+    isArrow Arr {} = True
+    isArrow _ = False
+
     -- | Collect all flexible variables participating in unification.
     --
     -- The resulting set defines the intern table for this unification run.
