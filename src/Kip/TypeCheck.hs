@@ -456,7 +456,7 @@ tcExp1With allowEffect e =
           mTy <- inferType resolved
           forM_ mTy (recordResolvedType (annSpan annRes))
           mValueSig <- inferFunctionValueSig [(ident, annCase annRes)] mTy
-          forM_ mValueSig (\(sigName, argTys) -> recordResolvedSig (annSpan annRes) sigName argTys)
+          forM_ mValueSig (uncurry (recordResolvedSig (annSpan annRes)))
           MkTCState{tcFuncs} <- get
           if 0 `elem` Map.findWithDefault [] ident tcFuncs
             then do

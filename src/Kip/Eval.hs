@@ -18,6 +18,7 @@ import Control.Monad.Trans.Except
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class
 import Control.Exception (SomeException, try)
+import Data.Bifunctor (bimap)
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
 import System.IO (hFlush, stdout)
 import System.Environment (lookupEnv)
@@ -296,7 +297,7 @@ substituteTraceEnv env = go 0
             SetLit ann entries ->
               SetLit ann (Map.map (go depth) entries)
             MapLit ann entries ->
-              MapLit ann (Map.map (\(k, v) -> (go depth k, go depth v)) entries)
+              MapLit ann (Map.map (bimap (go depth) (go depth)) entries)
             Bind ann nm na bexp ->
               Bind ann nm na (go depth bexp)
             Seq ann first second ->
@@ -375,7 +376,7 @@ substituteChildren subs parent =
         SetLit ann entries ->
           SetLit ann (Map.map replaceChild entries)
         MapLit ann entries ->
-          MapLit ann (Map.map (\(k, v) -> (replaceChild k, replaceChild v)) entries)
+          MapLit ann (Map.map (bimap replaceChild replaceChild) entries)
         Match ann scr cls ->
           Match ann (replaceChild scr) (map (\(Clause p e) -> Clause p (replaceChild e)) cls)
         Seq ann first second ->

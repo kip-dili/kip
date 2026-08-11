@@ -1273,7 +1273,7 @@ normalizeSetValue exp' =
     SetLit _ entries ->
       SetLit (mkAnn Nom NoSpan) (Map.map normalizeSetValue entries)
     MapLit _ entries ->
-      MapLit (mkAnn Nom NoSpan) (Map.map (\(k, v) -> (normalizeSetValue k, normalizeSetValue v)) entries)
+      MapLit (mkAnn Nom NoSpan) (Map.map (B.bimap normalizeSetValue normalizeSetValue) entries)
     StrLit _ s ->
       StrLit (mkAnn Nom NoSpan) s
     IntLit _ n ->

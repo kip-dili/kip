@@ -648,7 +648,7 @@ loadCachedModule path = do
 -- | Load only the typed-statement section from a valid module cache.
 loadCachedTypedStmts :: FilePath -> IO (Maybe [Stmt Ann])
 loadCachedTypedStmts path =
-  loadCachedSections path getStmtsPrefix (\(meta, _) -> meta) (\(_, stmtsBytes) -> decodeSectionValue stmtsBytes)
+  loadCachedSections path getStmtsPrefix fst (\(_, stmtsBytes) -> decodeSectionValue stmtsBytes)
   where
     getStmtsPrefix :: Get (CacheMetadata, ByteString)
     getStmtsPrefix = (,) <$> getCacheHeader <*> getSection 1

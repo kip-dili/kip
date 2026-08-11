@@ -436,8 +436,7 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
   upsCache <- HT.new
   populateDemonstrativeCache upsCache
-  downsCache <- HT.new
-  return (newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache downsCache)
+  newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache <$> HT.new
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -445,8 +444,8 @@ newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> MorphCache -- ^ Shared ups cache.
                          -> MorphCache -- ^ Shared downs cache.
                          -> ParserState -- ^ Parser state.
-newParserStateWithCaches fsm' mFilePath upsCache downsCache =
-  newParserStateWithCtxAndCaches fsm' Set.empty [] [] [] [] [] M.empty M.empty mFilePath upsCache downsCache
+newParserStateWithCaches fsm' =
+  newParserStateWithCtxAndCaches fsm' Set.empty [] [] [] [] [] M.empty M.empty
 
 -- | Create a parser state with context and shared caches.
 --
