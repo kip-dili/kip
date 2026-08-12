@@ -19,7 +19,7 @@ import System.Directory
 import System.Environment (getExecutablePath)
 import Control.Exception (try, SomeException)
 import Control.Monad (when, foldM, replicateM)
-import Data.List (delete, foldl')
+import Data.List (delete, foldl', isPrefixOf, sort)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -40,7 +40,7 @@ import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import Kip.Render (RenderCache, renderExpValue)
 import Kip.MorphTracking (MorphDelta(..))
-import Paths_kip (version)
+import Paths_kip (getLibDir, version)
 
 -- | Memoized file hash cache for the current process.
 -- Stores (mtime in microseconds, hash) so we can skip re-hashing unchanged files.
@@ -1016,39 +1016,59 @@ hashFile path = do
           let digest = hashlazy bytes
           return (Just digest)
 
--- | Fingerprint the currently running compiler executable.
+-- | Fingerprint the shared Kip compiler library.
 --
--- ==== Performance note (Optimization: cheap executable fingerprint)
--- Previously this SHA256-hashed the entire executable (tens of MB) on
--- __every__ process invocation to validate module caches, which showed up
--- as ~30% of sampled main-thread time for short-lived runs. Since the
--- executable is rewritten (not patched in place) on every build, its
--- @(size, mtime)@ pair changes whenever the binary changes and is
--- effectively as reliable an invalidation key as a content hash, at the
--- cost of a single 'getFileSize'/'getModificationTime' pair instead of a
--- full read-and-hash. We keep the field named/typed as a 'ByteString'
--- ("hash") to avoid touching the on-disk cache format or other call sites.
+-- Module and prelude caches are shared by @kip@, @kip-lsp@, and
+-- @kip-playground@. Fingerprinting the current executable made those programs
+-- invalidate one another's otherwise-compatible caches because their binary
+-- sizes and mtimes necessarily differ. Cabal installs the single library
+-- archive linked by all three programs in the library component's 'getLibDir';
+-- its metadata changes whenever the shared compiler implementation is rebuilt
+-- while remaining identical for every frontend.
 getCompilerHash ::
-  IO (Maybe ByteString) -- ^ Cached fingerprint of the executable.
+  IO (Maybe ByteString) -- ^ Cached fingerprint of the shared compiler implementation.
 getCompilerHash = do
   cached <- readIORef compilerHashCache
   case cached of
     Just digest -> return (Just digest)
     Nothing -> do
+      mSharedArtifact <- findSharedCompilerArtifact
+      mMeta <- case mSharedArtifact of
+        Just artifact -> getFileMeta artifact
+        Nothing -> return Nothing
+      fingerprint <- case mMeta of
+        Just (size, mtime) ->
+          return (BS8.pack ("kip-lib-" ++ show size ++ "-" ++ show mtime))
+        Nothing -> executableFingerprint
+      writeIORef compilerHashCache (Just fingerprint)
+      return (Just fingerprint)
+  where
+    executableFingerprint = do
       res <- try getExecutablePath
       case res of
-        Left (_ :: SomeException) -> do
-          let digest = hash (BS8.pack ("kip-" ++ showVersion version))
-          writeIORef compilerHashCache (Just digest)
-          return (Just digest)
+        Left (_ :: SomeException) ->
+          return (hash (BS8.pack ("kip-" ++ showVersion version)))
         Right exePath -> do
-          mMeta <- try (getFileMeta exePath) :: IO (Either SomeException (Maybe (Integer, Integer)))
+          mMeta <- getFileMeta exePath
           case mMeta of
-            Right (Just (size, mtime)) -> do
-              let fingerprint = BS8.pack ("kip-exe-" ++ show size ++ "-" ++ show mtime)
-              writeIORef compilerHashCache (Just fingerprint)
-              return (Just fingerprint)
-            _ -> do
-              let fallback = hash (BS8.pack ("kip-" ++ showVersion version))
-              writeIORef compilerHashCache (Just fallback)
-              return (Just fallback)
+            Just (size, mtime) ->
+              return (BS8.pack ("kip-exe-" ++ show size ++ "-" ++ show mtime))
+            Nothing ->
+              return (hash (BS8.pack ("kip-" ++ showVersion version)))
+
+-- | Locate the Cabal-installed static archive for the shared Kip library.
+findSharedCompilerArtifact :: IO (Maybe FilePath)
+findSharedCompilerArtifact = do
+  res <- try $ do
+    libDir <- getLibDir
+    entries <- listDirectory libDir
+    return . sort $
+      [ libDir </> entry
+      | entry <- entries
+      , "libHSkip-" `isPrefixOf` entry
+      , takeExtension entry == ".a"
+      ]
+  case res of
+    Left (_ :: SomeException) -> return Nothing
+    Right (artifact : _) -> return (Just artifact)
+    Right [] -> return Nothing
