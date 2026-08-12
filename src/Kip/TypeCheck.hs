@@ -1791,7 +1791,9 @@ reorderCtorPatternArgs argTys pats
   | length argTys == length pats =
       fromMaybe pats (reorderByCases expectedCases actualCases pats)
   | isHeadTailListShape expectedCases actualCases pats =
-      [head pats, last pats]
+      case pats of
+        [firstPat, _middlePat, lastPat] -> [firstPat, lastPat]
+        _ -> pats
   | otherwise =
       pats
   where

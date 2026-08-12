@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: fpco/stack-build:lts-21.25
+      image: fpco/stack-build:lts-24.52
     env:
       STACK_ROOT: /tmp/.stack-root
       STACK_VERSION: "3.11.1"
@@ -19,7 +19,7 @@ jobs:
       - name: Compute Stack cache key
         id: stack_cache_key
         run: |
-          stack_cache_hash=$(sha256sum stack.yaml.lock kip.cabal | sha256sum | cut -d ' ' -f 1)
+          stack_cache_hash=$(sha256sum stack.yaml stack.yaml.lock kip.cabal | sha256sum | cut -d ' ' -f 1)
           printf 'hash=%s\n' "$stack_cache_hash" >> "$GITHUB_OUTPUT"
 
       - name: Restore Stack artifacts
@@ -28,9 +28,9 @@ jobs:
         with:
           path: |
             /tmp/.stack-root
-          key: ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-${{ steps.stack_cache_key.outputs.hash }}
+          key: ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-ghc-9_14_1-${{ steps.stack_cache_key.outputs.hash }}
           restore-keys: |
-            ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-lts-21_25-
+            ${{ runner.os }}-stack-${{ env.STACK_VERSION }}-ghc-9_14_1-
 
       - name: Install Foma
         run: |

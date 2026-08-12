@@ -962,9 +962,11 @@ pointerLinesForColored useColor pointerIndent wholeText subText resultText =
           withPos = mapMaybe (\cand -> fmap (, cand) (findSubstring cand wholeText)) candidates
       in listToMaybe withPos
 
-    stripOuterParens s
-      | length s >= 2 && head s == '(' && last s == ')' = tail (init s)
-      | otherwise = s
+    stripOuterParens ('(':rest) =
+      case reverse rest of
+        ')':middleRev -> reverse middleRev
+        _ -> '(' : rest
+    stripOuterParens s = s
 
     -- Build pointer for sub-expressions of length >= 3
     buildLongPointer ix subLen =

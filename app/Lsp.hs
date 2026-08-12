@@ -2015,7 +2015,7 @@ mergeSpanAll spans =
           ends = map snd pairs
           path = case [ p | Span _ _ (Just p) <- spans ] of
             [] -> Nothing
-            ps -> Just (head ps)  -- Assume all spans share the same path if present
+            p : _ -> Just p  -- Assume all spans share the same path if present
       in Span (minimum starts) (maximum ends) path
 
 -- | Collect all expression spans from a document's statements.

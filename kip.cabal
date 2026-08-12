@@ -10,6 +10,7 @@ copyright:      2021 Joomy Korkut
 license:        MIT
 license-file:   LICENSE
 build-type:     Simple
+tested-with:    GHC == 9.14.1
 extra-source-files:
     README.md
     vendor/trmorph.fst

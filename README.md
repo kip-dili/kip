@@ -161,7 +161,7 @@ selamlamak,
    - Debian/Ubuntu: `apt install foma libfoma-dev`
    - Fedora: `dnf install foma foma-devel`
 
-2. **Stack** - Haskell build tool
+2. **Stack 3.11.1 or newer** - Haskell build tool with GHC 9.14 support
    - See [haskellstack.org](https://docs.haskellstack.org/)
 
 > [!TIP]
