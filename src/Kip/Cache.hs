@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -28,6 +29,9 @@ import qualified Data.Vector as V
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+#if !defined(mingw32_HOST_OS) && !defined(wasi_HOST_OS)
+import qualified System.Posix.Files as Posix
+#endif
 import Crypto.Hash.SHA256 (hash, hashlazy)
 import qualified Data.ByteString as BS
 import Data.ByteString.Lazy (fromStrict, toStrict)
@@ -1100,6 +1104,18 @@ replayPreludePrimStmts primStmts evalBase =
 getFileMeta ::
   FilePath -- ^ File path to inspect.
   -> IO (Maybe (Integer, Integer)) -- ^ (size, mtime) or Nothing on failure.
+#if !defined(mingw32_HOST_OS) && !defined(wasi_HOST_OS)
+getFileMeta path = do
+  result <- try (Posix.getFileStatus path) :: IO (Either SomeException Posix.FileStatus)
+  case result of
+    Left _ -> return Nothing
+    Right status ->
+      return
+        (Just
+          ( fromIntegral (Posix.fileSize status)
+          , round (Posix.modificationTimeHiRes status * 1000000)
+          ))
+#else
 getFileMeta path = do
   mSize <- try (getFileSize path) :: IO (Either SomeException Integer)
   mTime <- try (getModificationTime path) :: IO (Either SomeException UTCTime)
@@ -1108,6 +1124,7 @@ getFileMeta path = do
       let micros = round (utcTimeToPOSIXSeconds time * 1000000)
       in return (Just (size, micros))
     _ -> return Nothing
+#endif
 
 -- | Compute a SHA256 digest for a file.
 hashFile ::

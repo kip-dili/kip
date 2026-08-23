@@ -63,6 +63,8 @@ library
     , z
   if os(darwin)
     ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
+  if !os(windows) && !os(wasi)
+    build-depends: unix
   build-depends:
       base >=4.7 && <5
     , bytestring
