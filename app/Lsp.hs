@@ -301,6 +301,7 @@ initState = do
   libPath <- locateDataFile "lib/temel.kip"
   fsm <- fsmReadBinaryFile trmorphPath
   upsCache <- HT.new
+  populateDemonstrativeCache upsCache
   downsCache <- HT.new
   let renderCache = mkRenderCache upsCache downsCache
   let libDir = takeDirectory libPath

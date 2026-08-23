@@ -24,6 +24,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.HashMap.Strict as HM
+import qualified Data.Vector as V
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
@@ -149,7 +150,7 @@ cacheMagic :: Word32
 cacheMagic = 0x4b49505a -- "KIPZ"
 
 cacheFormatVersion :: Word16
-cacheFormatVersion = 2
+cacheFormatVersion = 3
 
 -- | Stable Merkle root for a module's direct dependency leaves.
 dependencyMerkleRoot :: [(FilePath, ByteString, Integer, Integer)] -> ByteString
@@ -252,7 +253,39 @@ data CachedPrelude = CachedPrelude
     -- only replays these statements, with no extra file I/O or decoding.
   } deriving (Generic)
 
-instance Binary CachedPrelude
+preludeMagic :: Word32
+preludeMagic = 0x4b495050 -- "KIPP"
+
+preludeFormatVersion :: Word16
+preludeFormatVersion = 1
+
+-- | Versioned prelude-image encoding.  Unlike the original generic instance,
+-- this fails immediately and predictably when the on-disk representation
+-- changes instead of attempting to interpret an older product encoding.
+instance Binary CachedPrelude where
+  put CachedPrelude{..} = do
+    putWord32be preludeMagic
+    putWord16be preludeFormatVersion
+    put preludeCompilerHash
+    put preludeFiles
+    put preludeLoaded
+    put preludeParser
+    put preludeTC
+    put preludeEval
+    put preludePrimStmts
+  get = do
+    magic <- getWord32be
+    when (magic /= preludeMagic) (fail "Invalid Kip prelude-cache magic")
+    version <- getWord16be
+    when (version /= preludeFormatVersion) (fail "Unsupported Kip prelude-cache version")
+    preludeCompilerHash <- get
+    preludeFiles <- get
+    preludeLoaded <- get
+    preludeParser <- get
+    preludeTC <- get
+    preludeEval <- get
+    preludePrimStmts <- get
+    return CachedPrelude{..}
 
 -- | Serialized parser state subset needed to restore a module.
 --
@@ -273,7 +306,96 @@ data CachedParserState = CachedParserState
   , pdownsCache :: [(T.Text, [T.Text])] -- ^ Persisted morphology generation cache.
   } deriving (Generic)
 
-instance Binary CachedParserState
+-- | Compact parser-state encoding.
+--
+-- Prelude morphology tables contain many repeated analyses: the current
+-- standard-library image has roughly 137,000 text occurrences but only
+-- 16,000 distinct values.  The generic list encoding stored every UTF-8
+-- payload independently.  Large tables now share one sorted text dictionary
+-- and encode keys/results as fixed-width dictionary indices.  Small module
+-- deltas retain the ordinary representation to avoid dictionary overhead.
+instance Binary CachedParserState where
+  put CachedParserState{..} = do
+    put pctx
+    put pctors
+    put ptyParams
+    put ptyCons
+    put ptyMods
+    put pprimTypes
+    put pfuncArities
+    put pdefSpans
+    putMorphCaches pupsCache pdownsCache
+  get = do
+    pctx <- get
+    pctors <- get
+    ptyParams <- get
+    ptyCons <- get
+    ptyMods <- get
+    pprimTypes <- get
+    pfuncArities <- get
+    pdefSpans <- get
+    (pupsCache, pdownsCache) <- getMorphCaches
+    return CachedParserState{..}
+
+morphDictionaryThreshold :: Int
+morphDictionaryThreshold = 64
+
+putMorphCaches :: [(T.Text, [T.Text])] -> [(T.Text, [T.Text])] -> Put
+putMorphCaches upsEntries downsEntries
+  | textCount < morphDictionaryThreshold = do
+      putWord8 0
+      put upsEntries
+      put downsEntries
+  | otherwise = do
+      putWord8 1
+      putWord32be (fromIntegral (length dictionary))
+      mapM_ put dictionary
+      putMorphEntries dictionaryIds upsEntries
+      putMorphEntries dictionaryIds downsEntries
+  where
+    allEntries = upsEntries ++ downsEntries
+    textCount = sum [1 + length values | (_, values) <- allEntries]
+    dictionary = Set.toAscList (Set.fromList [txt | (key, values) <- allEntries, txt <- key : values])
+    dictionaryIds = Map.fromDistinctAscList (zip dictionary [0..])
+
+putMorphEntries :: Map.Map T.Text Word32 -> [(T.Text, [T.Text])] -> Put
+putMorphEntries dictionaryIds entries = do
+  putWord32be (fromIntegral (length entries))
+  mapM_ putEntry entries
+  where
+    putEntry (key, values) = do
+      putWord32be (dictionaryIds Map.! key)
+      putWord32be (fromIntegral (length values))
+      mapM_ (putWord32be . (dictionaryIds Map.!)) values
+
+getMorphCaches :: Get ([(T.Text, [T.Text])], [(T.Text, [T.Text])])
+getMorphCaches = do
+  encoding <- getWord8
+  case encoding of
+    0 -> (,) <$> get <*> get
+    1 -> do
+      dictionaryLength <- getWord32be
+      dictionary <- V.replicateM (fromIntegral dictionaryLength) get
+      upsEntries <- getMorphEntries dictionary
+      downsEntries <- getMorphEntries dictionary
+      return (upsEntries, downsEntries)
+    _ -> fail "Unsupported morphology-cache encoding"
+
+getMorphEntries :: V.Vector T.Text -> Get [(T.Text, [T.Text])]
+getMorphEntries dictionary = do
+  entryCount <- getWord32be
+  replicateM (fromIntegral entryCount) $ do
+    key <- getMorphText dictionary
+    valueCount <- getWord32be
+    values <- replicateM (fromIntegral valueCount) (getMorphText dictionary)
+    return (key, values)
+
+getMorphText :: V.Vector T.Text -> Get T.Text
+getMorphText dictionary = do
+  idx <- getWord32be
+  case dictionary V.!? fromIntegral idx of
+    Just txt -> return txt
+    Nothing -> fail "Invalid morphology-cache dictionary index"
 
 -- | Convert a parser state into a cached representation, including a full
 -- snapshot of the shared morphology caches.

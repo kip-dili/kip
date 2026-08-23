@@ -128,6 +128,7 @@ runPlaygroundRequest req = do
   fsm <- fsmReadBinaryFile trmorphPath
   reportProgress 20 "init-caches"
   upsCache <- HT.new
+  populateDemonstrativeCache upsCache
   downsCache <- HT.new
   let renderCache = mkRenderCache upsCache downsCache
       moduleDirs = nub (libDir : prIncludeDirs req)
