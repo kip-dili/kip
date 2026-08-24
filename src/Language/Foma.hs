@@ -68,18 +68,6 @@ fsmReadBinaryFile path = do
 fsmCache :: MVar (Map.Map FilePath FSM)
 fsmCache = unsafePerformIO (newMVar Map.empty)
 
--- | FFI binding for morphological analysis; safe to call as it never calls back into Haskell.
-foreign import ccall unsafe "morphology.h ups"
-  ups_ffi :: FSM -> CString -> IO (Ptr CString)
--- | FFI binding for morphological generation; safe to call as it never calls back into Haskell.
-foreign import ccall unsafe "morphology.h downs"
-  downs_ffi :: FSM -> CString -> IO (Ptr CString)
--- | Batch FFI binding for morphological analysis (amortizes apply_init).
-foreign import ccall unsafe "morphology.h ups_batch"
-  upsBatch_ffi :: FSM -> Ptr CString -> CInt -> IO (Ptr (Ptr CString))
--- | Batch FFI binding for morphological generation (amortizes apply_init).
-foreign import ccall unsafe "morphology.h downs_batch"
-  downsBatch_ffi :: FSM -> Ptr CString -> CInt -> IO (Ptr (Ptr CString))
 -- | Release batch-allocated results.
 foreign import ccall unsafe "morphology.h free_batch"
   freeBatch_ffi :: Ptr (Ptr CString) -> CInt -> IO ()
