@@ -95,10 +95,6 @@ data LspState = LspState
     lsCache :: !RenderCache
     -- | Finite-state morphology transducer for Kip inflection.
   , lsFsm :: !FSM
-    -- | Cached “ups” transformations for morphological rendering.
-  , lsUpsCache :: !MorphCache
-    -- | Cached “downs” transformations for morphological rendering.
-  , lsDownsCache :: !MorphCache
     -- | Module roots for resolving and indexing definitions.
   , lsModuleDirs :: ![FilePath]
     -- | Parser state including the prelude (stdlib) context.
@@ -308,12 +304,10 @@ initState = do
   cwd <- getExecutablePath
   let moduleDirs = [libDir, takeDirectory cwd]
   let ctx = RenderCtx LangEn renderCache fsm
-  (baseParser, baseTC, _, _) <- runReaderT (loadPreludeStateWithMode TCOutputLsp False moduleDirs renderCache fsm upsCache downsCache) ctx
+  (baseParser, baseTC, _, _) <- runReaderT (loadPreludeStateWithMode TCOutputLsp False moduleDirs renderCache fsm) ctx
   newMVar LspState
     { lsCache = renderCache
     , lsFsm = fsm
-    , lsUpsCache = upsCache
-    , lsDownsCache = downsCache
     , lsModuleDirs = moduleDirs
     , lsBaseParser = baseParser
     , lsBaseTC = baseTC
@@ -1879,7 +1873,7 @@ loadCachedDoc st uri text =
                   let tcDelta = fromCachedTCState (cachedTC cached)
                   if tcOutputModeSupports (tcOutputMode tcDelta) TCOutputLsp
                     then do
-                      pstCached <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) (cachedParser cached)
+                      pstCached <- fromCachedParserStateDelta (lsFsm st) (Just path) (renderUpsCache (lsCache st)) (renderDownsCache (lsCache st)) (lsBaseParser st) (cachedParser cached)
                       let tcCached = mergeCachedTCState (lsBaseTC st) tcDelta
                       let stmts = cachedTypedStmts cached
                       return (Just (pstCached, tcCached, stmts))
@@ -2942,7 +2936,7 @@ loadDefsForFile st path = do
   mCachedPrefix <- loadCachedAstParser cachePath
   case mCachedPrefix of
     Just (stmts, cachedParserState) -> do
-      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsUpsCache st) (lsDownsCache st) (lsBaseParser st) cachedParserState
+      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (renderUpsCache (lsCache st)) (renderDownsCache (lsCache st)) (lsBaseParser st) cachedParserState
       let defSpans =
             if isStdlib
               then defSpansFromParserIncludeBase stmts pst

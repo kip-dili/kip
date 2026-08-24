@@ -134,7 +134,7 @@ runPlaygroundRequest req = do
       renderCtx = RenderCtx (prLang req) renderCache fsm
   reportProgress 30 "load-prelude"
   (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-    runReaderT (loadPreludeState (prNoPrelude req) moduleDirs renderCache fsm upsCache downsCache) renderCtx
+    runReaderT (loadPreludeState (prNoPrelude req) moduleDirs renderCache fsm) renderCtx
   reportProgress 45 "prelude-ready"
   case prMode req of
     PlaygroundExec -> do
@@ -149,7 +149,7 @@ runPlaygroundRequest req = do
       let extraDirs = nub (map takeDirectory buildTargets)
           buildModuleDirs = nub (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
-        runReaderT (loadPreludeState (prNoPrelude req) buildModuleDirs renderCache fsm upsCache downsCache) renderCtx
+        runReaderT (loadPreludeState (prNoPrelude req) buildModuleDirs renderCache fsm) renderCtx
       _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
       return PlaygroundNoOutput
     PlaygroundCodegen target ->

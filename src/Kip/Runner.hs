@@ -1177,12 +1177,14 @@ uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
       | otherwise = (Set.insert x seen, x : acc)
 
 -- | Load the prelude module into parser/type/eval states unless disabled.
-loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> MorphCache -> MorphCache -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> RenderM (ParserState, TCState, EvalState, Set FilePath)
 loadPreludeState = loadPreludeStateWithMode TCOutputRuntime
 
 -- | Load the prelude with resolution output appropriate for the consumer.
-loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> MorphCache -> MorphCache -> RenderM (ParserState, TCState, EvalState, Set FilePath)
-loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm uCache dCache = do
+loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm = do
+  let uCache = renderUpsCache cache
+      dCache = renderDownsCache cache
   let pst = newParserStateWithCaches fsm Nothing uCache dCache
       tcSt = setTCOutputMode outputMode emptyTCState
       evalSt = mkEvalState cache fsm
