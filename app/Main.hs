@@ -50,7 +50,7 @@ import Kip.TypeCheck
 import qualified Kip.TypeCheck as TC
 import Kip.Render
 import Kip.Cache
-import Kip.MorphTracking
+import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
 import Kip.Runner (Lang(..), renderEvalError, locateDataFile)
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts)

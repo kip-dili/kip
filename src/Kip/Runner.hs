@@ -75,7 +75,7 @@ import Paths_kip (getDataFileName)
 import Language.Foma
 import Kip.AST
 import Kip.Cache
-import Kip.MorphTracking
+import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
 import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalStmtInFile, evalRender)
 import qualified Kip.Eval as Eval
 import Kip.Parser

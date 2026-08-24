@@ -12,9 +12,13 @@ module Kip.MorphCache
   , upsCachedBatch
   , downsCached
   , downsCachedBatch
+  , MorphDelta(..)
+  , MorphTrackingToken
+  , beginMorphTracking
+  , finishMorphTracking
   ) where
 
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.HashTable.IO as HT
 import Data.List (foldl')
 import qualified Data.Map.Strict as Map
@@ -24,14 +28,65 @@ import Data.Text (Text)
 import qualified Data.Vector as V
 import Language.Foma (FSM)
 import qualified Language.Foma as Foma
-
-import Kip.MorphTracking
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | A small mutable overlay plus a sorted, directly queryable base image.
 data MorphCache = MorphCache
   { mutableEntries :: !(HT.BasicHashTable Text [Text])
   , frozenEntries :: !(IORef (V.Vector (Text, [Text])))
   }
+
+data MorphDirection = MorphUps | MorphDowns
+
+-- | Entries inserted while one module was active.
+data MorphDelta = MorphDelta
+  { morphUpsDelta :: [(Text, [Text])]
+  , morphDownsDelta :: [(Text, [Text])]
+  }
+
+newtype MorphTrackingToken = MorphTrackingToken Int
+
+data TrackingFrame = TrackingFrame
+  { frameToken :: !Int
+  , frameUpsRev :: [(Text, [Text])]
+  , frameDownsRev :: [(Text, [Text])]
+  }
+
+{-# NOINLINE trackingState #-}
+trackingState :: IORef (Int, [TrackingFrame])
+trackingState = unsafePerformIO (newIORef (0, []))
+
+-- | Begin a possibly nested module-tracking scope.
+beginMorphTracking :: IO MorphTrackingToken
+beginMorphTracking =
+  atomicModifyIORef' trackingState $ \(nextToken, frames) ->
+    let frame = TrackingFrame nextToken [] []
+    in ((nextToken + 1, frame : frames), MorphTrackingToken nextToken)
+
+-- | Finish a module scope and return its inserts in insertion order.
+finishMorphTracking :: MorphTrackingToken -> IO MorphDelta
+finishMorphTracking (MorphTrackingToken token) =
+  atomicModifyIORef' trackingState $ \(nextToken, frames) ->
+    case frames of
+      TrackingFrame{frameToken, frameUpsRev, frameDownsRev} : rest
+        | frameToken == token ->
+            ( (nextToken, rest)
+            , MorphDelta (reverse frameUpsRev) (reverse frameDownsRev)
+            )
+      _ -> ((nextToken, frames), MorphDelta [] [])
+
+-- | Record one genuine cache miss in the innermost active module scope.
+recordMorphInsert :: MorphDirection -> Text -> [Text] -> IO ()
+recordMorphInsert direction key value =
+  atomicModifyIORef' trackingState $ \(nextToken, frames) ->
+    case frames of
+      [] -> ((nextToken, frames), ())
+      frame : rest ->
+        let frame' =
+              case direction of
+                MorphUps -> frame { frameUpsRev = (key, value) : frameUpsRev frame }
+                MorphDowns -> frame { frameDownsRev = (key, value) : frameDownsRev frame }
+        in ((nextToken, frame' : rest), ())
 
 -- | Create an empty morphology cache.
 newMorphCache :: IO MorphCache

@@ -43,8 +43,8 @@ import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncSigsByArity, build
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import qualified Kip.MorphCache as MC
+import Kip.MorphCache (MorphDelta(..))
 import Kip.Render (RenderCache, renderExpValue)
-import Kip.MorphTracking (MorphDelta(..))
 import Paths_kip (getLibDir, version)
 
 -- | Memoized file hash cache for the current process.
