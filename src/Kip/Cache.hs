@@ -416,8 +416,8 @@ toCachedParserState ::
   ParserState -- ^ Parser state to serialize.
   -> IO CachedParserState -- ^ Compact cached payload.
 toCachedParserState ps = do
-  upsEntries <- MC.morphCacheToList (parserUpsCache ps)
-  downsEntries <- MC.morphCacheToList (parserDownsCache ps)
+  upsEntries <- MC.morphCacheToList (MC.morphUpsCache (parserMorphCaches ps))
+  downsEntries <- MC.morphCacheToList (MC.morphDownsCache (parserMorphCaches ps))
   return
     CachedParserState
       { pctx = Set.toList (parserCtx ps)

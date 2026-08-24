@@ -313,11 +313,7 @@ The parser state is updated as we parse to track:
   Example: @["tam-sayı", "ondalık-sayı", "dizge"]@
   These don't need to be declared before use.
 
-* @parserUpsCache@: Morphology analysis cache. Maps surface forms to base forms.
-  Example: @"elmaların"@ → @["elma", "elmalar"]@
-
-* @parserDownsCache@: Morphology generation cache. Maps base+case to surface forms.
-  Example: @"elma+Gen"@ → @["elmanın"]@
+* @parserMorphCaches@: Shared morphology analysis and generation caches.
 -}
 data ParserState =
   MkParserState
@@ -352,8 +348,7 @@ data ParserState =
     , parserDefSpans :: !(M.Map Identifier [Span])
     , parserFilePath :: !(Maybe FilePath)
     , parserLexTokens :: !(IM.IntMap LexToken)
-    , parserUpsCache :: !MorphCache
-    , parserDownsCache :: !MorphCache
+    , parserMorphCaches :: !MC.MorphCaches
     }
 
 -- | Parser monad uses IO for morphology lookups.
@@ -432,8 +427,7 @@ newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes f
       , parserDefSpans = defSpans
       , parserFilePath = mFilePath
       , parserLexTokens = IM.empty
-      , parserUpsCache = upsCache
-      , parserDownsCache = downsCache
+      , parserMorphCaches = MC.mkMorphCaches upsCache downsCache
       }
 
 -- | Get the current parser state.
@@ -1572,8 +1566,8 @@ matchCtxByInflection ctx ident candidates = do
 upsCached :: Text -- ^ Surface form.
           -> KipParser [Text] -- ^ Morphology analyses.
 upsCached s = do
-  MkParserState{fsm, parserUpsCache} <- getP
-  liftIO (MC.upsCached parserUpsCache fsm s)
+  MkParserState{fsm, parserMorphCaches} <- getP
+  liftIO (MC.upsCached (MC.morphUpsCache parserMorphCaches) fsm s)
 {-# INLINE upsCached #-}
 
 -- | Cached batch morphology analysis lookup.
@@ -1581,16 +1575,16 @@ upsCached s = do
 upsCachedBatch :: [Text] -- ^ Surface forms.
                -> KipParser [[Text]] -- ^ Analyses per surface.
 upsCachedBatch surfaces = do
-  MkParserState{fsm, parserUpsCache} <- getP
-  liftIO (MC.upsCachedBatch parserUpsCache fsm surfaces)
+  MkParserState{fsm, parserMorphCaches} <- getP
+  liftIO (MC.upsCachedBatch (MC.morphUpsCache parserMorphCaches) fsm surfaces)
 {-# INLINE upsCachedBatch #-}
 
 -- | Cached morphology generation lookup.
 downsCached :: Text -- ^ Morphology stem.
             -> KipParser [Text] -- ^ Generated surface forms.
 downsCached s = do
-  MkParserState{fsm, parserDownsCache} <- getP
-  liftIO (MC.downsCached parserDownsCache fsm s)
+  MkParserState{fsm, parserMorphCaches} <- getP
+  liftIO (MC.downsCached (MC.morphDownsCache parserMorphCaches) fsm s)
 {-# INLINE downsCached #-}
 
 -- | Cached batch morphology generation lookup.
@@ -1598,8 +1592,8 @@ downsCached s = do
 downsCachedBatch :: [Text] -- ^ Morphology stems.
                 -> KipParser [[Text]] -- ^ Generated surface forms per stem.
 downsCachedBatch stems = do
-  MkParserState{fsm, parserDownsCache} <- getP
-  liftIO (MC.downsCachedBatch parserDownsCache fsm stems)
+  MkParserState{fsm, parserMorphCaches} <- getP
+  liftIO (MC.downsCachedBatch (MC.morphDownsCache parserMorphCaches) fsm stems)
 {-# INLINE downsCachedBatch #-}
 
 -- | Parse an identifier with inferred case (context-aware).
