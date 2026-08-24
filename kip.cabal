@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 3.0
 name:           kip
 version:        0.1.0.0
 description:    A programming language based on grammatical cases of Turkish.
@@ -50,6 +50,8 @@ library
       Language.Foma
   other-modules:
       Paths_kip
+  autogen-modules:
+      Paths_kip
   hs-source-dirs:
       src
   ghc-options: -O2
@@ -93,6 +95,8 @@ executable kip
   other-modules:
       Paths_kip
       Repl.Steps
+  autogen-modules:
+      Paths_kip
   hs-source-dirs:
       app
   ghc-options: -O2 -threaded -rtsopts "-with-rtsopts=-N4 -A32m"
@@ -127,6 +131,8 @@ executable kip-playground
   main-is: Playground.hs
   other-modules:
       Paths_kip
+  autogen-modules:
+      Paths_kip
   hs-source-dirs:
       app
   if os(wasi)
@@ -145,6 +151,8 @@ executable kip-playground
 executable kip-playground-reactor
   main-is: PlaygroundReactor.hs
   other-modules:
+      Paths_kip
+  autogen-modules:
       Paths_kip
   hs-source-dirs:
       app
@@ -168,6 +176,8 @@ executable kip-playground-reactor
 executable kip-lsp
   main-is: Lsp.hs
   other-modules:
+      Paths_kip
+  autogen-modules:
       Paths_kip
   hs-source-dirs:
       app
