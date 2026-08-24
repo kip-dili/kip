@@ -33,7 +33,13 @@ source-repository head
   type: git
   location: https://github.com/joom/kip
 
+common kip-component
+  default-language: Haskell2010
+  if os(darwin)
+    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
+
 library
+  import: kip-component
   exposed-modules:
       Kip.AST
       Kip.Cache
@@ -64,8 +70,6 @@ library
   extra-libraries:
       foma
     , z
-  if os(darwin)
-    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   if !os(windows) && !os(wasi)
     build-depends: unix
   build-depends:
@@ -88,9 +92,9 @@ library
     , directory
     , random
     , vector
-  default-language: Haskell2010
 
 executable kip
+  import: kip-component
   main-is: Main.hs
   other-modules:
       Paths_kip
@@ -102,8 +106,6 @@ executable kip
   ghc-options: -O2 -threaded -rtsopts "-with-rtsopts=-N4 -A32m"
   if os(wasi)
     buildable: False
-  if os(darwin)
-    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   if !os(windows) && !os(wasi)
     cpp-options: -DHAVE_UNIX_EXIT
     build-depends: unix
@@ -124,10 +126,10 @@ executable kip
     , cryptohash-sha256
     , mtl
     , vector
-  default-language: Haskell2010
   default-extensions: CPP
 
 executable kip-playground
+  import: kip-component
   main-is: Playground.hs
   other-modules:
       Paths_kip
@@ -139,16 +141,14 @@ executable kip-playground
     ghc-options: -rtsopts
   else
     ghc-options: -threaded -rtsopts "-with-rtsopts=-N -A64m"
-  if os(darwin)
-    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   build-depends:
       base >=4.7 && <5
     , optparse-applicative
     , kip
     , text
-  default-language: Haskell2010
 
 executable kip-playground-reactor
+  import: kip-component
   main-is: PlaygroundReactor.hs
   other-modules:
       Paths_kip
@@ -165,15 +165,13 @@ executable kip-playground-reactor
       -optl-Wl,--export=hs_init
   else
     buildable: False
-  if os(darwin)
-    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   build-depends:
       base >=4.7 && <5
     , kip
     , text
-  default-language: Haskell2010
 
 executable kip-lsp
+  import: kip-component
   main-is: Lsp.hs
   other-modules:
       Paths_kip
@@ -184,8 +182,6 @@ executable kip-lsp
   ghc-options: -threaded -rtsopts "-with-rtsopts=-N -A64m"
   if os(wasi)
     buildable: False
-  if os(darwin)
-    ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   build-depends:
       base >=4.7 && <5
     , bytestring
@@ -206,7 +202,6 @@ executable kip-lsp
     , cryptohash-sha256
     , mtl
     , vector
-  default-language: Haskell2010
 
 test-suite kip-tests
   type: exitcode-stdio-1.0
