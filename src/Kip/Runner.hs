@@ -853,8 +853,6 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
       ctx <- ask
       let cache = rcCache ctx
           fsm = rcFsm ctx
-          uCache = renderUpsCache cache
-          dCache = renderDownsCache cache
       let cachePath = cacheFilePath absPath
       mCachedRaw <- liftIO (loadCachedModule cachePath)
       let mCached =
@@ -870,7 +868,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
           if buildOnly
             then return (pst, tcSt, evalSt, loaded')
             else do
-              pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
+              pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
               let tcSt' = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                   evalSt' = evalSt
                   stmts = cachedTypedStmts cached
@@ -1183,9 +1181,7 @@ loadPreludeState = loadPreludeStateWithMode TCOutputRuntime
 -- | Load the prelude with resolution output appropriate for the consumer.
 loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM (ParserState, TCState, EvalState, Set FilePath)
 loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm = do
-  let uCache = renderUpsCache cache
-      dCache = renderDownsCache cache
-  let pst = newParserStateWithCaches fsm Nothing uCache dCache
+  let pst = newParserStateWithCaches fsm Nothing cache
       tcSt = setTCOutputMode outputMode emptyTCState
       evalSt = mkEvalState cache fsm
   if noPrelude
@@ -1195,7 +1191,7 @@ loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm = do
       -- ==== Performance note (Optimization: prelude snapshot/image cache)
       -- Restore the merged prelude graph from a validated snapshot when
       -- possible; otherwise load and persist it for future startup runs.
-      mSnapshot <- liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache)
+      mSnapshot <- liftIO (loadCachedPrelude snapshotPath cache fsm)
       case mSnapshot of
         Just (pstSnap, tcSnap, evalSnap, loadedSnap)
           | tcOutputModeSupports (tcOutputMode tcSnap) outputMode ->

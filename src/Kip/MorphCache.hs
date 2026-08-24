@@ -7,7 +7,6 @@ module Kip.MorphCache
   , MorphCaches
   , newMorphCache
   , newMorphCaches
-  , mkMorphCaches
   , morphUpsCache
   , morphDownsCache
   , lookupMorphCache
@@ -110,11 +109,6 @@ newMorphCaches = do
   upsCache <- newMorphCache
   populateDemonstrativeCache upsCache
   MorphCaches upsCache <$> newMorphCache
-
--- | Group existing analysis and generation caches under one owner.
-mkMorphCaches :: MorphCache -> MorphCache -> MorphCaches
-mkMorphCaches = MorphCaches
-{-# INLINE mkMorphCaches #-}
 
 -- | Seed analyses for demonstrative pronouns that TRmorph may miss.
 populateDemonstrativeCache :: MorphCache -> IO ()

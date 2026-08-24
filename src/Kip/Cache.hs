@@ -38,7 +38,7 @@ import Data.ByteString.Lazy (fromStrict, toStrict)
 import qualified Data.ByteString.Lazy as BL
 
 import Kip.AST
-import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
+import Kip.Parser (ParserState(..), newParserStateWithCtxAndCaches)
 import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncSigsByArity, buildFuncRetByName, emptyTCState)
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
@@ -480,28 +480,28 @@ attachMorphDelta MorphDelta{..} cached =
 fromCachedParserState ::
   FSM -- ^ Morphology FSM handle.
   -> Maybe FilePath -- ^ Path to the cached module (for validation).
-  -> MorphCache -- ^ Shared ups cache.
-  -> MorphCache -- ^ Shared downs cache.
+  -> MC.MorphCaches -- ^ Shared morphology caches.
   -> CachedParserState -- ^ Cached parser snapshot.
   -> IO ParserState -- ^ Rehydrated parser state.
-fromCachedParserState fsm cachePath upsCache downsCache CachedParserState{..} = do
+fromCachedParserState fsm cachePath morphCaches CachedParserState{..} = do
+  let upsCache = MC.morphUpsCache morphCaches
+      downsCache = MC.morphDownsCache morphCaches
   mapM_ (uncurry (MC.insertMorphCache upsCache)) pupsCache
   mapM_ (uncurry (MC.insertMorphCache downsCache)) pdownsCache
   -- Use the shared constructor so derived parser indices (for overload
   -- lookup) are rebuilt consistently after cache restore.
-  return (newParserStateWithCtxAndCaches fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath upsCache downsCache)
+  return (newParserStateWithCtxAndCaches fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath morphCaches)
 
 -- | Apply a cached parser delta to the state accumulated by earlier modules.
 fromCachedParserStateDelta ::
   FSM
   -> Maybe FilePath
-  -> MorphCache
-  -> MorphCache
+  -> MC.MorphCaches
   -> ParserState
   -> CachedParserState
   -> IO ParserState
-fromCachedParserStateDelta fsm cachePath upsCache downsCache base cached = do
-  delta <- fromCachedParserState fsm cachePath upsCache downsCache cached
+fromCachedParserStateDelta fsm cachePath morphCaches base cached = do
+  delta <- fromCachedParserState fsm cachePath morphCaches cached
   return
     (newParserStateWithCtxAndCaches
       fsm
@@ -514,8 +514,7 @@ fromCachedParserStateDelta fsm cachePath upsCache downsCache base cached = do
       (Map.unionWith Set.union (parserFuncArities delta) (parserFuncArities base))
       (Map.unionWith (++) (parserDefSpans base) (parserDefSpans delta))
       cachePath
-      upsCache
-      downsCache)
+      morphCaches)
 
 -- | Cached wrapper for the type checker state.
 newtype CachedTCState = CachedTCState TCState
@@ -910,10 +909,8 @@ loadCachedPrelude ::
   FilePath -- ^ Snapshot file path.
   -> RenderCache -- ^ Render cache for evaluator restore.
   -> FSM -- ^ Morphology FSM handle.
-  -> MorphCache -- ^ Shared parser ups cache.
-  -> MorphCache -- ^ Shared parser downs cache.
   -> IO (Maybe (ParserState, TCState, EvalState, Set.Set FilePath))
-loadCachedPrelude snapshotPath cache fsm upsCache downsCache = do
+loadCachedPrelude snapshotPath cache fsm = do
   absSnapshotPath <- canonicalizePathCached snapshotPath
   exists <- doesFileExist absSnapshotPath
   if not exists
@@ -931,9 +928,11 @@ loadCachedPrelude snapshotPath cache fsm upsCache downsCache = do
                 then return Nothing
                 else do
                   let cachedParser = preludeParser preludeSnap
+                      upsCache = MC.morphUpsCache cache
+                      downsCache = MC.morphDownsCache cache
                   MC.installFrozenMorphCache upsCache (pupsCache cachedParser)
                   MC.installFrozenMorphCache downsCache (pdownsCache cachedParser)
-                  pst <- fromCachedParserState fsm Nothing upsCache downsCache
+                  pst <- fromCachedParserState fsm Nothing cache
                     cachedParser { pupsCache = [], pdownsCache = [] }
                   let tcSt = fromCachedTCState (preludeTC preludeSnap)
                       evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)

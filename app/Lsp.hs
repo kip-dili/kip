@@ -1870,7 +1870,7 @@ loadCachedDoc st uri text =
                   let tcDelta = fromCachedTCState (cachedTC cached)
                   if tcOutputModeSupports (tcOutputMode tcDelta) TCOutputLsp
                     then do
-                      pstCached <- fromCachedParserStateDelta (lsFsm st) (Just path) (renderUpsCache (lsCache st)) (renderDownsCache (lsCache st)) (lsBaseParser st) (cachedParser cached)
+                      pstCached <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsCache st) (lsBaseParser st) (cachedParser cached)
                       let tcCached = mergeCachedTCState (lsBaseTC st) tcDelta
                       let stmts = cachedTypedStmts cached
                       return (Just (pstCached, tcCached, stmts))
@@ -2933,7 +2933,7 @@ loadDefsForFile st path = do
   mCachedPrefix <- loadCachedAstParser cachePath
   case mCachedPrefix of
     Just (stmts, cachedParserState) -> do
-      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (renderUpsCache (lsCache st)) (renderDownsCache (lsCache st)) (lsBaseParser st) cachedParserState
+      pst <- fromCachedParserStateDelta (lsFsm st) (Just path) (lsCache st) (lsBaseParser st) cachedParserState
       let defSpans =
             if isStdlib
               then defSpansFromParserIncludeBase stmts pst

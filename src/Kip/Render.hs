@@ -5,8 +5,6 @@ module Kip.Render
   , applyTyMods
   , RenderCache
   , newRenderCache
-  , renderUpsCache
-  , renderDownsCache
   , renderIdentWithCases
   , renderIdentWithCase
   , renderTy
@@ -47,25 +45,12 @@ import Kip.AST
 import Kip.Eval (EvalState, evalCtors)
 import qualified Kip.MorphCache as MC
 
--- | Cache for morphology calls.
-type MorphCache = MC.MorphCache
-
 -- | The morphology caches used while rendering.
 type RenderCache = MC.MorphCaches
 
 -- | Create a new empty render cache.
 newRenderCache :: IO RenderCache -- ^ Fresh render cache.
 newRenderCache = MC.newMorphCaches
-
--- | Access the shared morphology-analysis cache.
-renderUpsCache :: RenderCache -> MorphCache
-renderUpsCache = MC.morphUpsCache
-{-# INLINE renderUpsCache #-}
-
--- | Access the shared morphology-generation cache.
-renderDownsCache :: RenderCache -> MorphCache
-renderDownsCache = MC.morphDownsCache
-{-# INLINE renderDownsCache #-}
 
 -- | Cached version of 'ups'.
 upsCached :: RenderCache -- ^ Render cache.

@@ -128,7 +128,6 @@ data CompilerMsg
 -- | Internal renderer-context failures that indicate a programming bug.
 data InternalRenderError
   = MissingRenderCacheAndFsm
-  | MissingParserCaches
   | MissingFsmOnly
 
 -- | Rendering context for diagnostics and output.
@@ -257,8 +256,6 @@ renderInternalRenderError lang err =
   case (lang, err) of
     (LangTr, MissingRenderCacheAndFsm) -> "İç hata: render için önbellek ve biçimbirim çözümleyici gerekli."
     (LangEn, MissingRenderCacheAndFsm) -> "Internal error: rendering requires RenderCache and FSM."
-    (LangTr, MissingParserCaches) -> "İç hata: ayrıştırıcı önbellek erişimi için biçimbirim önbellekleri gerekli."
-    (LangEn, MissingParserCaches) -> "Internal error: parser cache access requires morphology caches."
     (LangTr, MissingFsmOnly) -> "İç hata: render için biçimbirim çözümleyici gerekli."
     (LangEn, MissingFsmOnly) -> "Internal error: rendering requires FSM."
 
@@ -723,15 +720,6 @@ requireCacheFsm = do
     (Just cache, Just fsm) -> return (cache, fsm)
     _ -> liftIO . ioError . userError . T.unpack $
       renderInternalRenderError (rcLang ctx) MissingRenderCacheAndFsm
-
--- | Require parser morphology caches from the context.
-requireParserCaches :: RenderM (MorphCache, MorphCache) -- ^ Parser ups/downs caches.
-requireParserCaches = do
-  ctx <- ask
-  case rcCache ctx of
-    Just cache -> return (renderUpsCache cache, renderDownsCache cache)
-    _ -> liftIO . ioError . userError . T.unpack $
-      renderInternalRenderError (rcLang ctx) MissingParserCaches
 
 -- | Require an FSM from the context.
 requireFsm :: RenderM FSM -- ^ Morphology FSM.
@@ -1464,9 +1452,8 @@ main = do
       | Just expr <- stripPrefix ":t " input = do
           rs <- ensurePreludeLoaded rs
           ctx <- ask
-          fsm <- runApp requireFsm
-          (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
+          (cache, fsm) <- runApp requireCacheFsm
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing cache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1505,11 +1492,10 @@ main = do
                 _ -> inferExprType rs ctx paramTyCons parsed expr
       | Just expr <- stripPrefix ":parse " input = do
           rs <- ensurePreludeLoaded rs
-          fsm <- runApp requireFsm
-          (uCache, dCache) <- runApp requireParserCaches
+          (cache, fsm) <- runApp requireCacheFsm
           let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs)
                     (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs)
-                    (replFuncArities rs) Map.empty Nothing uCache dCache
+                    (replFuncArities rs) Map.empty Nothing cache
           -- Decide statement vs expression based on trailing period
           let isStmt = case dropWhile (== ' ') (reverse expr) of '.':_ -> True; _ -> False
           if isStmt
@@ -1532,9 +1518,8 @@ main = do
           loop rs
       | Just expr <- stripPrefix ":steps " input = do
           rs <- ensurePreludeLoaded rs
-          fsm <- runApp requireFsm
-          (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
+          (cache, fsm) <- runApp requireCacheFsm
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing cache
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1575,9 +1560,8 @@ main = do
                           loop rs
       | otherwise = do
           rs <- ensurePreludeLoaded rs
-          fsm <- runApp requireFsm
-          (uCache, dCache) <- runApp requireParserCaches
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing uCache dCache
+          (cache, fsm) <- runApp requireCacheFsm
+          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing cache
           -- If input ends with a period, parse as statement; otherwise parse as expression
           if case dropWhile (== ' ') (reverse input) of
                '.':_ -> True
@@ -1592,7 +1576,7 @@ main = do
                     Load dirPath name -> do
                       path <- runApp (resolveModulePath (replModuleDirs rs) dirPath name)
                       absPath <- liftIO (canonicalizePathCached path)
-                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty (Just path) uCache dCache
+                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty (Just path) cache
                       if Set.member absPath (replLoaded rs)
                         then loop rs
                         else do
@@ -1850,8 +1834,7 @@ main = do
       if Set.member absPath loaded
         then return (pst, tcSt, accStmtsRev, loaded)
         else do
-          (uCache, dCache) <- requireParserCaches
-          (_, fsm) <- requireCacheFsm
+          (cache, fsm) <- requireCacheFsm
           let cachePath = cacheFilePath absPath
           mCachedRaw <- liftIO (loadCachedModule cachePath)
           let mCached =
@@ -1863,7 +1846,7 @@ main = do
                   _ -> Nothing
           case mCached of
             Just cached -> do
-              pstCached <- liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
+              pstCached <- liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
               let loaded' = Set.insert absPath loaded
                   tcCached = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                   stmts = cachedTypedStmts cached
@@ -1962,7 +1945,6 @@ main = do
         then return (pst, tcSt, evalSt, loaded)
         else do
           (cache, fsm) <- requireCacheFsm
-          (uCache, dCache) <- requireParserCaches
           let cachePath = cacheFilePath absPath
           mCached <- liftIO (loadCachedModule cachePath)
           case mCached of
@@ -1971,7 +1953,7 @@ main = do
               if buildOnly
                 then return (pst, tcSt, evalSt, loaded')
                 else do
-                  pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
+                  pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
                   let tcSt' = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
                       evalSt' = evalSt
                       stmts = cachedTypedStmts cached
@@ -2422,17 +2404,16 @@ main = do
 
     -- | Load the prelude module into a parser state.
     loadPreludeParserState :: [FilePath] -- ^ Module search paths.
-                           -> MorphCache -- ^ Shared ups cache.
-                           -> MorphCache -- ^ Shared downs cache.
+                           -> RenderCache -- ^ Shared morphology caches.
                            -> FSM -- ^ Morphology FSM.
                            -> AppM ParserState -- ^ Loaded parser state.
-    loadPreludeParserState moduleDirs uCache dCache fsm = do
+    loadPreludeParserState moduleDirs cache fsm = do
       path <- resolveModulePath moduleDirs [] ([], T.pack "temel")
       absPath <- liftIO (canonicalizePathCached path)
-      let pst = newParserStateWithCaches fsm (Just path) uCache dCache
+      let pst = newParserStateWithCaches fsm (Just path) cache
       let cachePath = cacheFilePath absPath
       liftIO (loadCachedModule cachePath) >>= \case
-        Just cached -> liftIO (fromCachedParserStateDelta fsm (Just path) uCache dCache pst (cachedParser cached))
+        Just cached -> liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
         Nothing -> do
           input <- liftIO (TIO.readFile path)
           liftIO (parseFromFile pst input) >>= \case
@@ -2446,9 +2427,7 @@ main = do
                             -> FSM -- ^ Morphology FSM.
                             -> AppM (ParserState, TCState, Set FilePath) -- ^ Loaded parser/TC states.
     loadPreludeCodegenState noPrelude moduleDirs cache fsm = do
-      let uCache = renderUpsCache cache
-          dCache = renderDownsCache cache
-          pst = newParserStateWithCaches fsm Nothing uCache dCache
+      let pst = newParserStateWithCaches fsm Nothing cache
           tcSt = setTCOutputMode TCOutputCodegen emptyTCState
       if noPrelude
         then return (pst, tcSt, Set.empty)
@@ -2458,7 +2437,7 @@ main = do
           -- Reuse the merged prelude graph snapshot for codegen startup. Even
           -- though codegen does not evaluate terms, restoring parser+TC from a
           -- validated snapshot avoids reparsing and re-typechecking stdlib.
-          liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache) >>= \case
+          liftIO (loadCachedPrelude snapshotPath cache fsm) >>= \case
             Just (pstSnap, tcSnap, _, loadedSnap) ->
               return (pstSnap, setTCOutputMode TCOutputCodegen tcSnap, loadedSnap)
             Nothing -> do
@@ -2474,9 +2453,7 @@ main = do
                      -> FSM -- ^ Morphology FSM.
                      -> AppM (ParserState, TCState, EvalState, Set FilePath) -- ^ Loaded states.
     loadPreludeState noPrelude moduleDirs cache fsm = do
-      let uCache = renderUpsCache cache
-          dCache = renderDownsCache cache
-          pst = newParserStateWithCaches fsm Nothing uCache dCache
+      let pst = newParserStateWithCaches fsm Nothing cache
           tcSt = emptyTCState
           evalSt = mkEvalState cache fsm
       if noPrelude
@@ -2487,7 +2464,7 @@ main = do
           -- The first successful prelude load persists a merged snapshot. Later
           -- startups validate file fingerprints and restore parser/TC/eval in
           -- one step instead of traversing the whole stdlib graph.
-          liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache) >>= \case
+          liftIO (loadCachedPrelude snapshotPath cache fsm) >>= \case
             Just snapState -> return snapState
             Nothing -> do
               path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")

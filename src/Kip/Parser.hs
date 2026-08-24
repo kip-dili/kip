@@ -215,14 +215,6 @@ renderParserErrorEn err =
     ErrYaDaInvalid -> "\"ya da\" can only appear before the last constructor."
     ErrInternal msg -> msg
 
-{- | Hash table type alias for morphology caches.
-
-TRmorph lookups are expensive, so we cache:
-* __Ups cache__: surface form → [base forms]
-* __Downs cache__: base form → [surface forms]
--}
-type MorphCache = MC.MorphCache
-
 -- | A source token indexed by its character offset.
 data LexToken
   = LexWord !Text
@@ -374,8 +366,7 @@ turkishCaseSuffixesTxt = map (T.pack . fst) turkishCaseSuffixes
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> Maybe FilePath -- ^ Optional file path for span tracking.
-                         -> MorphCache -- ^ Shared ups cache.
-                         -> MorphCache -- ^ Shared downs cache.
+                         -> MC.MorphCaches -- ^ Shared morphology caches.
                          -> ParserState -- ^ Parser state.
 newParserStateWithCaches fsm' =
   newParserStateWithCtxAndCaches fsm' Set.empty [] [] [] [] [] M.empty M.empty
@@ -395,10 +386,9 @@ newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
                                -> M.Map Identifier (Set.Set Int) -- ^ Known function arities.
                                -> M.Map Identifier [Span] -- ^ Definition spans.
                                -> Maybe FilePath -- ^ Optional file path for span tracking.
-                               -> MorphCache -- ^ Shared ups cache.
-                               -> MorphCache -- ^ Shared downs cache.
+                               -> MC.MorphCaches -- ^ Shared morphology caches.
                                -> ParserState -- ^ Parser state.
-newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities defSpans mFilePath upsCache downsCache =
+newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes funcArities defSpans mFilePath morphCaches =
   let !ctorSet = Set.fromList ctors
       !tyParamSet = Set.fromList tyParams
       !tyConsMap = M.fromList tyCons
@@ -427,7 +417,7 @@ newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes f
       , parserDefSpans = defSpans
       , parserFilePath = mFilePath
       , parserLexTokens = IM.empty
-      , parserMorphCaches = MC.mkMorphCaches upsCache downsCache
+      , parserMorphCaches = morphCaches
       }
 
 -- | Get the current parser state.
