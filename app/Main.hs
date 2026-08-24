@@ -1118,10 +1118,7 @@ main = do
         trmorphPath <- locateTrmorph lang useColor
         libDir <- locateLibDir lang useColor
         fsm <- fsmReadBinaryFile trmorphPath
-        upsCache <- newMorphCache
-        populateDemonstrativeCache upsCache
-        downsCache <- newMorphCache
-        let renderCache = mkRenderCache upsCache downsCache
+        renderCache <- newRenderCache
         moduleDirs <- internModuleRoots (libDir : optIncludeDirs opts)
         let moduleDirs' = uniquePreserve moduleDirs
             renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm)

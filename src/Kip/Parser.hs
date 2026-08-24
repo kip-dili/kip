@@ -223,10 +223,6 @@ TRmorph lookups are expensive, so we cache:
 -}
 type MorphCache = MC.MorphCache
 
--- | Create an empty shared morphology cache.
-newMorphCache :: IO MorphCache
-newMorphCache = MC.newMorphCache
-
 -- | A source token indexed by its character offset.
 data LexToken
   = LexWord !Text
@@ -379,44 +375,6 @@ turkishCaseSuffixes =
 
 turkishCaseSuffixesTxt :: [Text]
 turkishCaseSuffixesTxt = map (T.pack . fst) turkishCaseSuffixes
-
--- | Pre-populate a morphology cache with common Turkish demonstrative pronouns.
--- These are pattern variables that TRmorph may not analyze correctly.
--- Entries are stored in TRmorph format: "base<case_tag>"
-populateDemonstrativeCache :: MorphCache -- ^ Cache to populate.
-                           -> IO () -- ^ Populates the cache.
-populateDemonstrativeCache cache = do
-  -- Turkish demonstrative pronouns: bu (this), şu (that-near), o (that-far)
-  -- Each entry maps surface form to TRmorph-style analysis
-  let entries =
-        [ -- bu (this)
-          ("bu", ["bu<nom>"])
-        , ("bunu", ["bu<acc>"])
-        , ("buna", ["bu<dat>"])
-        , ("bunda", ["bu<loc>"])
-        , ("bundan", ["bu<abl>"])
-        , ("bunun", ["bu<gen>"])
-        , ("bunla", ["bu<ins>"])
-        , ("bununla", ["bu<ins>"])
-          -- şu (that, near listener)
-        , ("şu", ["şu<nom>"])
-        , ("şunu", ["şu<acc>"])
-        , ("şuna", ["şu<dat>"])
-        , ("şunda", ["şu<loc>"])
-        , ("şundan", ["şu<abl>"])
-        , ("şunun", ["şu<gen>"])
-        , ("şunla", ["şu<ins>"])
-        , ("şununla", ["şu<ins>"])
-          -- o (that, away from both)
-        , ("o", ["o<nom>"])
-        , ("onu", ["o<acc>"])
-        , ("ona", ["o<dat>"])
-        , ("onda", ["o<loc>"])
-        , ("ondan", ["o<abl>"])
-        , ("onun", ["o<gen>"])
-        , ("onunla", ["o<ins>"])
-        ]
-  mapM_ (uncurry (MC.insertMorphCache cache)) entries
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.

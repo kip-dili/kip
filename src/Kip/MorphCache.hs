@@ -1,9 +1,11 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- | Mutable morphology misses layered over a compact immutable snapshot.
 module Kip.MorphCache
   ( MorphCache
   , newMorphCache
+  , populateDemonstrativeCache
   , lookupMorphCache
   , insertMorphCache
   , morphCacheToList
@@ -91,6 +93,37 @@ recordMorphInsert direction key value =
 -- | Create an empty morphology cache.
 newMorphCache :: IO MorphCache
 newMorphCache = MorphCache <$> HT.new <*> newIORef V.empty
+
+-- | Seed analyses for demonstrative pronouns that TRmorph may miss.
+populateDemonstrativeCache :: MorphCache -> IO ()
+populateDemonstrativeCache cache =
+  mapM_ (uncurry (insertMorphCache cache)) entries
+  where
+    entries =
+      [ ("bu", ["bu<nom>"])
+      , ("bunu", ["bu<acc>"])
+      , ("buna", ["bu<dat>"])
+      , ("bunda", ["bu<loc>"])
+      , ("bundan", ["bu<abl>"])
+      , ("bunun", ["bu<gen>"])
+      , ("bunla", ["bu<ins>"])
+      , ("bununla", ["bu<ins>"])
+      , ("şu", ["şu<nom>"])
+      , ("şunu", ["şu<acc>"])
+      , ("şuna", ["şu<dat>"])
+      , ("şunda", ["şu<loc>"])
+      , ("şundan", ["şu<abl>"])
+      , ("şunun", ["şu<gen>"])
+      , ("şunla", ["şu<ins>"])
+      , ("şununla", ["şu<ins>"])
+      , ("o", ["o<nom>"])
+      , ("onu", ["o<acc>"])
+      , ("ona", ["o<dat>"])
+      , ("onda", ["o<loc>"])
+      , ("ondan", ["o<abl>"])
+      , ("onun", ["o<gen>"])
+      , ("onunla", ["o<ins>"])
+      ]
 
 -- | Look up the mutable overlay first, then binary-search the frozen image.
 lookupMorphCache :: MorphCache -> Text -> IO (Maybe [Text])

@@ -5,7 +5,6 @@ module Kip.Render
   , applyTyMods
   , RenderCache
   , newRenderCache
-  , mkRenderCache
   , renderUpsCache
   , renderDownsCache
   , renderIdentWithCases
@@ -61,13 +60,8 @@ data RenderCache = RenderCache
 newRenderCache :: IO RenderCache -- ^ Fresh render cache.
 newRenderCache = do
   upsCache <- MC.newMorphCache
+  MC.populateDemonstrativeCache upsCache
   RenderCache upsCache <$> MC.newMorphCache
-
--- | Create a render cache from existing hash tables (for sharing with parser).
-mkRenderCache :: MorphCache -- ^ Shared ups cache.
-              -> MorphCache -- ^ Shared downs cache.
-              -> RenderCache -- ^ Render cache.
-mkRenderCache = RenderCache
 
 -- | Access the shared morphology-analysis cache.
 renderUpsCache :: RenderCache -> MorphCache

@@ -126,11 +126,8 @@ runPlaygroundRequest req = do
   reportProgress 12 "load-morphology"
   fsm <- fsmReadBinaryFile trmorphPath
   reportProgress 20 "init-caches"
-  upsCache <- newMorphCache
-  populateDemonstrativeCache upsCache
-  downsCache <- newMorphCache
-  let renderCache = mkRenderCache upsCache downsCache
-      moduleDirs = nub (libDir : prIncludeDirs req)
+  renderCache <- newRenderCache
+  let moduleDirs = nub (libDir : prIncludeDirs req)
       renderCtx = RenderCtx (prLang req) renderCache fsm
   reportProgress 30 "load-prelude"
   (preludePst, preludeTC, preludeEval, preludeLoaded) <-
