@@ -31,13 +31,12 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
 import Data.Text.Encoding (encodeUtf8)
-import Data.Maybe (fromMaybe, isJust, maybeToList, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, maybeToList, mapMaybe)
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
-import Text.Megaparsec (ParseErrorBundle(..), PosState(..), errorBundlePretty)
-import Text.Megaparsec.Error (ParseError(..), ErrorFancy(..), ShowErrorComponent(..))
-import qualified Data.List.NonEmpty as NE
+import Text.Megaparsec (ParseErrorBundle, errorBundlePretty)
+import Text.Megaparsec.Error (ShowErrorComponent(..))
 import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
 
 import Language.Foma
@@ -56,6 +55,10 @@ import Kip.Runner
   ( Lang(..)
   , breakOn
   , collectNonInfinitiveRefs
+  , effectBoundaryHint
+  , findAmbiguousBareApplicationError
+  , findPatternBinderRepeatedError
+  , findUnrecognizedWordError
   , locateDataFile
   , mapParseErrorBundle
   , mergeTCState
@@ -64,6 +67,8 @@ import Kip.Runner
   , replace
   , resolveBuildTargets
   , splitOn
+  , sameSpanPath
+  , tcErrRelatedSpan
   , tcErrSpan
   , turkifyParseError
   , uniquePreserve
@@ -584,51 +589,6 @@ renderTCErrorWithSource paramTyCons tyMods source tcErr = do
           in return (withPrimary <> "\n" <> relatedHeader <> relatedBody)
     _ -> return withPrimary
 
--- | User-facing guidance for using effectful forms in the right context.
-effectBoundaryHint :: Lang -- ^ Message language.
-                   -> Text -- ^ Rendered hint.
-effectBoundaryHint lang =
-  case lang of
-    LangTr ->
-      T.intercalate
-        "\n"
-        [ "Tip hatası: bu ifade etkili bağlamda kullanılmalı."
-        , "Öneri: yazdırmak için `... yaz.` kullanın."
-        , "Öneri: etkili bir sonucu kullanmak için `x için ...yup, ...` biçimini kullanın."
-        ]
-    LangEn ->
-      T.intercalate
-        "\n"
-        [ "Hint: this expression must be used in an effectful context."
-        , "Suggestion: use `... yaz.` for printing."
-        , "Suggestion: use `x için ...yup, ...` to bind and continue with an effectful result."
-        ]
-
--- | Extract one secondary span for unification-style diagnostics.
---
--- We use the expected type annotation span when available so REPL users can
--- see a distant but relevant location (for example, a declared parameter type
--- that conflicts with the call site).
-tcErrRelatedSpan :: TCError -- ^ Type checker error.
-                 -> Maybe Span -- ^ Secondary related span.
-tcErrRelatedSpan tcErr =
-  case tcErr of
-    ArgTypeMismatch expectedTy _ _ -> nonNoSpan (annSpan (annTy expectedTy))
-    PatternTypeMismatch _ expectedTy _ _ _ -> nonNoSpan (annSpan (annTy expectedTy))
-    _ -> Nothing
-  where
-    nonNoSpan sp =
-      case sp of
-        NoSpan -> Nothing
-        _ -> Just sp
-
--- | Check whether two spans refer to the same source file path.
-sameSpanPath :: Span -- ^ Primary span.
-             -> Span -- ^ Related span.
-             -> Bool -- ^ True when both spans are in the same file.
-sameSpanPath (Span _ _ p1) (Span _ _ p2) = p1 == p2
-sameSpanPath _ _ = False
-
 -- | Render missing patterns for error messages.
 renderMissingPatterns :: Lang -> [Pat Ann] -> RenderM Text
 renderMissingPatterns lang pats = do
@@ -974,54 +934,6 @@ renderParseError lang err =
                 LangEn ->
                   let enBundle = mapParseErrorBundle ParserErrorEn err
                   in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
-
--- | Find the custom repeated-pattern-binder parser error, if present.
-findPatternBinderRepeatedError :: ParseErrorBundle Text ParserError -> Maybe (Identifier, Span, Text)
-findPatternBinderRepeatedError (ParseErrorBundle errs posState) = do
-  (ident, sp) <- listToMaybe (concatMap extract (NE.toList errs))
-  return (ident, sp, pstateInput posState)
-  where
-    extract :: ParseError Text ParserError -> [(Identifier, Span)]
-    extract parseErr =
-      case parseErr of
-        FancyError _ xs ->
-          [ (ident, sp)
-          | ErrorCustom (ErrPatternBinderRepeated ident sp) <- Set.toList xs
-          ]
-        _ -> []
-
--- | Find the custom unrecognized-word parser error, if present.
-findUnrecognizedWordError :: ParseErrorBundle Text ParserError -> Maybe (Text, Span, [Text], Text)
-findUnrecognizedWordError (ParseErrorBundle errs posState) = do
-  (w, sp, suggestions) <- listToMaybe (concatMap extract (NE.toList errs))
-  return (w, sp, suggestions, pstateInput posState)
-  where
-    extract :: ParseError Text ParserError -> [(Text, Span, [Text])]
-    extract parseErr =
-      case parseErr of
-        FancyError _ xs ->
-          [ (w, sp, suggestions)
-          | ErrorCustom (ErrUnrecognizedTurkishWord w sp suggestions) <- Set.toList xs
-          ]
-        _ -> []
-
--- | Find the custom ambiguous bare-application parser error, if present.
-findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -> Maybe (ParserError, Span, Text)
-findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
-  (errComp, sp) <- listToMaybe (concatMap extract (NE.toList errs))
-  return (errComp, sp, pstateInput posState)
-  where
-    extract :: ParseError Text ParserError -> [(ParserError, Span)]
-    extract parseErr =
-      case parseErr of
-        FancyError _ xs ->
-          [ (ErrAmbiguousBareApplication sp, sp)
-          | ErrorCustom (ErrAmbiguousBareApplication sp) <- Set.toList xs
-          ] <>
-          [ (ErrAmbiguousBareApplicationOverload ident arities sp, sp)
-          | ErrorCustom (ErrAmbiguousBareApplicationOverload ident arities sp) <- Set.toList xs
-          ]
-        _ -> []
 
 -- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
 -- GC worker threads, returning committed memory to the OS) when possible.

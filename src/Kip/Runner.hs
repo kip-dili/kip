@@ -23,7 +23,13 @@ module Kip.Runner
   , renderSpan
   , renderSpanSnippet
   , renderTyOpt
+  , effectBoundaryHint
   , tcErrSpan
+  , tcErrRelatedSpan
+  , sameSpanPath
+  , findPatternBinderRepeatedError
+  , findUnrecognizedWordError
+  , findAmbiguousBareApplicationError
   , requireCacheFsm
     -- * File running
   , runFiles
