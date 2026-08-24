@@ -64,6 +64,7 @@ import Kip.Runner
   , mkEvalState
   , renderEvalError
   , renderLocatedSpanSnippet
+  , renderSpan
   , renderSpanSnippet
   , replace
   , resolveBuildTargets
@@ -354,46 +355,6 @@ renderCompilerMsgBasicOrDie msg = do
         case rcLang ctx of
           LangTr -> "Beklenmeyen hata."
           LangEn -> "Unexpected error."
-
--- | Render a span into human-readable text.
-renderSpan :: Lang -- ^ Language selection.
-           -> Span -- ^ Source span.
-           -> Text -- ^ Rendered span.
-renderSpan lang sp =
-  case sp of
-    NoSpan -> ""
-    Span start end path ->
-      case path
-        of 
-          Nothing ->
-            (case lang of
-              LangTr ->
-                T.concat
-                  [ " (satır "
-                  , T.pack (show (unPos (sourceLine start)))
-                  , ", sütun "
-                  , T.pack (show (unPos (sourceColumn start)))
-                  , " - satır "
-                  , T.pack (show (unPos (sourceLine end)))
-                  , ", sütun "
-                  , T.pack (show (unPos (sourceColumn end)))
-                  , ")"
-                  ]
-              LangEn ->
-                T.concat
-                  [ " (line "
-                  , T.pack (show (unPos (sourceLine start)))
-                  , ", column "
-                  , T.pack (show (unPos (sourceColumn start)))
-                  , " - line "
-                  , T.pack (show (unPos (sourceLine end)))
-                  , ", column "
-                  , T.pack (show (unPos (sourceColumn end)))
-                  , ")"
-                  ])
-          Just p ->
-             "\n" <> T.pack p <>":" <> T.pack (show (unPos (sourceLine start))) <> ":" <> T.pack (show (unPos (sourceColumn start))) <> "-"
-            <> T.pack (show (unPos (sourceLine end))) <> ":" <> T.pack (show (unPos (sourceColumn end)))
 
 -- | Check whether a return type annotation was written explicitly.
 isExplicitRetTy :: Ty Ann -- ^ Return type annotation.
