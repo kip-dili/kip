@@ -410,9 +410,8 @@ getMorphText dictionary = do
 --
 -- Only the prelude snapshot ('saveCachedPrelude') should use this: it is the
 -- single on-disk copy of the accumulated morphology cache that all other
--- module caches rely on being pre-populated at load time. Per-module
--- @.iz@ caches should use 'toCachedParserStateNoMorph' instead (see there
--- for why).
+-- module caches rely on being pre-populated at load time. Per-module caches
+-- persist only their incrementally tracked morphology entries.
 toCachedParserState ::
   ParserState -- ^ Parser state to serialize.
   -> IO CachedParserState -- ^ Compact cached payload.
@@ -431,43 +430,6 @@ toCachedParserState ps = do
       , pdefSpans = parserDefSpans ps
       , pupsCache = upsEntries
       , pdownsCache = downsEntries
-      }
-
--- | Convert a parser state into a cached representation, omitting the
--- shared morphology caches.
---
--- ==== Performance note (Optimization: de-duplicate morphology cache)
--- The ups/downs morphology caches ('parserUpsCache'/'parserDownsCache') are
--- __shared__ across all modules loaded in a process and accumulate
--- monotonically (prelude entries plus whatever each subsequently loaded
--- file needed). Because 'toCachedParserState' snapshotted the caches in
--- full, every per-module @.iz@ file redundantly embedded a duplicate of the
--- entire accumulated cache -- multi-megabyte files consisting almost
--- entirely of prelude vocabulary already captured once in the prelude
--- snapshot ('CachedPrelude'). That bloat was paid twice: once encoding it
--- into every @.iz@ written, and again decoding it out of every @.iz@ read
--- back on a warm run.
---
--- Per-module caches only need the non-morphology parser state; any
--- morphology lookups specific to that file's own vocabulary are cheap to
--- redo against the FFI (a handful of words per file, batched) and get
--- merged back into the shared in-process cache as they happen.
-toCachedParserStateNoMorph ::
-  ParserState -- ^ Parser state to serialize.
-  -> IO CachedParserState -- ^ Compact cached payload without morphology entries.
-toCachedParserStateNoMorph ps =
-  return
-    CachedParserState
-      { pctx = Set.toList (parserCtx ps)
-      , pctors = parserCtors ps
-      , ptyParams = parserTyParams ps
-      , ptyCons = parserTyCons ps
-      , ptyMods = parserTyMods ps
-      , pprimTypes = parserPrimTypes ps
-      , pfuncArities = parserFuncArities ps
-      , pdefSpans = parserDefSpans ps
-      , pupsCache = []
-      , pdownsCache = []
       }
 
 -- | Cache only parser declarations introduced since the input state.
@@ -841,13 +803,6 @@ saveCachedModule path m = do
           Right oldBytes -> return (oldBytes /= bytes)
       _ -> return True
   when shouldWrite (BS.writeFile absPath bytes)
-
--- | Check whether a cached module is valid for the current compiler and sources.
-isCacheValid ::
-  FilePath -- ^ Cache file path.
-  -> CachedModule -- ^ Cached module to validate.
-  -> IO Bool -- ^ True when metadata matches current sources/compiler.
-isCacheValid path m = isCacheValidMeta path (metadata m)
 
 -- | Check whether cache metadata is valid for the current compiler and
 -- sources, without requiring the full decoded 'CachedModule'.
