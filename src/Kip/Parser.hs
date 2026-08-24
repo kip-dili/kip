@@ -419,29 +419,6 @@ populateDemonstrativeCache cache = do
         ]
   mapM_ (uncurry (MC.insertMorphCache cache)) entries
 
--- | Create a new empty parser state with fresh caches.
--- newParserState :: FSM -- ^ Morphology FSM.
---                -> IO ParserState -- ^ Fresh parser state.
--- newParserState fsm' = do
---   upsCache <- newMorphCache
---   populateDemonstrativeCache upsCache
---   MkParserState fsm' Set.empty [] [] [] [] [] M.empty Nothing upsCache <$> newMorphCache
-
--- | Create a parser state with a given context and fresh caches.
-newParserStateWithCtx :: FSM -- ^ Morphology FSM.
-                      -> Set.Set Identifier -- ^ Initial identifier context.
-                      -> [Identifier] -- ^ Initial constructor identifiers.
-                      -> [Identifier] -- ^ Initial type parameters.
-                      -> [(Identifier, Int)] -- ^ Type constructor arities.
-                      -> [(Identifier, [Identifier])] -- ^ Type modifiers.
-                      -> [Identifier] -- ^ Primitive types.
-                      -> Maybe FilePath -- ^ Optional file path for span tracking.
-                      -> IO ParserState -- ^ Fresh parser state.
-newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
-  upsCache <- newMorphCache
-  populateDemonstrativeCache upsCache
-  newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache <$> newMorphCache
-
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
                          -> Maybe FilePath -- ^ Optional file path for span tracking.
