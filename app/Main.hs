@@ -1113,7 +1113,7 @@ main = do
       -- This intentionally defers TRmorph/FSM + shared morphology/render cache setup
       -- until after mode-specific argument validation, so non-REPL invocations do not
       -- eagerly start runtime machinery they may not need.
-      initRuntime :: IO (RenderCtx, [FilePath], RenderCache, FSM, MorphCache, MorphCache)
+      initRuntime :: IO (RenderCtx, [FilePath], RenderCache, FSM)
       initRuntime = do
         trmorphPath <- locateTrmorph lang useColor
         libDir <- locateLibDir lang useColor
@@ -1125,22 +1125,22 @@ main = do
         moduleDirs <- internModuleRoots (libDir : optIncludeDirs opts)
         let moduleDirs' = uniquePreserve moduleDirs
             renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm)
-        return (renderCtx, moduleDirs', renderCache, fsm, upsCache, downsCache)
+        return (renderCtx, moduleDirs', renderCache, fsm)
   case optMode opts of
     ModeTest -> do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
-      (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
+      (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
       (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
+        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm) renderCtx
       _ <- runReaderT (runFiles showDefn showDefn False preludePst preludeTC preludeEval moduleDirs preludeLoaded (optFiles opts)) renderCtx
       fastExitSuccess
     ModeExec -> do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
-      (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
+      (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
       (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
+        runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm) renderCtx
       let entryPath:progArgs = optFiles opts
           execEval = preludeEval { Eval.evalArgs = map T.pack (entryPath : progArgs) }
       _ <- runReaderT (runFiles False False False preludePst preludeTC execEval moduleDirs preludeLoaded [entryPath]) renderCtx
@@ -1150,10 +1150,10 @@ main = do
         die . T.unpack =<< runReaderT (render MsgNeedFile) basicCtx
       case target of
         "js" -> do
-          (renderCtx, moduleDirs, _, fsm, upsCache, downsCache) <- initRuntime
+          (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
           -- Parse and type-check files, collect all statements
           (codegenPst, codegenTC, codegenLoaded) <-
-            runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs fsm upsCache downsCache) renderCtx
+            runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs renderCache fsm) renderCtx
           (finalTC, taggedStmts) <- runReaderT (codegenFilesTagged codegenPst codegenTC moduleDirs codegenLoaded (optFiles opts)) renderCtx
           entryAbs <- mapM canonicalizePathCached (optFiles opts)
           let entrySet = Set.fromList entryAbs
@@ -1164,14 +1164,14 @@ main = do
           TIO.putStrLn (codegenProgram resolvMap allStmts)
           fastExitSuccess
         "js-modules" -> do
-          (renderCtx, moduleDirs, _, fsm, upsCache, downsCache) <- initRuntime
+          (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
           outDir <- case optOutDir opts of
             Just dir -> return dir
             Nothing -> die "--codegen js-modules requires --outdir <dir>"
           createDirectoryIfMissing True outDir
           outDirAbs <- canonicalizePathCached outDir
           (codegenPst, codegenTC, codegenLoaded) <-
-            runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs fsm upsCache downsCache) renderCtx
+            runReaderT (loadPreludeCodegenState (optNoPrelude opts) moduleDirs renderCache fsm) renderCtx
           (finalTC, taggedStmts) <- runReaderT (codegenFilesTagged codegenPst codegenTC moduleDirs codegenLoaded (optFiles opts)) renderCtx
           let resolvMap = Map.fromList (tcResolvedSigs finalTC)
           cwd <- getCurrentDirectory
@@ -1237,17 +1237,17 @@ main = do
     ModeBuild -> do
       when (null (optFiles opts)) $
         die . T.unpack =<< runReaderT (render MsgNeedFileOrDir) basicCtx
-      (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
+      (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
       buildTargets <- resolveBuildTargets (optFiles opts)
       let extraDirs = uniquePreserve (concatMap takeDirectories buildTargets)
           buildModuleDirs = uniquePreserve (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
-        runReaderT (loadPreludeState (optNoPrelude opts) buildModuleDirs renderCache fsm upsCache downsCache) renderCtx
+        runReaderT (loadPreludeState (optNoPrelude opts) buildModuleDirs renderCache fsm) renderCtx
       _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
       fastExitSuccess
     ModeRepl ->
       do
-        (renderCtx, moduleDirs, renderCache, fsm, upsCache, downsCache) <- initRuntime
+        (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
         if null (optFiles opts)
         then do
           emitMsgIO renderCtx (MsgHeader title)
@@ -1255,13 +1255,13 @@ main = do
           let replAuto = not (optNoPrelude opts)
           preludeFuture <-
             if replAuto
-              then Just <$> startPreludeWarmup renderCtx moduleDirs renderCache fsm upsCache downsCache
+              then Just <$> startPreludeWarmup renderCtx moduleDirs renderCache fsm
               else return Nothing
           let baseRs = emptyReplState moduleDirs renderCache fsm replAuto preludeFuture
           kipSettings >>= \s -> runInputT s (runReaderT (loop baseRs) renderCtx)
         else do
           (preludePst, preludeTC, preludeEval, preludeLoaded) <-
-            runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm upsCache downsCache) renderCtx
+            runReaderT (loadPreludeState (optNoPrelude opts) moduleDirs renderCache fsm) renderCtx
           when showHeader $ do
             emitMsgIO renderCtx (MsgHeader title)
             emitMsgIO renderCtx (MsgSeparator title)
@@ -1329,13 +1329,11 @@ main = do
       [FilePath] ->
       RenderCache ->
       FSM ->
-      MorphCache ->
-      MorphCache ->
       IO (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath)))
-    startPreludeWarmup renderCtx moduleDirs cache fsm uCache dCache = do
+    startPreludeWarmup renderCtx moduleDirs cache fsm = do
       done <- newEmptyMVar
       _ <- forkIO $ do
-        result <- try (runReaderT (loadPreludeState False moduleDirs cache fsm uCache dCache) renderCtx)
+        result <- try (runReaderT (loadPreludeState False moduleDirs cache fsm) renderCtx)
           :: IO (Either SomeException (ParserState, TCState, EvalState, Set FilePath))
         putMVar done (either (Left . T.pack . displayException) Right result)
       return done
@@ -1743,8 +1741,7 @@ main = do
             Nothing -> do
               -- Fallback path when background warmup was not started.
               (cache, fsm) <- runApp requireCacheFsm
-              (uCache, dCache) <- runApp requireParserCaches
-              st <- runApp (loadPreludeState False (replModuleDirs rs) cache fsm uCache dCache)
+              st <- runApp (loadPreludeState False (replModuleDirs rs) cache fsm)
               return (applyPrelude st)
 
     -- | Render a REPL function signature with return type.
@@ -2448,12 +2445,13 @@ main = do
     -- | Load the prelude module for code generation (no eval, cached when possible).
     loadPreludeCodegenState :: Bool -- ^ Whether to skip the prelude.
                             -> [FilePath] -- ^ Module search paths.
+                            -> RenderCache -- ^ Shared morphology/render caches.
                             -> FSM -- ^ Morphology FSM.
-                            -> MorphCache -- ^ Shared ups cache.
-                            -> MorphCache -- ^ Shared downs cache.
                             -> AppM (ParserState, TCState, Set FilePath) -- ^ Loaded parser/TC states.
-    loadPreludeCodegenState noPrelude moduleDirs fsm uCache dCache = do
-      let pst = newParserStateWithCaches fsm Nothing uCache dCache
+    loadPreludeCodegenState noPrelude moduleDirs cache fsm = do
+      let uCache = renderUpsCache cache
+          dCache = renderDownsCache cache
+          pst = newParserStateWithCaches fsm Nothing uCache dCache
           tcSt = setTCOutputMode TCOutputCodegen emptyTCState
       if noPrelude
         then return (pst, tcSt, Set.empty)
@@ -2463,7 +2461,7 @@ main = do
           -- Reuse the merged prelude graph snapshot for codegen startup. Even
           -- though codegen does not evaluate terms, restoring parser+TC from a
           -- validated snapshot avoids reparsing and re-typechecking stdlib.
-          liftIO (loadCachedPrelude snapshotPath (mkRenderCache uCache dCache) fsm uCache dCache) >>= \case
+          liftIO (loadCachedPrelude snapshotPath cache fsm uCache dCache) >>= \case
             Just (pstSnap, tcSnap, _, loadedSnap) ->
               return (pstSnap, setTCOutputMode TCOutputCodegen tcSnap, loadedSnap)
             Nothing -> do
@@ -2477,11 +2475,11 @@ main = do
                      -> [FilePath] -- ^ Module search paths.
                      -> RenderCache -- ^ Render cache.
                      -> FSM -- ^ Morphology FSM.
-                     -> MorphCache -- ^ Shared ups cache.
-                     -> MorphCache -- ^ Shared downs cache.
                      -> AppM (ParserState, TCState, EvalState, Set FilePath) -- ^ Loaded states.
-    loadPreludeState noPrelude moduleDirs cache fsm uCache dCache = do
-      let pst = newParserStateWithCaches fsm Nothing uCache dCache
+    loadPreludeState noPrelude moduleDirs cache fsm = do
+      let uCache = renderUpsCache cache
+          dCache = renderDownsCache cache
+          pst = newParserStateWithCaches fsm Nothing uCache dCache
           tcSt = emptyTCState
           evalSt = mkEvalState cache fsm
       if noPrelude
