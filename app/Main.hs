@@ -63,13 +63,7 @@ import Data.Version (showVersion)
 -- | REPL runtime state (parser/type context + evaluator).
 data ReplState =
   ReplState
-    { replCtx :: Set.Set Identifier
-    , replCtors :: [Identifier]
-    , replTyParams :: [Identifier]
-    , replTyCons :: [(Identifier, Int)]
-    , replTyMods :: [(Identifier, [Identifier])]
-    , replPrimTypes :: [Identifier]
-    , replFuncArities :: Map.Map Identifier (Set.Set Int)
+    { replParserState :: ParserState
     , replTCState :: TCState
     , replEvalState :: EvalState
     , replModuleDirs :: [FilePath]
@@ -78,6 +72,32 @@ data ReplState =
     , replAutoPrelude :: Bool
     , replPreludeFuture :: Maybe (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath)))
     }
+
+replCtx :: ReplState -> Set.Set Identifier
+replCtx = parserCtx . replParserState
+
+replCtors :: ReplState -> [Identifier]
+replCtors = parserCtors . replParserState
+
+replTyParams :: ReplState -> [Identifier]
+replTyParams = parserTyParams . replParserState
+
+replTyCons :: ReplState -> [(Identifier, Int)]
+replTyCons = parserTyCons . replParserState
+
+replTyMods :: ReplState -> [(Identifier, [Identifier])]
+replTyMods = parserTyMods . replParserState
+
+replPrimTypes :: ReplState -> [Identifier]
+replPrimTypes = parserPrimTypes . replParserState
+
+replFuncArities :: ReplState -> Map.Map Identifier (Set.Set Int)
+replFuncArities = parserFuncArities . replParserState
+
+-- | Reset invocation-specific parser metadata while retaining REPL context.
+replParserFor :: Maybe FilePath -> ReplState -> ParserState
+replParserFor path rs =
+  (replParserState rs) { parserDefSpans = Map.empty, parserFilePath = path }
 
 -- | Supported CLI modes.
 data CliMode
@@ -1289,13 +1309,7 @@ main = do
       ReplState
     emptyReplState moduleDirs cache fsm autoPrelude =
       ReplState
-        Set.empty
-        []
-        []
-        []
-        []
-        []
-        Map.empty
+        (newParserStateWithCaches fsm Nothing cache)
         emptyTCState
         (mkEvalState cache fsm)
         moduleDirs
@@ -1452,8 +1466,7 @@ main = do
       | Just expr <- stripPrefix ":t " input = do
           rs <- ensurePreludeLoaded rs
           ctx <- ask
-          (cache, fsm) <- runApp requireCacheFsm
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing cache
+          let pst = replParserFor Nothing rs
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1492,10 +1505,7 @@ main = do
                 _ -> inferExprType rs ctx paramTyCons parsed expr
       | Just expr <- stripPrefix ":parse " input = do
           rs <- ensurePreludeLoaded rs
-          (cache, fsm) <- runApp requireCacheFsm
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs)
-                    (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs)
-                    (replFuncArities rs) Map.empty Nothing cache
+          let pst = replParserFor Nothing rs
           -- Decide statement vs expression based on trailing period
           let isStmt = case dropWhile (== ' ') (reverse expr) of '.':_ -> True; _ -> False
           if isStmt
@@ -1519,7 +1529,7 @@ main = do
       | Just expr <- stripPrefix ":steps " input = do
           rs <- ensurePreludeLoaded rs
           (cache, fsm) <- runApp requireCacheFsm
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing cache
+          let pst = replParserFor Nothing rs
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
               emitMsgTCtx (MsgParseError err)
@@ -1560,8 +1570,7 @@ main = do
                           loop rs
       | otherwise = do
           rs <- ensurePreludeLoaded rs
-          (cache, fsm) <- runApp requireCacheFsm
-          let pst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty Nothing cache
+          let pst = replParserFor Nothing rs
           -- If input ends with a period, parse as statement; otherwise parse as expression
           if case dropWhile (== ' ') (reverse input) of
                '.':_ -> True
@@ -1576,31 +1585,20 @@ main = do
                     Load dirPath name -> do
                       path <- runApp (resolveModulePath (replModuleDirs rs) dirPath name)
                       absPath <- liftIO (canonicalizePathCached path)
-                      let loadPst = newParserStateWithCtxAndCaches fsm (replCtx rs) (replCtors rs) (replTyParams rs) (replTyCons rs) (replTyMods rs) (replPrimTypes rs) (replFuncArities rs) Map.empty (Just path) cache
+                      let loadPst = replParserFor (Just path) rs
                       if Set.member absPath (replLoaded rs)
                         then loop rs
                         else do
                           (pstLoaded, tcSt', evalSt', loaded') <- runApp (runFile False False False (replModuleDirs rs) (loadPst, replTCState rs, replEvalState rs, replLoaded rs) path)
                           emitMsgTCtx (MsgLoaded name)
-                          loop (rs { replCtx = parserCtx pstLoaded
-                                               , replCtors = parserCtors pstLoaded
-                                               , replTyParams = parserTyParams pstLoaded
-                                               , replTyCons = parserTyCons pstLoaded
-                                               , replTyMods = parserTyMods pstLoaded
-                                               , replPrimTypes = parserPrimTypes pstLoaded
-                                               , replFuncArities = parserFuncArities pstLoaded
+                          loop (rs { replParserState = pstLoaded
                                                , replTCState = tcSt'
                                                , replEvalState = evalSt'
                                                , replLoaded = loaded'
                                                })
                     _ -> do
-                      let pctx = parserCtx pst'
-                          pctors = parserCtors pst'
-                          pty = parserTyParams pst'
-                          ptycons = parserTyCons pst'
+                      let ptycons = parserTyCons pst'
                           ptymods = parserTyMods pst'
-                          pprim = parserPrimTypes pst'
-                          pfuncArities = parserFuncArities pst'
                       let paramTyCons = [name | (name, arity) <- ptycons, arity > 0]
                       liftIO (runTCM (tcStmt stmt) (replTCState rs)) >>= \case
                         Left tcErr -> do
@@ -1610,13 +1608,7 @@ main = do
                           evalReplStmt paramTyCons ptymods (replEvalState rs) stmt' >>= \case
                             Nothing -> loop rs
                             Just evalSt ->
-                              loop (rs { replCtx = pctx
-                                                   , replCtors = pctors
-                                                   , replTyParams = pty
-                                                   , replTyCons = ptycons
-                                                   , replTyMods = ptymods
-                                                   , replPrimTypes = pprim
-                                                   , replFuncArities = pfuncArities
+                              loop (rs { replParserState = pst'
                                                    , replTCState = tcSt
                                                    , replEvalState = evalSt
                                                    })
@@ -1685,13 +1677,7 @@ main = do
       | otherwise = do
           let applyPrelude (preludePst, preludeTC, preludeEval, preludeLoaded) =
                 rs
-                  { replCtx = parserCtx preludePst
-                  , replCtors = parserCtors preludePst
-                  , replTyParams = parserTyParams preludePst
-                  , replTyCons = parserTyCons preludePst
-                  , replTyMods = parserTyMods preludePst
-                  , replPrimTypes = parserPrimTypes preludePst
-                  , replFuncArities = parserFuncArities preludePst
+                  { replParserState = preludePst
                   , replTCState = preludeTC
                   , replEvalState = preludeEval
                   , replLoaded = preludeLoaded
@@ -1926,7 +1912,7 @@ main = do
              -> AppM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
       (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-      return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded' True False Nothing)
+      return (ReplState pst' tcSt' evalSt' moduleDirs loaded' True False Nothing)
     -- | Run a single file and update all states.
     runFile :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.
