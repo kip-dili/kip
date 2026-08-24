@@ -2785,7 +2785,7 @@ defSpansFromParser base stmts pst =
 defSpansFromParserRaw :: ParserState -> [Stmt Ann] -> ParserState -> Map.Map Identifier Span
 defSpansFromParserRaw base stmts pst =
   let baseDefs = latestDefSpans (parserDefSpans base)
-      allowed = Set.fromList (stmtNamesFromStmts stmts)
+      allowed = Set.fromList (stmtDeclarationNames stmts)
       localDefs =
         Map.filterWithKey
           (\ident sp ->
@@ -2799,7 +2799,7 @@ defSpansFromParserRaw base stmts pst =
 defSpanListsFromParser :: ParserState -> [Stmt Ann] -> ParserState -> Map.Map Identifier [Span]
 defSpanListsFromParser base stmts pst =
   let baseLists = parserDefSpans base
-      allowed = Set.fromList (stmtNamesFromStmts stmts)
+      allowed = Set.fromList (stmtDeclarationNames stmts)
       stripBase ident spans =
         let baseSpans = Map.findWithDefault [] ident baseLists
             -- Keep only spans that do not appear in the base list.
@@ -2811,53 +2811,15 @@ defSpanListsFromParser base stmts pst =
       filtered =
         Map.filterWithKey (\ident spans -> Set.member ident allowed && not (null spans)) localLists
   in filtered
--- | Collect names defined by statements.
-stmtNamesFromStmts :: [Stmt Ann] -> [Identifier]
-stmtNamesFromStmts = concatMap stmtNames'
-  where
-    stmtNames' stt =
-      case stt of
-        Defn name _ _ -> [name]
-        Function name _ _ _ _ -> [name]
-        PrimFunc name _ _ _ -> [name]
-        NewType name _ ctors -> name : map (fst . fst) ctors
-        PrimType name _ -> [name]
-        _ -> []
 
 -- | Build definition spans without stripping base definitions.
 --
 -- Used when indexing the standard library itself.
 defSpansFromParserIncludeBase :: [Stmt Ann] -> ParserState -> Map.Map Identifier Range
 defSpansFromParserIncludeBase stmts pst =
-  let allowed = Set.fromList (stmtNamesFromStmts stmts)
+  let allowed = Set.fromList (stmtDeclarationNames stmts)
       spans = Map.filterWithKey (\ident _ -> Set.member ident allowed) (latestDefSpans (parserDefSpans pst))
   in Map.map spanToRange spans
-
--- | Choose the most recent span for each identifier.
-latestDefSpans :: Map.Map Identifier [Span] -> Map.Map Identifier Span
-latestDefSpans =
-  Map.mapMaybe (\spans -> case reverse spans of
-    sp:_ -> Just sp
-    [] -> Nothing)
-
--- | Build signature span map by pairing argument types with definition spans.
-funcSigSpansFromStmts :: [Stmt Ann] -> Map.Map Identifier [Span] -> Map.Map (Identifier, [Ty Ann]) Span
-funcSigSpansFromStmts stmts defSpans =
-  fst (foldl' step (Map.empty, defSpans) stmts)
-  where
-    step (acc, spans) stmt =
-      case stmt of
-        Function name args _ _ _ ->
-          let (mSp, spans') = takeSpan name spans
-          in (maybe acc (\sp -> Map.insert (name, map snd args) sp acc) mSp, spans')
-        PrimFunc name args _ _ ->
-          let (mSp, spans') = takeSpan name spans
-          in (maybe acc (\sp -> Map.insert (name, map snd args) sp acc) mSp, spans')
-        _ -> (acc, spans)
-    takeSpan name spans =
-      case Map.lookup name spans of
-        Just (sp:rest) -> (Just sp, Map.insert name rest spans)
-        _ -> (Nothing, spans)
 
 -- | Convert definition ranges to locations for a specific URI.
 defLocationsForUri :: Uri -> Map.Map Identifier Range -> Map.Map Identifier Location

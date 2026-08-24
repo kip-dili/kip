@@ -13,6 +13,7 @@ import Data.Bits ((.|.), (.&.), shiftL, shiftR)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Text.Megaparsec.Pos (SourcePos(..), Pos, unPos, mkPos)
 import Data.Binary (Binary(..), Get)
 import Data.Word (Word8, Word32, Word64)
@@ -355,6 +356,56 @@ data Stmt ann =
   | PrimType Identifier [Ty ann]
   | ExpStmt (Exp ann)
   deriving (Show, Eq, Generic, Functor, Binary)
+
+-- | Names introduced by a sequence of statements.
+stmtDeclarationNames :: [Stmt Ann] -> [Identifier]
+stmtDeclarationNames = concatMap names
+  where
+    names stmt =
+      case stmt of
+        Defn name _ _ -> [name]
+        Function name _ _ _ _ -> [name]
+        PrimFunc name _ _ _ -> [name]
+        NewType name _ ctors -> name : map (fst . fst) ctors
+        PrimType name _ -> [name]
+        _ -> []
+
+-- | Select the most recently recorded span for each identifier.
+latestDefSpans :: Map.Map Identifier [Span] -> Map.Map Identifier Span
+latestDefSpans =
+  Map.mapMaybe (\spans -> case reverse spans of
+    span' : _ -> Just span'
+    [] -> Nothing)
+
+-- | Filter definition spans to names introduced by the given statements.
+defSpansFromStmts :: [Stmt Ann]
+                  -> Map.Map Identifier [Span]
+                  -> Map.Map Identifier Span
+defSpansFromStmts stmts defSpans =
+  let allowed = Set.fromList (stmtDeclarationNames stmts)
+  in Map.filterWithKey (\ident _ -> Set.member ident allowed) (latestDefSpans defSpans)
+
+-- | Pair function signatures with their corresponding definition spans.
+funcSigSpansFromStmts :: [Stmt Ann]
+                      -> Map.Map Identifier [Span]
+                      -> Map.Map (Identifier, [Ty Ann]) Span
+funcSigSpansFromStmts stmts defSpans =
+  fst (foldl' step (Map.empty, defSpans) stmts)
+  where
+    step (acc, spans) stmt =
+      case stmt of
+        Function name args _ _ _ -> insertSignature name args acc spans
+        PrimFunc name args _ _ -> insertSignature name args acc spans
+        _ -> (acc, spans)
+
+    insertSignature name args acc spans =
+      let (mSpan, spans') = takeSpan name spans
+      in (maybe acc (\span' -> Map.insert (name, map snd args) span' acc) mSpan, spans')
+
+    takeSpan name spans =
+      case Map.lookup name spans of
+        Just (span' : rest) -> (Just span', Map.insert name rest spans)
+        _ -> (Nothing, spans)
 
 -- | Pretty-print an expression for fallback rendering.
 prettyExp :: Exp a -- ^ Expression to render.
