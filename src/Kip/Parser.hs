@@ -98,7 +98,6 @@ import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Builder as TB
 import Data.Void (Void)
 import Data.Hashable (Hashable)
-import qualified Data.HashTable.IO as HT
 import Data.Functor (($>))
 import Text.Read (readMaybe)
 import System.IO.Unsafe (unsafePerformIO)
@@ -110,6 +109,7 @@ import qualified Text.Megaparsec.Char.Lexer as L
 
 import Language.Foma
 import Kip.AST
+import qualified Kip.MorphCache as MC
 import Kip.MorphTracking
 
 -- | Parser-specific error categories for human-friendly rendering.
@@ -222,7 +222,11 @@ TRmorph lookups are expensive, so we cache:
 * __Ups cache__: surface form → [base forms]
 * __Downs cache__: base form → [surface forms]
 -}
-type MorphCache = HT.BasicHashTable Text [Text]
+type MorphCache = MC.MorphCache
+
+-- | Create an empty shared morphology cache.
+newMorphCache :: IO MorphCache
+newMorphCache = MC.newMorphCache
 
 -- | A source token indexed by its character offset.
 data LexToken
@@ -413,15 +417,15 @@ populateDemonstrativeCache cache = do
         , ("onun", ["o<gen>"])
         , ("onunla", ["o<ins>"])
         ]
-  mapM_ (uncurry (HT.insert cache)) entries
+  mapM_ (uncurry (MC.insertMorphCache cache)) entries
 
 -- | Create a new empty parser state with fresh caches.
 -- newParserState :: FSM -- ^ Morphology FSM.
 --                -> IO ParserState -- ^ Fresh parser state.
 -- newParserState fsm' = do
---   upsCache <- HT.new
+--   upsCache <- newMorphCache
 --   populateDemonstrativeCache upsCache
---   MkParserState fsm' Set.empty [] [] [] [] [] M.empty Nothing upsCache <$> HT.new
+--   MkParserState fsm' Set.empty [] [] [] [] [] M.empty Nothing upsCache <$> newMorphCache
 
 -- | Create a parser state with a given context and fresh caches.
 newParserStateWithCtx :: FSM -- ^ Morphology FSM.
@@ -434,9 +438,9 @@ newParserStateWithCtx :: FSM -- ^ Morphology FSM.
                       -> Maybe FilePath -- ^ Optional file path for span tracking.
                       -> IO ParserState -- ^ Fresh parser state.
 newParserStateWithCtx fsm' ctx ctors tyParams tyCons tyMods primTypes mFilePath = do
-  upsCache <- HT.new
+  upsCache <- newMorphCache
   populateDemonstrativeCache upsCache
-  newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache <$> HT.new
+  newParserStateWithCtxAndCaches fsm' ctx ctors tyParams tyCons tyMods primTypes M.empty M.empty mFilePath upsCache <$> newMorphCache
 
 -- | Create a parser state with shared caches (for parse/render reuse).
 newParserStateWithCaches :: FSM -- ^ Morphology FSM.
@@ -1635,13 +1639,13 @@ upsCached :: Text -- ^ Surface form.
           -> KipParser [Text] -- ^ Morphology analyses.
 upsCached s = do
   MkParserState{fsm, parserUpsCache} <- getP
-  cached <- liftIO $ HT.lookup parserUpsCache s
+  cached <- liftIO $ MC.lookupMorphCache parserUpsCache s
   case cached of
     Just res -> return res
     Nothing -> do
       res <- liftIO (ups fsm s)
       liftIO $ do
-        HT.insert parserUpsCache s res
+        MC.insertMorphCache parserUpsCache s res
         recordMorphInsert MorphUps s res
       return res
 
@@ -1652,7 +1656,7 @@ upsCachedBatch :: [Text] -- ^ Surface forms.
 upsCachedBatch [] = return []
 upsCachedBatch surfaces = do
   MkParserState{fsm, parserUpsCache} <- getP
-  cached <- liftIO $ mapM (HT.lookup parserUpsCache) surfaces
+  cached <- liftIO $ mapM (MC.lookupMorphCache parserUpsCache) surfaces
   let missing = ordNub [s | (s, Nothing) <- zip surfaces cached]
   fetched <-
     if null missing
@@ -1660,7 +1664,7 @@ upsCachedBatch surfaces = do
       else liftIO (upsBatch fsm missing)
   let fetchedMap = M.fromList (zip missing fetched)
   liftIO $
-    mapM_ (\(key, value) -> HT.insert parserUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
+    mapM_ (\(key, value) -> MC.insertMorphCache parserUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve surfaces cached)
 
@@ -1669,13 +1673,13 @@ downsCached :: Text -- ^ Morphology stem.
             -> KipParser [Text] -- ^ Generated surface forms.
 downsCached s = do
   MkParserState{fsm, parserDownsCache} <- getP
-  cached <- liftIO $ HT.lookup parserDownsCache s
+  cached <- liftIO $ MC.lookupMorphCache parserDownsCache s
   case cached of
     Just res -> return res
     Nothing -> do
       res <- liftIO (downs fsm s)
       liftIO $ do
-        HT.insert parserDownsCache s res
+        MC.insertMorphCache parserDownsCache s res
         recordMorphInsert MorphDowns s res
       return res
 
@@ -1686,7 +1690,7 @@ downsCachedBatch :: [Text] -- ^ Morphology stems.
 downsCachedBatch [] = return []
 downsCachedBatch stems = do
   MkParserState{fsm, parserDownsCache} <- getP
-  cached <- liftIO (mapM (HT.lookup parserDownsCache) stems)
+  cached <- liftIO (mapM (MC.lookupMorphCache parserDownsCache) stems)
   let missing = ordNub [s | (s, Nothing) <- zip stems cached]
   fetched <-
     if null missing
@@ -1694,7 +1698,7 @@ downsCachedBatch stems = do
       else liftIO (downsBatch fsm missing)
   let fetchedMap = M.fromList (zip missing fetched)
   liftIO $
-    mapM_ (\(key, value) -> HT.insert parserDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
+    mapM_ (\(key, value) -> MC.insertMorphCache parserDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve stems cached)
 

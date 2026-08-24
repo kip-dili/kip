@@ -40,15 +40,15 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.HashTable.IO as HT
 
 import Language.Foma
 import Kip.AST
 import Kip.Eval (EvalState, evalCtors)
+import qualified Kip.MorphCache as MC
 import Kip.MorphTracking
 
 -- | Cache for morphology calls.
-type MorphCache = HT.BasicHashTable Text [Text]
+type MorphCache = MC.MorphCache
 
 -- | Render cache containing morphology caches.
 data RenderCache = RenderCache
@@ -59,8 +59,8 @@ data RenderCache = RenderCache
 -- | Create a new empty render cache.
 newRenderCache :: IO RenderCache -- ^ Fresh render cache.
 newRenderCache = do
-  upsCache <- HT.new
-  RenderCache upsCache <$> HT.new
+  upsCache <- MC.newMorphCache
+  RenderCache upsCache <$> MC.newMorphCache
 
 -- | Create a render cache from existing hash tables (for sharing with parser).
 mkRenderCache :: MorphCache -- ^ Shared ups cache.
@@ -74,12 +74,12 @@ upsCached :: RenderCache -- ^ Render cache.
           -> Text -- ^ Surface form.
           -> IO [Text] -- ^ Morphology analyses.
 upsCached RenderCache{rcUpsCache} fsm s = do
-  cached <- HT.lookup rcUpsCache s
+  cached <- MC.lookupMorphCache rcUpsCache s
   case cached of
     Just res -> return res
     Nothing -> do
       res <- ups fsm s
-      HT.insert rcUpsCache s res
+      MC.insertMorphCache rcUpsCache s res
       recordMorphInsert MorphUps s res
       return res
 
@@ -91,11 +91,11 @@ upsCachedBatch :: RenderCache -- ^ Render cache.
                -> IO [[Text]] -- ^ Morphology analyses per surface form.
 upsCachedBatch _ _ [] = return []
 upsCachedBatch RenderCache{rcUpsCache} fsm words = do
-  cached <- mapM (HT.lookup rcUpsCache) words
+  cached <- mapM (MC.lookupMorphCache rcUpsCache) words
   let missing = stableNub [w | (w, Nothing) <- zip words cached]
   fetched <- if null missing then return [] else upsBatch fsm missing
   let fetchedMap = M.fromList (zip missing fetched)
-  mapM_ (\(key, value) -> HT.insert rcUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
+  mapM_ (\(key, value) -> MC.insertMorphCache rcUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
   let resolve w = fromMaybe (fromMaybe [] (M.lookup w fetchedMap))
   return (zipWith resolve words cached)
 
@@ -105,12 +105,12 @@ downsCached :: RenderCache -- ^ Render cache.
             -> Text -- ^ Analysis string.
             -> IO [Text] -- ^ Surface forms.
 downsCached RenderCache{rcDownsCache} fsm s = do
-  cached <- HT.lookup rcDownsCache s
+  cached <- MC.lookupMorphCache rcDownsCache s
   case cached of
     Just res -> return res
     Nothing -> do
       res <- downs fsm s
-      HT.insert rcDownsCache s res
+      MC.insertMorphCache rcDownsCache s res
       recordMorphInsert MorphDowns s res
       return res
 
@@ -122,11 +122,11 @@ downsCachedBatch :: RenderCache -- ^ Render cache.
                 -> IO [[Text]] -- ^ Generated surface forms per stem.
 downsCachedBatch _ _ [] = return []
 downsCachedBatch RenderCache{rcDownsCache} fsm stems = do
-  cached <- mapM (HT.lookup rcDownsCache) stems
+  cached <- mapM (MC.lookupMorphCache rcDownsCache) stems
   let missing = stableNub [s | (s, Nothing) <- zip stems cached]
   fetched <- if null missing then return [] else downsBatch fsm missing
   let fetchedMap = M.fromList (zip missing fetched)
-  mapM_ (\(key, value) -> HT.insert rcDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
+  mapM_ (\(key, value) -> MC.insertMorphCache rcDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
   let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
   return (zipWith resolve stems cached)
 

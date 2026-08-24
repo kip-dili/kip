@@ -44,7 +44,6 @@ import Language.Foma
 import System.Console.Chalk
 import Kip.Parser
 import Kip.AST
-import qualified Data.HashTable.IO as HT
 import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender, isRuntimeValue)
 import qualified Kip.Eval as Eval
 import Kip.TypeCheck
@@ -1121,9 +1120,9 @@ main = do
         trmorphPath <- locateTrmorph lang useColor
         libDir <- locateLibDir lang useColor
         fsm <- fsmReadBinaryFile trmorphPath
-        upsCache <- HT.new
+        upsCache <- newMorphCache
         populateDemonstrativeCache upsCache
-        downsCache <- HT.new
+        downsCache <- newMorphCache
         let renderCache = mkRenderCache upsCache downsCache
         moduleDirs <- internModuleRoots (libDir : optIncludeDirs opts)
         let moduleDirs' = uniquePreserve moduleDirs

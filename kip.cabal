@@ -38,6 +38,7 @@ library
       Kip.AST
       Kip.Cache
       Kip.Eval
+      Kip.MorphCache
       Kip.MorphTracking
       Kip.Parser
       Kip.Primitive

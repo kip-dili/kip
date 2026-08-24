@@ -36,7 +36,6 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.HashTable.IO as HT
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.Exit (die)
@@ -127,9 +126,9 @@ runPlaygroundRequest req = do
   reportProgress 12 "load-morphology"
   fsm <- fsmReadBinaryFile trmorphPath
   reportProgress 20 "init-caches"
-  upsCache <- HT.new
+  upsCache <- newMorphCache
   populateDemonstrativeCache upsCache
-  downsCache <- HT.new
+  downsCache <- newMorphCache
   let renderCache = mkRenderCache upsCache downsCache
       moduleDirs = nub (libDir : prIncludeDirs req)
       renderCtx = RenderCtx (prLang req) renderCache fsm upsCache downsCache

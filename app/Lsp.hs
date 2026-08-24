@@ -300,9 +300,9 @@ initState = do
   trmorphPath <- locateDataFile "vendor/trmorph.fst"
   libPath <- locateDataFile "lib/temel.kip"
   fsm <- fsmReadBinaryFile trmorphPath
-  upsCache <- HT.new
+  upsCache <- newMorphCache
   populateDemonstrativeCache upsCache
-  downsCache <- HT.new
+  downsCache <- newMorphCache
   let renderCache = mkRenderCache upsCache downsCache
   let libDir = takeDirectory libPath
   cwd <- getExecutablePath

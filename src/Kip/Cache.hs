@@ -36,13 +36,13 @@ import Crypto.Hash.SHA256 (hash, hashlazy)
 import qualified Data.ByteString as BS
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import qualified Data.ByteString.Lazy as BL
-import qualified Data.HashTable.IO as HT
 
 import Kip.AST
 import Kip.Parser (ParserState(..), MorphCache, newParserStateWithCtxAndCaches)
 import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncSigsByArity, buildFuncRetByName, emptyTCState)
 import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
+import qualified Kip.MorphCache as MC
 import Kip.Render (RenderCache, renderExpValue)
 import Kip.MorphTracking (MorphDelta(..))
 import Paths_kip (getLibDir, version)
@@ -261,7 +261,7 @@ preludeMagic :: Word32
 preludeMagic = 0x4b495050 -- "KIPP"
 
 preludeFormatVersion :: Word16
-preludeFormatVersion = 1
+preludeFormatVersion = 2
 
 -- | Versioned prelude-image encoding.  Unlike the original generic instance,
 -- this fails immediately and predictably when the on-disk representation
@@ -417,8 +417,8 @@ toCachedParserState ::
   ParserState -- ^ Parser state to serialize.
   -> IO CachedParserState -- ^ Compact cached payload.
 toCachedParserState ps = do
-  upsEntries <- HT.toList (parserUpsCache ps)
-  downsEntries <- HT.toList (parserDownsCache ps)
+  upsEntries <- MC.morphCacheToList (parserUpsCache ps)
+  downsEntries <- MC.morphCacheToList (parserDownsCache ps)
   return
     CachedParserState
       { pctx = Set.toList (parserCtx ps)
@@ -523,8 +523,8 @@ fromCachedParserState ::
   -> CachedParserState -- ^ Cached parser snapshot.
   -> IO ParserState -- ^ Rehydrated parser state.
 fromCachedParserState fsm cachePath upsCache downsCache CachedParserState{..} = do
-  mapM_ (uncurry (HT.insert upsCache)) pupsCache
-  mapM_ (uncurry (HT.insert downsCache)) pdownsCache
+  mapM_ (uncurry (MC.insertMorphCache upsCache)) pupsCache
+  mapM_ (uncurry (MC.insertMorphCache downsCache)) pdownsCache
   -- Use the shared constructor so derived parser indices (for overload
   -- lookup) are rebuilt consistently after cache restore.
   return (newParserStateWithCtxAndCaches fsm (Set.fromList pctx) pctors ptyParams ptyCons ptyMods pprimTypes pfuncArities pdefSpans cachePath upsCache downsCache)
@@ -975,7 +975,11 @@ loadCachedPrelude snapshotPath cache fsm upsCache downsCache = do
               if not valid
                 then return Nothing
                 else do
-                  pst <- fromCachedParserState fsm Nothing upsCache downsCache (preludeParser preludeSnap)
+                  let cachedParser = preludeParser preludeSnap
+                  MC.installFrozenMorphCache upsCache (pupsCache cachedParser)
+                  MC.installFrozenMorphCache downsCache (pdownsCache cachedParser)
+                  pst <- fromCachedParserState fsm Nothing upsCache downsCache
+                    cachedParser { pupsCache = [], pdownsCache = [] }
                   let tcSt = fromCachedTCState (preludeTC preludeSnap)
                       evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
                   evalSt <- replayPreludePrimStmts (preludePrimStmts preludeSnap) evalBase
