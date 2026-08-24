@@ -14,6 +14,7 @@ import Data.Word
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Version (showVersion)
 import System.FilePath
 import System.Directory
@@ -107,6 +108,32 @@ data CacheMetadata = CacheMetadata
   , dependencyRootHash :: !ByteString    -- ^ Merkle root of direct dependency fingerprints.
   , dependencies :: ![(FilePath, ByteString, Integer, Integer)]  -- ^ (path, hash, size, mtime) for deps.
   } deriving (Generic)
+
+-- | Build cache metadata for one source and its direct dependencies.
+buildCacheMetadata ::
+  FilePath ->
+  T.Text ->
+  [(FilePath, ByteString, Integer, Integer)] ->
+  IO (Maybe CacheMetadata)
+buildCacheMetadata sourcePath sourceText dependencyFingerprints = do
+  mCompilerHash <- getCompilerHash
+  case mCompilerHash of
+    Nothing -> return Nothing
+    Just currentCompilerHash -> do
+      mSourceMeta <- getFileMeta sourcePath
+      let sourceBytes = encodeUtf8 sourceText
+          fallbackSourceSize = fromIntegral (BS.length sourceBytes)
+          (currentSourceSize, currentSourceMTime) =
+            maybe (fallbackSourceSize, 0) id mSourceMeta
+      return . Just $
+        CacheMetadata
+          { compilerHash = currentCompilerHash
+          , sourceHash = hash sourceBytes
+          , sourceSize = currentSourceSize
+          , sourceMTime = currentSourceMTime
+          , dependencyRootHash = dependencyMerkleRoot dependencyFingerprints
+          , dependencies = dependencyFingerprints
+          }
 
 -- | Explicit, fixed-width metadata encoding for cache format stability.
 instance Binary CacheMetadata where

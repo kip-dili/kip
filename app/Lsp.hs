@@ -1925,24 +1925,11 @@ writeCacheForDoc st uri doc = do
     Just path -> do
       absPath <- canonicalizePathCached path
       let cachePath = cacheFilePath absPath
-      mCompilerHash <- getCompilerHash
-      case mCompilerHash of
+      mMeta <- buildCacheMetadata absPath (dsText doc) []
+      case mMeta of
         Nothing -> return ()
-        Just compilerHash -> do
-          mSourceMeta <- getFileMeta absPath
+        Just meta -> do
           cachedParserState <- toCachedParserStateDelta (lsBaseParser st) (dsParser doc)
-          let sourceBytes = encodeUtf8 (dsText doc)
-              sourceDigest = hash sourceBytes
-              fallbackSourceSize = fromIntegral (BS.length sourceBytes)
-              (srcSize, srcMTime) = fromMaybe (fallbackSourceSize, 0) mSourceMeta
-          let meta = CacheMetadata
-                { compilerHash = compilerHash
-                , sourceHash = sourceDigest
-                , sourceSize = srcSize
-                , sourceMTime = srcMTime
-                , dependencyRootHash = dependencyMerkleRoot []
-                , dependencies = []
-                }
           let cachedModule = CachedModule
                 { metadata = meta
                 , cachedTypedStmts = dsStmts doc

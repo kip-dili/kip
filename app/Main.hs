@@ -29,7 +29,6 @@ import System.Console.Haskeline
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Data.Text.Encoding (encodeUtf8)
 import Data.Maybe (fromMaybe, isJust, maybeToList, mapMaybe)
 import qualified Data.Set as Set
 import Data.Set (Set)
@@ -1733,26 +1732,13 @@ main = do
                             digest <- hash <$> BS.readFile p
                             return (p, digest, 0, 0)) depPaths
                       morphDelta <- liftIO (finishMorphTracking morphToken)
-                      mCompilerHash <- liftIO getCompilerHash
-                      case mCompilerHash of
+                      mMeta <- liftIO (buildCacheMetadata absPath input depHashes)
+                      case mMeta of
                         Nothing -> return ()
-                        Just compilerHash -> do
-                          mSourceMeta <- liftIO (getFileMeta absPath)
+                        Just meta -> do
                           cachedParserBase <- liftIO (toCachedParserStateDelta pst pst')
                           let cachedParserState = attachMorphDelta morphDelta cachedParserBase
-                          let sourceBytes = encodeUtf8 input
-                              sourceDigest = hash sourceBytes
-                              fallbackSourceSize = fromIntegral (BS.length sourceBytes)
-                              (srcSize, srcMTime) = fromMaybe (fallbackSourceSize, 0) mSourceMeta
-                              meta = CacheMetadata
-                                { compilerHash = compilerHash
-                                , sourceHash = sourceDigest
-                                , sourceSize = srcSize
-                                , sourceMTime = srcMTime
-                                , dependencyRootHash = dependencyMerkleRoot depHashes
-                                , dependencies = depHashes
-                                }
-                              cachedModule = CachedModule
+                          let cachedModule = CachedModule
                                 { metadata = meta
                                 , cachedTypedStmts = typedStmts
                                 , cachedParser = cachedParserState
