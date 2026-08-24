@@ -2388,24 +2388,6 @@ main = do
               else joinPath (up ++ down)
       in T.pack (map (\c -> if c == '\\' then '/' else c) rel)
 
-    -- | Load the prelude module into a parser state.
-    loadPreludeParserState :: [FilePath] -- ^ Module search paths.
-                           -> RenderCache -- ^ Shared morphology caches.
-                           -> FSM -- ^ Morphology FSM.
-                           -> AppM ParserState -- ^ Loaded parser state.
-    loadPreludeParserState moduleDirs cache fsm = do
-      path <- resolveModulePath moduleDirs [] ([], T.pack "temel")
-      absPath <- liftIO (canonicalizePathCached path)
-      let pst = newParserStateWithCaches fsm (Just path) cache
-      let cachePath = cacheFilePath absPath
-      liftIO (loadCachedModule cachePath) >>= \case
-        Just cached -> liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
-        Nothing -> do
-          input <- liftIO (TIO.readFile path)
-          liftIO (parseFromFile pst input) >>= \case
-            Left _ -> return pst
-            Right (_, pst') -> return pst'
-
     -- | Load the prelude module for code generation (no eval, cached when possible).
     loadPreludeCodegenState :: Bool -- ^ Whether to skip the prelude.
                             -> [FilePath] -- ^ Module search paths.
