@@ -356,26 +356,6 @@ data Stmt ann =
   | ExpStmt (Exp ann)
   deriving (Show, Eq, Generic, Functor, Binary)
 
--- data Ty' a =
---     TyString' { annTy' :: a Ty' }
---   | Arr'     { annTy' :: a Ty' , dom' :: Ty' a , img' :: Ty' a }
---   | TyInd'   { annTy' :: a Ty', indName' :: Identifier }
---   deriving (Show, Eq, Ord)
-
--- type family TypeCheck (k :: (* -> *) -> *) :: * where
---   TypeCheck Ty' = ()
-
--- | Check whether a string contains more than one word.
---
--- ==== Performance note
--- Pattern-matches on @words s@ instead of computing @length (words s)@,
--- which would traverse the entire result list just to compare with 1.
-isMultiWord :: String -- ^ Candidate string.
-            -> Bool -- ^ True when the string has multiple words.
-isMultiWord s = case words s of
-  [_] -> False
-  _   -> True
-
 -- | Pretty-print an expression for fallback rendering.
 prettyExp :: Exp a -- ^ Expression to render.
           -> String -- ^ Rendered text.
