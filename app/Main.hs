@@ -75,7 +75,7 @@ import Kip.Runner
   , turkifyParseError
   , uniquePreserve
   )
-import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts)
+import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts, runtimeExportNames)
 import Data.Word
 import Crypto.Hash.SHA256 (hash)
 import qualified Data.ByteString as BS
@@ -945,7 +945,7 @@ main = do
                 | p <- modulePaths
                 ]
               allDefs = concatMap snd moduleDefs
-              runtimeDefs = runtimeGlobalNames
+              runtimeDefs = runtimeExportNames
               providerPairs = [(name, p) | (p, names) <- moduleDefs, name <- names]
               (_, providersRev) = foldl' addProvider (Set.empty, []) providerPairs
               providers = reverse providersRev
@@ -2008,49 +2008,6 @@ main = do
       let rel = makeRelative cwd modulePath
           moduleOut = outDir </> replaceExtension rel "mjs"
       in T.pack (map (\c -> if c == '\\' then '/' else c) (makeRelative outDir moduleOut))
-
-    runtimeGlobalNames :: [Text]
-    runtimeGlobalNames =
-      [ "__kip_close_stdin"
-      , "__kip_call"
-      , "__kip_float"
-      , "__kip_is_float"
-      , "__kip_num"
-      , "__kip_prim_ters"
-      , "__kip_prim_birleşim"
-      , "__kip_prim_uzunluk"
-      , "__kip_prim_toplam"
-      , "__kip_prim_fark"
-      , "__kip_prim_oku_stdin"
-      , "__kip_prim_oku_dosya"
-      , "__kip_prim_yaz_dosya"
-      , "doğru"
-      , "yanlış"
-      , "varlık"
-      , "yokluk"
-      , "bitimlik"
-      , "yaz"
-      , "çarpım"
-      , "fark"
-      , "bölüm"
-      , "kalan"
-      , "karekök"
-      , "radyan"
-      , "derece"
-      , "pi_sayısı"
-      , "taban"
-      , "tavan"
-      , "tam_sayı_ondalık_sayı_hali"
-      , "sayı_çek"
-      , "eşitlik"
-      , "küçüklük"
-      , "küçük_eşitlik"
-      , "büyüklük"
-      , "büyük_eşitlik"
-      , "dizge_hal"
-      , "tam_sayı_hal"
-      , "ondalık_sayı_hal"
-      ]
 
     importRelPath :: FilePath -> FilePath -> Text
     importRelPath fromAbs toAbs =

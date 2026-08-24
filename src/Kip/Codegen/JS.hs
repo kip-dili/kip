@@ -35,6 +35,7 @@ module Kip.Codegen.JS
   , pruneProgramStmts
   , pruneProgramTaggedStmts
   , codegenRuntime
+  , runtimeExportNames
   , codegenStmtsInProgram
   , codegenStmtsWithResolved
   , definedJsNamesInProgram
