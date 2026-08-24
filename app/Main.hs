@@ -1830,17 +1830,6 @@ main = do
               emitMsgTCtx (MsgPrimTypeAdded name)
             _ -> return ()
           return (Just evalSt')
-    -- | Collect statements from files for code generation (parse, type-check, no eval).
-    codegenFiles :: ParserState -- ^ Base parser state.
-                 -> TCState -- ^ Base type checker state.
-                 -> [FilePath] -- ^ Module search paths.
-                 -> Set FilePath -- ^ Already loaded files.
-                 -> [FilePath] -- ^ Files to codegen.
-                 -> AppM (TCState, [Stmt Ann]) -- ^ Final TC state and collected statements.
-    codegenFiles basePst baseTC moduleDirs loaded files = do
-      (finalTC, tagged) <- codegenFilesTagged basePst baseTC moduleDirs loaded files
-      return (finalTC, map snd tagged)
-
     codegenFilesTagged :: ParserState
                        -> TCState
                        -> [FilePath]
