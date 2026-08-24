@@ -62,6 +62,7 @@ import Kip.Runner
   , mapParseErrorBundle
   , mergeTCState
   , mkEvalState
+  , parseLang
   , renderEvalError
   , renderLocatedSpanSnippet
   , renderSpan
@@ -1113,15 +1114,6 @@ main = do
         <> value LangTr
         <> help "Language for diagnostics (tr|en)"
         )
-      where
-        -- | Parse a language flag.
-        parseLang :: String -- ^ Raw language flag.
-                  -> Either String Lang -- ^ Parsed language or error.
-        parseLang s =
-          case s of
-            "tr" -> Right LangTr
-            "en" -> Right LangEn
-            _ -> Left "LANG must be 'tr' or 'en'"
 
     -- | Mode option parser.
     modeParser :: Parser CliMode -- ^ Mode option parser.

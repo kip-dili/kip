@@ -58,13 +58,6 @@ main = do
         <> value LangTr
         <> help "Language for diagnostics (tr|en)"
         )
-      where
-        parseLang :: String -> Either String Lang
-        parseLang s =
-          case s of
-            "tr" -> Right LangTr
-            "en" -> Right LangEn
-            _ -> Left "LANG must be 'tr' or 'en'"
 
     modeParser :: Parser CliMode
     modeParser =

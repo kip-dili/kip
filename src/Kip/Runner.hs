@@ -6,6 +6,7 @@
 module Kip.Runner
   ( -- * Types
     Lang(..)
+  , parseLang
   , RenderCtx(..)
   , ReplState(..)
   , CompilerMsg(..)
@@ -97,6 +98,12 @@ data Lang
   = LangTr
   | LangEn
   deriving (Eq, Show)
+
+-- | Parse a diagnostic language flag.
+parseLang :: String -> Either String Lang
+parseLang "tr" = Right LangTr
+parseLang "en" = Right LangEn
+parseLang _ = Left "LANG must be 'tr' or 'en'"
 
 -- | Rendering context for diagnostics.
 data RenderCtx =
