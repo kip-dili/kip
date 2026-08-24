@@ -50,27 +50,21 @@ import qualified Kip.MorphCache as MC
 -- | Cache for morphology calls.
 type MorphCache = MC.MorphCache
 
--- | Render cache containing morphology caches.
-data RenderCache = RenderCache
-  { rcUpsCache :: !MorphCache -- ^ Cache for analysis results.
-  , rcDownsCache :: !MorphCache -- ^ Cache for generation results.
-  }
+-- | The morphology caches used while rendering.
+type RenderCache = MC.MorphCaches
 
 -- | Create a new empty render cache.
 newRenderCache :: IO RenderCache -- ^ Fresh render cache.
-newRenderCache = do
-  upsCache <- MC.newMorphCache
-  MC.populateDemonstrativeCache upsCache
-  RenderCache upsCache <$> MC.newMorphCache
+newRenderCache = MC.newMorphCaches
 
 -- | Access the shared morphology-analysis cache.
 renderUpsCache :: RenderCache -> MorphCache
-renderUpsCache = rcUpsCache
+renderUpsCache = MC.morphUpsCache
 {-# INLINE renderUpsCache #-}
 
 -- | Access the shared morphology-generation cache.
 renderDownsCache :: RenderCache -> MorphCache
-renderDownsCache = rcDownsCache
+renderDownsCache = MC.morphDownsCache
 {-# INLINE renderDownsCache #-}
 
 -- | Cached version of 'ups'.
@@ -78,7 +72,7 @@ upsCached :: RenderCache -- ^ Render cache.
           -> FSM -- ^ Morphology FSM.
           -> Text -- ^ Surface form.
           -> IO [Text] -- ^ Morphology analyses.
-upsCached RenderCache{rcUpsCache} = MC.upsCached rcUpsCache
+upsCached cache = MC.upsCached (MC.morphUpsCache cache)
 {-# INLINE upsCached #-}
 
 -- | Cached batch morphology analysis lookup.
@@ -87,7 +81,7 @@ upsCachedBatch :: RenderCache -- ^ Render cache.
                -> FSM -- ^ Morphology FSM.
                -> [Text] -- ^ Surface forms.
                -> IO [[Text]] -- ^ Morphology analyses per surface form.
-upsCachedBatch RenderCache{rcUpsCache} = MC.upsCachedBatch rcUpsCache
+upsCachedBatch cache = MC.upsCachedBatch (MC.morphUpsCache cache)
 {-# INLINE upsCachedBatch #-}
 
 -- | Cached version of 'downs'.
@@ -95,7 +89,7 @@ downsCached :: RenderCache -- ^ Render cache.
             -> FSM -- ^ Morphology FSM.
             -> Text -- ^ Analysis string.
             -> IO [Text] -- ^ Surface forms.
-downsCached RenderCache{rcDownsCache} = MC.downsCached rcDownsCache
+downsCached cache = MC.downsCached (MC.morphDownsCache cache)
 {-# INLINE downsCached #-}
 
 -- | Cached batch morphology generation lookup.
@@ -104,7 +98,7 @@ downsCachedBatch :: RenderCache -- ^ Render cache.
                 -> FSM -- ^ Morphology FSM.
                 -> [Text] -- ^ Morphology stems.
                 -> IO [[Text]] -- ^ Generated surface forms per stem.
-downsCachedBatch RenderCache{rcDownsCache} = MC.downsCachedBatch rcDownsCache
+downsCachedBatch cache = MC.downsCachedBatch (MC.morphDownsCache cache)
 {-# INLINE downsCachedBatch #-}
 
 -- | Render a dotted identifier to a single dash-separated string.

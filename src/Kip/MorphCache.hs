@@ -4,8 +4,11 @@
 -- | Mutable morphology misses layered over a compact immutable snapshot.
 module Kip.MorphCache
   ( MorphCache
+  , MorphCaches
   , newMorphCache
-  , populateDemonstrativeCache
+  , newMorphCaches
+  , morphUpsCache
+  , morphDownsCache
   , lookupMorphCache
   , insertMorphCache
   , morphCacheToList
@@ -36,6 +39,12 @@ import System.IO.Unsafe (unsafePerformIO)
 data MorphCache = MorphCache
   { mutableEntries :: !(HT.BasicHashTable Text [Text])
   , frozenEntries :: !(IORef (V.Vector (Text, [Text])))
+  }
+
+-- | The analysis and generation caches owned by one runtime.
+data MorphCaches = MorphCaches
+  { morphUpsCache :: !MorphCache
+  , morphDownsCache :: !MorphCache
   }
 
 data MorphDirection = MorphUps | MorphDowns
@@ -93,6 +102,13 @@ recordMorphInsert direction key value =
 -- | Create an empty morphology cache.
 newMorphCache :: IO MorphCache
 newMorphCache = MorphCache <$> HT.new <*> newIORef V.empty
+
+-- | Create the cache pair used by parsing and rendering.
+newMorphCaches :: IO MorphCaches
+newMorphCaches = do
+  upsCache <- newMorphCache
+  populateDemonstrativeCache upsCache
+  MorphCaches upsCache <$> newMorphCache
 
 -- | Seed analyses for demonstrative pronouns that TRmorph may miss.
 populateDemonstrativeCache :: MorphCache -> IO ()
