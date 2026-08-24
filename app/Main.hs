@@ -11,13 +11,13 @@ import System.IO (hFlush, stdout, stderr)
 #ifdef HAVE_UNIX_EXIT
 import qualified System.Posix.Process as Posix
 #endif
-import System.Directory (doesFileExist, doesDirectoryExist, listDirectory, getHomeDirectory, createDirectoryIfMissing, getCurrentDirectory)
+import System.Directory (doesFileExist, doesDirectoryExist, getHomeDirectory, createDirectoryIfMissing, getCurrentDirectory)
 import Paths_kip (version)
 import Data.List
 import Options.Applicative hiding (ParseError)
-import System.FilePath ((</>), joinPath, takeDirectory, takeExtension, replaceExtension, makeRelative, splitDirectories, normalise)
+import System.FilePath ((</>), joinPath, takeDirectory, replaceExtension, makeRelative, splitDirectories, normalise)
 
-import Control.Monad (forM, forM_, foldM, when, unless, filterM)
+import Control.Monad (forM, forM_, when, unless, filterM)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict
@@ -52,7 +52,7 @@ import Kip.Render
 import Kip.Cache
 import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
-import Kip.Runner (Lang(..), renderEvalError, locateDataFile)
+import Kip.Runner (Lang(..), renderEvalError, locateDataFile, resolveBuildTargets)
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts)
 import Data.Word
 import Crypto.Hash.SHA256 (hash)
@@ -2341,47 +2341,6 @@ main = do
           msg <- renderMsg (MsgModuleNotFound dirPath name)
           liftIO (die (T.unpack msg))
 
-
-    -- | Resolve build targets from file or directory inputs.
-    --
-    -- ==== Performance note (Optimization: one-pass expansion+dedupe)
-    -- Expands paths and deduplicates in a single fold to avoid
-    -- @concat <$> mapM ...@ followed by @nub@.
-    resolveBuildTargets :: [FilePath] -- ^ Input paths.
-                        -> IO [FilePath] -- ^ `.kip` files to build.
-    resolveBuildTargets paths = do
-      (_, accRev) <- foldM collectPath (Set.empty, []) paths
-      return (reverse accRev)
-      where
-        collectPath :: (Set FilePath, [FilePath]) -> FilePath -> IO (Set FilePath, [FilePath])
-        collectPath (seen, accRev) p = do
-          expanded <- expandPath p
-          return (foldl' insertUnique (seen, accRev) expanded)
-
-        insertUnique :: (Set FilePath, [FilePath]) -> FilePath -> (Set FilePath, [FilePath])
-        insertUnique (seen, accRev) p
-          | Set.member p seen = (seen, accRev)
-          | otherwise = (Set.insert p seen, p : accRev)
-
-        -- | Expand a directory into .kip files or keep a file path.
-        expandPath :: FilePath -- ^ Input path.
-                   -> IO [FilePath] -- ^ Expanded paths.
-        expandPath p = do
-          isDir <- doesDirectoryExist p
-          if isDir
-            then listKipFilesRecursive p
-            else return [p]
-    -- | Recursively list .kip files in a directory tree.
-    listKipFilesRecursive :: FilePath -- ^ Directory to scan.
-                          -> IO [FilePath] -- ^ `.kip` files.
-    listKipFilesRecursive dir = do
-      entries <- listDirectory dir
-      fmap concat $ forM entries $ \entry -> do
-        let path = dir </> entry
-        isDir <- doesDirectoryExist path
-        if isDir
-          then listKipFilesRecursive path
-          else return [path | takeExtension path == ".kip"]
     -- | Return parent directories for a path.
     takeDirectories :: FilePath -- ^ Path to split.
                     -> [FilePath] -- ^ Parent directories.
