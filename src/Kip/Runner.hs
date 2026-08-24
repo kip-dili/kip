@@ -95,8 +95,6 @@ data RenderCtx =
     { rcLang :: Lang
     , rcCache :: RenderCache
     , rcFsm :: FSM
-    , rcUpsCache :: MorphCache
-    , rcDownsCache :: MorphCache
     }
 
 -- | REPL runtime state (parser/type context + evaluator).
@@ -855,8 +853,8 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
       ctx <- ask
       let cache = rcCache ctx
           fsm = rcFsm ctx
-          uCache = rcUpsCache ctx
-          dCache = rcDownsCache ctx
+          uCache = renderUpsCache cache
+          dCache = renderDownsCache cache
       let cachePath = cacheFilePath absPath
       mCachedRaw <- liftIO (loadCachedModule cachePath)
       let mCached =

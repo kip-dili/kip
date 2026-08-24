@@ -131,7 +131,7 @@ runPlaygroundRequest req = do
   downsCache <- newMorphCache
   let renderCache = mkRenderCache upsCache downsCache
       moduleDirs = nub (libDir : prIncludeDirs req)
-      renderCtx = RenderCtx (prLang req) renderCache fsm upsCache downsCache
+      renderCtx = RenderCtx (prLang req) renderCache fsm
   reportProgress 30 "load-prelude"
   (preludePst, preludeTC, preludeEval, preludeLoaded) <-
     runReaderT (loadPreludeState (prNoPrelude req) moduleDirs renderCache fsm upsCache downsCache) renderCtx

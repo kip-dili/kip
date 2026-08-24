@@ -6,6 +6,8 @@ module Kip.Render
   , RenderCache
   , newRenderCache
   , mkRenderCache
+  , renderUpsCache
+  , renderDownsCache
   , renderIdentWithCases
   , renderIdentWithCase
   , renderTy
@@ -66,6 +68,16 @@ mkRenderCache :: MorphCache -- ^ Shared ups cache.
               -> MorphCache -- ^ Shared downs cache.
               -> RenderCache -- ^ Render cache.
 mkRenderCache = RenderCache
+
+-- | Access the shared morphology-analysis cache.
+renderUpsCache :: RenderCache -> MorphCache
+renderUpsCache = rcUpsCache
+{-# INLINE renderUpsCache #-}
+
+-- | Access the shared morphology-generation cache.
+renderDownsCache :: RenderCache -> MorphCache
+renderDownsCache = rcDownsCache
+{-# INLINE renderDownsCache #-}
 
 -- | Cached version of 'ups'.
 upsCached :: RenderCache -- ^ Render cache.

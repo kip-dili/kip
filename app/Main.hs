@@ -138,8 +138,6 @@ data RenderCtx =
     , rcUseColor :: Bool
     , rcCache :: Maybe RenderCache
     , rcFsm :: Maybe FSM
-    , rcUpsCache :: Maybe MorphCache
-    , rcDownsCache :: Maybe MorphCache
     }
 
 -- | Typeclass for rendering structured messages.
@@ -730,8 +728,8 @@ requireCacheFsm = do
 requireParserCaches :: RenderM (MorphCache, MorphCache) -- ^ Parser ups/downs caches.
 requireParserCaches = do
   ctx <- ask
-  case (rcUpsCache ctx, rcDownsCache ctx) of
-    (Just ups, Just downs) -> return (ups, downs)
+  case rcCache ctx of
+    Just cache -> return (renderUpsCache cache, renderDownsCache cache)
     _ -> liftIO . ioError . userError . T.unpack $
       renderInternalRenderError (rcLang ctx) MissingParserCaches
 
@@ -1109,7 +1107,7 @@ main = do
       title = T.pack ("Kip " ++ showVersion version)
       showHeader = optMode opts == ModeRepl
       showDefn = optMode opts == ModeRepl || optMode opts == ModeTest
-      basicCtx = RenderCtx lang useColor Nothing Nothing Nothing Nothing
+      basicCtx = RenderCtx lang useColor Nothing Nothing
       -- | Initialize runtime resources only for modes that actually execute code.
       --
       -- This intentionally defers TRmorph/FSM + shared morphology/render cache setup
@@ -1126,7 +1124,7 @@ main = do
         let renderCache = mkRenderCache upsCache downsCache
         moduleDirs <- internModuleRoots (libDir : optIncludeDirs opts)
         let moduleDirs' = uniquePreserve moduleDirs
-            renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm) (Just upsCache) (Just downsCache)
+            renderCtx = RenderCtx lang useColor (Just renderCache) (Just fsm)
         return (renderCtx, moduleDirs', renderCache, fsm, upsCache, downsCache)
   case optMode opts of
     ModeTest -> do
@@ -1392,7 +1390,7 @@ main = do
       exists <- doesFileExist path
       if exists
         then return path
-        else die . T.unpack =<< runReaderT (renderCompilerMsgBasicOrDie MsgTrmorphMissing) (RenderCtx lang useColor Nothing Nothing Nothing Nothing)
+        else die . T.unpack =<< runReaderT (renderCompilerMsgBasicOrDie MsgTrmorphMissing) (RenderCtx lang useColor Nothing Nothing)
     -- | Locate the standard library directory or exit.
     locateLibDir :: Lang -- ^ Language selection.
                  -> Bool -- ^ Whether to colorize output.
@@ -1402,7 +1400,7 @@ main = do
       exists <- doesFileExist path
       if exists
         then return (takeDirectory path)
-        else die . T.unpack =<< runReaderT (renderCompilerMsgBasicOrDie MsgLibMissing) (RenderCtx lang useColor Nothing Nothing Nothing Nothing)
+        else die . T.unpack =<< runReaderT (renderCompilerMsgBasicOrDie MsgLibMissing) (RenderCtx lang useColor Nothing Nothing)
     -- | REPL input loop.
     loop :: ReplState -- ^ Current REPL state.
          -> ReplM () -- ^ No result.

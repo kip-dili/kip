@@ -307,7 +307,7 @@ initState = do
   let libDir = takeDirectory libPath
   cwd <- getExecutablePath
   let moduleDirs = [libDir, takeDirectory cwd]
-  let ctx = RenderCtx LangEn renderCache fsm upsCache downsCache
+  let ctx = RenderCtx LangEn renderCache fsm
   (baseParser, baseTC, _, _) <- runReaderT (loadPreludeStateWithMode TCOutputLsp False moduleDirs renderCache fsm upsCache downsCache) ctx
   newMVar LspState
     { lsCache = renderCache
@@ -1985,7 +1985,7 @@ parseErrorToDiagnostic source bundle =
 -- | Render a typechecker error into a diagnostic using the LSP render context.
 tcErrorToDiagnostic :: LspState -> Text -> TCError -> IO Diagnostic
 tcErrorToDiagnostic st source tcErr = do
-  let ctx = RenderCtx LangEn (lsCache st) (lsFsm st) (lsUpsCache st) (lsDownsCache st)
+  let ctx = RenderCtx LangEn (lsCache st) (lsFsm st)
   msg <- runReaderT (renderTCError [] [] tcErr) ctx
   let range = case tcErrSpan tcErr of
         Nothing -> Range (Position 0 0) (Position 0 0)
