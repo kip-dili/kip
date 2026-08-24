@@ -3,8 +3,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Repl.Steps
-  ( formatSteps
-  , formatStepsStreaming
+  ( formatStepsStreaming
   , stripStepsCopulaTRmorph
   , shouldSkipInfinitiveSteps
   , setTopCaseNom
@@ -12,7 +11,6 @@ module Repl.Steps
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
-import Data.IORef (newIORef, readIORef, modifyIORef')
 import Data.Char (isAlpha, isAsciiLower, isAsciiUpper, isDigit, toLower)
 import qualified Data.Map.Strict as Map
 import Data.List (find, findIndex, foldl', intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, splitAt, tails)
@@ -27,29 +25,10 @@ import Kip.Eval (TraceStep(..))
 import Kip.Render (RenderCache)
 import qualified Kip.Render
 
--- | Format trace steps for display using Unicode box drawing.
--- This is the top-level entry point for the :steps command output.
---
--- Takes a list of trace steps and formats them to show the evaluation
--- process with visual pointers (└─┘) indicating which sub-expressions
--- are being evaluated at each step.
-formatSteps :: Bool
-            -> (Exp Ann -> IO String) -- ^ Preserving-case renderer (for inputs).
-            -> (Exp Ann -> IO String) -- ^ Nominative renderer (for outputs).
-            -> Exp Ann                -- ^ Final evaluated expression.
-            -> [TraceStep] -> IO String
-formatSteps useColor renderInput renderOutput finalExp steps = do
-  outRef <- newIORef []
-  formatStepsStreaming useColor renderInput renderOutput finalExp steps (\line ->
-    modifyIORef' outRef (line :))
-  rendered <- readIORef outRef
-  return (intercalate "\n" (reverse rendered))
-
 -- | Stream trace steps as soon as they are formatted.
 --
--- Unlike 'formatSteps', this avoids building one large intermediate string
--- before printing. It is intended for interactive REPL output where users
--- should see step rendering progress incrementally.
+-- This prints interactive REPL output incrementally instead of building one
+-- large intermediate string.
 formatStepsStreaming :: Monad m
                      => Bool
                      -> (Exp Ann -> m String) -- ^ Preserving-case renderer (for inputs).
@@ -108,21 +87,6 @@ shouldSkipInfinitiveSteps cache fsm = go
     hasInfinitiveAnalysis ident = do
       analyses <- Kip.Render.upsCached cache fsm (T.pack (Kip.Render.prettyIdent ident))
       return (any (T.isInfixOf "<vn:inf><N>") analyses)
-
--- | Format steps by replaying trace transitions.
--- Finds the starting expression and then replays each evaluation step,
--- showing how sub-expressions are reduced.
-formatStepsReplay :: Bool
-                  -> (Exp Ann -> IO String)
-                  -> (Exp Ann -> IO String)
-                  -> [TraceStep]
-                  -> IO String
-formatStepsReplay useColor renderInput renderOutput steps = do
-  outRef <- newIORef []
-  _ <- formatStepsReplayStreaming useColor renderInput renderOutput steps (\line ->
-    modifyIORef' outRef (line :))
-  rendered <- readIORef outRef
-  return (intercalate "\n" (reverse rendered))
 
 -- | Stream replayed trace transitions and return the last emitted line.
 formatStepsReplayStreaming :: Monad m
@@ -792,32 +756,6 @@ stripStepsCopulaTRmorph cache fsm s = do
            Just suf -> take (length w - length suf) w
            Nothing -> w
 
--- | Strip Turkish copula suffixes from rendered trace text.
--- Used only by :steps output.
-stripStepsCopula :: String -> String
-stripStepsCopula [] = []
-stripStepsCopula s@(c:cs)
-  | isWordChar c =
-      let (w, rest) = span isWordChar s
-      in stripWordCopula w ++ stripStepsCopula rest
-  | otherwise = c : stripStepsCopula cs
-  where
-    isWordChar ch = isAlpha ch || isDigit ch || ch == '\'' || ch == '’'
-
-    stripWordCopula w =
-      fromMaybe w (firstMatch copulaSuffixes)
-      where
-        firstMatch [] = Nothing
-        firstMatch (suf:sufs)
-          | suf `isSuffixOf` w && length w > length suf =
-              Just (take (length w - length suf) w)
-          | otherwise = firstMatch sufs
-
-    copulaSuffixes =
-      [ "dır", "dir", "dur", "dür"
-      , "tır", "tir", "tur", "tür"
-      ]
-
 -- | Remove duplicated boundary lines where a group's first line repeats
 -- the previous group's last line.
 dedupeGroupBoundaries :: [String] -> [String]
@@ -984,10 +922,6 @@ pointerLinesForColored useColor pointerIndent wholeText subText resultText =
       [pointerIndent ++ replicate ix ' ' ++ applyColor resultText blue]
 
     applyColor text colorFn = if useColor then colorFn text else text
-
--- | Uncolored version for backwards compatibility
-pointerLinesFor :: String -> String -> String -> String -> [String]
-pointerLinesFor = pointerLinesForColored False
 
 -- | Highlight a substring in blue within a larger text, if found.
 -- Used to keep evaluated sub-expressions highlighted when they appear
