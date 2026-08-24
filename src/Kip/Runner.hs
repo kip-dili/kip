@@ -22,6 +22,7 @@ module Kip.Runner
   , renderTCErrorWithSource
   , renderSpan
   , renderSpanSnippet
+  , renderLocatedSpanSnippet
   , renderTyOpt
   , effectBoundaryHint
   , tcErrSpan

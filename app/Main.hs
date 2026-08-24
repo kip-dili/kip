@@ -29,7 +29,6 @@ import System.Console.Haskeline
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.Vector as V
 import Data.Text.Encoding (encodeUtf8)
 import Data.Maybe (fromMaybe, isJust, maybeToList, mapMaybe)
 import qualified Data.Set as Set
@@ -64,6 +63,8 @@ import Kip.Runner
   , mergeTCState
   , mkEvalState
   , renderEvalError
+  , renderLocatedSpanSnippet
+  , renderSpanSnippet
   , replace
   , resolveBuildTargets
   , splitOn
@@ -616,61 +617,6 @@ renderMissingPatterns lang pats = do
             if isArg && not (null args)
               then "(" <> txt <> ")"
               else txt
-
--- | Render a caret snippet for a source span.
-renderSpanSnippet :: Text -- ^ Source input.
-                  -> Span -- ^ Source span.
-                  -> Text -- ^ Rendered snippet.
-renderSpanSnippet source sp =
-  case sp of
-    NoSpan -> ""
-    Span start end _ ->
-      let ls = V.fromList (T.lines source)
-          sLine = unPos (sourceLine start)
-          sCol = unPos (sourceColumn start)
-          eLine = unPos (sourceLine end)
-          eCol = unPos (sourceColumn end)
-          getLine n =
-            fromMaybe "" (safeIndexVec ls (n - 1))
-          caretLine lineText fromCol toCol =
-            let len = max 1 (toCol - fromCol)
-                prefix = T.replicate (max 0 (fromCol - 1)) " "
-                carets = T.replicate len "^"
-            in T.concat [lineText, "\n", prefix, carets]
-      in if sLine == eLine
-           then caretLine (getLine sLine) sCol eCol
-           else
-             let first = caretLine (getLine sLine) sCol (T.length (getLine sLine) + 1)
-                 lastLine = caretLine (getLine eLine) 1 eCol
-             in T.concat [first, "\n", lastLine]
-  where
-    safeIndexVec :: V.Vector Text -> Int -> Maybe Text
-    safeIndexVec vec i
-      | i < 0 || i >= V.length vec = Nothing
-      | otherwise = Just (vec V.! i)
-
--- | Render a span snippet with Megaparsec-style location and gutter lines.
-renderLocatedSpanSnippet :: Text -- ^ Source name.
-                         -> Text -- ^ Source input.
-                         -> Span -- ^ Source span.
-                         -> Text -- ^ Rendered snippet.
-renderLocatedSpanSnippet sourceName source sp =
-  case sp of
-    NoSpan -> ""
-    Span start _ _ ->
-      let lineNo = T.pack (show (unPos (sourceLine start)))
-          colNo = T.pack (show (unPos (sourceColumn start)))
-          gutterPad = T.replicate (T.length lineNo) " "
-          snippetLines = T.lines (renderSpanSnippet source sp)
-      in case snippetLines of
-           codeLn:caretLn:_ ->
-             T.concat
-               [ sourceName, ":", lineNo, ":", colNo, ":\n"
-               , gutterPad, " |\n"
-               , lineNo, " | ", codeLn, "\n"
-               , gutterPad, " | ", caretLn
-               ]
-           _ -> renderSpanSnippet source sp
 
 -- | Render an optional type for diagnostics.
 renderTyOpt :: [Identifier] -- ^ Type parameters for rendering.
