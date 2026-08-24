@@ -37,6 +37,26 @@ instance Binary Pos where
 -- | Fully qualified identifier with namespace parts.
 type Identifier = ([Text], Text)
 
+-- | Recognize the canonical source-level integer type name.
+isIntIdent :: Identifier -> Bool
+isIntIdent (mods, name) = mods == ["tam"] && name == "sayı"
+{-# INLINE isIntIdent #-}
+
+-- | Recognize the canonical source-level floating-point type name.
+isFloatIdent :: Identifier -> Bool
+isFloatIdent (mods, name) = mods == ["ondalık"] && name == "sayı"
+{-# INLINE isFloatIdent #-}
+
+-- | Recognize the canonical source-level string type name.
+isStringIdent :: Identifier -> Bool
+isStringIdent (mods, name) = null mods && name == "dizge"
+{-# INLINE isStringIdent #-}
+
+-- | Recognize the canonical source-level character type name.
+isCharIdent :: Identifier -> Bool
+isCharIdent (mods, name) = null mods && name == "karakter"
+{-# INLINE isCharIdent #-}
+
 -- | Grammatical cases used by the surface syntax.
 data Case =
     Nom -- ^ nominative case (yalın hal)
@@ -125,6 +145,31 @@ data Ty a =
   | TySkolem { annTy :: a , tySkolemName :: Identifier } -- ^ Rigid (skolem) type variable.
   | TyApp    { annTy :: a , tyCtor :: Ty a , tyArgs :: [Ty a] } -- ^ Type application.
   deriving (Show, Eq, Ord, Generic, Functor, Binary)
+
+-- | Normalize source-level primitive aliases to canonical type constructors.
+normalizePrimTy :: Ty Ann -> Ty Ann
+normalizePrimTy ty =
+  case ty of
+    TyInd ann name
+      | isIntIdent name -> TyInt ann
+      | isFloatIdent name -> TyFloat ann
+      | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
+      | otherwise -> TyInd ann name
+    TyVar ann name
+      | isIntIdent name -> TyInt ann
+      | isFloatIdent name -> TyFloat ann
+      | isStringIdent name -> TyString ann
+      | isCharIdent name -> TyChar ann
+      | otherwise -> TyVar ann name
+    TyApp ann ctor args ->
+      TyApp ann (normalizePrimTy ctor) (map normalizePrimTy args)
+    Arr ann domain image ->
+      Arr ann (normalizePrimTy domain) (normalizePrimTy image)
+    TySkolem ann name ->
+      TySkolem ann name
+    _ -> ty
+{-# INLINE normalizePrimTy #-}
 
 -- | Expression syntax tree with an annotation payload.
 data Exp a =

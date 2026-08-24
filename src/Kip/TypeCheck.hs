@@ -1031,31 +1031,6 @@ withCtx idents m = do
   modify (\s -> s { tcCtx = tcCtx st })
   return res
 
--- | Normalize primitive types to their canonical forms.
-normalizePrimTy :: Ty Ann -- ^ Type to normalize.
-                -> Ty Ann -- ^ Normalized type.
-normalizePrimTy ty =
-  case ty of
-    TyInd ann name
-      | isIntIdent name -> TyInt ann
-      | isFloatIdent name -> TyFloat ann
-      | isStringIdent name -> TyString ann
-      | isCharIdent name -> TyChar ann
-      | otherwise -> TyInd ann name
-    TyVar ann name
-      | isIntIdent name -> TyInt ann
-      | isFloatIdent name -> TyFloat ann
-      | isStringIdent name -> TyString ann
-      | isCharIdent name -> TyChar ann
-      | otherwise -> TyVar ann name  -- Keep TyVar for polymorphic types
-    TyApp ann ctor args ->
-      TyApp ann (normalizePrimTy ctor) (map normalizePrimTy args)
-    Arr ann d i ->
-      Arr ann (normalizePrimTy d) (normalizePrimTy i)
-    TySkolem ann name ->
-      TySkolem ann name
-    _ -> ty
-
 -- | Whether a function return type case is currently accepted.
 --
 -- The language rule intends return types to be nominative ('Nom') or
@@ -2457,26 +2432,6 @@ identMatches :: Identifier -- ^ Left identifier.
              -> Bool -- ^ True when identifiers match loosely.
 identMatches (xs1, x1) (xs2, x2) =
   x1 == x2 && (xs1 == xs2 || null xs1 || null xs2)
-
--- | Check for the integer type identifier.
-isIntIdent :: Identifier -- ^ Identifier to inspect.
-           -> Bool -- ^ True when identifier matches integer type.
-isIntIdent (mods, name) = mods == [T.pack "tam"] && name == T.pack "sayı"
-
--- | Check for the floating-point type identifier.
-isFloatIdent :: Identifier -- ^ Identifier to inspect.
-             -> Bool -- ^ True when identifier matches floating-point type.
-isFloatIdent (mods, name) = mods == [T.pack "ondalık"] && name == T.pack "sayı"
-
--- | Check for the string type identifier.
-isStringIdent :: Identifier -- ^ Identifier to inspect.
-              -> Bool -- ^ True when identifier matches string type.
-isStringIdent (mods, name) = null mods && name == T.pack "dizge"
-
--- | Check for the character type identifier.
-isCharIdent :: Identifier -- ^ Identifier to inspect.
-            -> Bool -- ^ True when identifier matches character type.
-isCharIdent (mods, name) = null mods && name == T.pack "karakter"
 
 -- | Unify expected and actual types to produce substitutions.
 type Subst = Map.Map Identifier (Ty Ann)

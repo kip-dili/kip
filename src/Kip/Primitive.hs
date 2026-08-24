@@ -89,36 +89,20 @@ isIntTy :: Ty Ann -> Bool
 isIntTy (TyInt _) = True
 isIntTy _ = False
 
--- | Check for the integer type identifier.
-isIntIdent :: Identifier -> Bool
-isIntIdent (mods, name) = mods == [T.pack "tam"] && name == T.pack "sayı"
-
 -- | Check if a type is a float
 isFloatTy :: Ty Ann -> Bool
 isFloatTy (TyFloat _) = True
 isFloatTy _ = False
-
--- | Check for the floating-point type identifier.
-isFloatIdent :: Identifier -> Bool
-isFloatIdent (mods, name) = mods == [T.pack "ondalık"] && name == T.pack "sayı"
 
 -- | Check if a type is a string
 isStringTy :: Ty Ann -> Bool
 isStringTy (TyString _) = True
 isStringTy _ = False
 
--- | Check for the string type identifier.
-isStringIdent :: Identifier -> Bool
-isStringIdent (mods, name) = null mods && name == T.pack "dizge"
-
 -- | Check if a type is a character
 isCharTy :: Ty Ann -> Bool
 isCharTy (TyChar _) = True
 isCharTy _ = False
-
--- | Check for the character type identifier.
-isCharIdent :: Identifier -> Bool
-isCharIdent (mods, name) = null mods && name == T.pack "karakter"
 
 -- | Check for the set type identifier.
 isSetIdent :: Identifier -> Bool
@@ -131,30 +115,6 @@ isListIdent (mods, name) = null mods && name == T.pack "liste"
 -- | Check for the map/dictionary type identifier.
 isMapIdent :: Identifier -> Bool
 isMapIdent (mods, name) = null mods && name == T.pack "sözlük"
-
--- | Normalize primitive aliases to canonical primitive constructors.
-normalizePrimTy :: Ty Ann -> Ty Ann
-normalizePrimTy ty =
-  case ty of
-    TyInd ann name
-      | isIntIdent name -> TyInt ann
-      | isFloatIdent name -> TyFloat ann
-      | isStringIdent name -> TyString ann
-      | isCharIdent name -> TyChar ann
-      | otherwise -> TyInd ann name
-    TyVar ann name
-      | isIntIdent name -> TyInt ann
-      | isFloatIdent name -> TyFloat ann
-      | isStringIdent name -> TyString ann
-      | isCharIdent name -> TyChar ann
-      | otherwise -> TyVar ann name
-    TyApp ann ctor args ->
-      TyApp ann (normalizePrimTy ctor) (map normalizePrimTy args)
-    Arr ann d i ->
-      Arr ann (normalizePrimTy d) (normalizePrimTy i)
-    TySkolem ann name ->
-      TySkolem ann name
-    _ -> ty
 
 -- | Check whether a type still contains unresolved type variables.
 containsTyVar :: Ty Ann -> Bool
