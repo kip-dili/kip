@@ -45,7 +45,6 @@ import Language.Foma
 import Kip.AST
 import Kip.Eval (EvalState, evalCtors)
 import qualified Kip.MorphCache as MC
-import Kip.MorphTracking
 
 -- | Cache for morphology calls.
 type MorphCache = MC.MorphCache
@@ -73,15 +72,8 @@ upsCached :: RenderCache -- ^ Render cache.
           -> FSM -- ^ Morphology FSM.
           -> Text -- ^ Surface form.
           -> IO [Text] -- ^ Morphology analyses.
-upsCached RenderCache{rcUpsCache} fsm s = do
-  cached <- MC.lookupMorphCache rcUpsCache s
-  case cached of
-    Just res -> return res
-    Nothing -> do
-      res <- ups fsm s
-      MC.insertMorphCache rcUpsCache s res
-      recordMorphInsert MorphUps s res
-      return res
+upsCached RenderCache{rcUpsCache} = MC.upsCached rcUpsCache
+{-# INLINE upsCached #-}
 
 -- | Cached batch morphology analysis lookup.
 -- Uses batch FFI when multiple words are missing to avoid repeated handle setup.
@@ -89,30 +81,16 @@ upsCachedBatch :: RenderCache -- ^ Render cache.
                -> FSM -- ^ Morphology FSM.
                -> [Text] -- ^ Surface forms.
                -> IO [[Text]] -- ^ Morphology analyses per surface form.
-upsCachedBatch _ _ [] = return []
-upsCachedBatch RenderCache{rcUpsCache} fsm words = do
-  cached <- mapM (MC.lookupMorphCache rcUpsCache) words
-  let missing = stableNub [w | (w, Nothing) <- zip words cached]
-  fetched <- if null missing then return [] else upsBatch fsm missing
-  let fetchedMap = M.fromList (zip missing fetched)
-  mapM_ (\(key, value) -> MC.insertMorphCache rcUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
-  let resolve w = fromMaybe (fromMaybe [] (M.lookup w fetchedMap))
-  return (zipWith resolve words cached)
+upsCachedBatch RenderCache{rcUpsCache} = MC.upsCachedBatch rcUpsCache
+{-# INLINE upsCachedBatch #-}
 
 -- | Cached version of 'downs'.
 downsCached :: RenderCache -- ^ Render cache.
             -> FSM -- ^ Morphology FSM.
             -> Text -- ^ Analysis string.
             -> IO [Text] -- ^ Surface forms.
-downsCached RenderCache{rcDownsCache} fsm s = do
-  cached <- MC.lookupMorphCache rcDownsCache s
-  case cached of
-    Just res -> return res
-    Nothing -> do
-      res <- downs fsm s
-      MC.insertMorphCache rcDownsCache s res
-      recordMorphInsert MorphDowns s res
-      return res
+downsCached RenderCache{rcDownsCache} = MC.downsCached rcDownsCache
+{-# INLINE downsCached #-}
 
 -- | Cached batch morphology generation lookup.
 -- Uses batch FFI when multiple stems are missing to avoid repeated handle setup.
@@ -120,24 +98,8 @@ downsCachedBatch :: RenderCache -- ^ Render cache.
                 -> FSM -- ^ Morphology FSM.
                 -> [Text] -- ^ Morphology stems.
                 -> IO [[Text]] -- ^ Generated surface forms per stem.
-downsCachedBatch _ _ [] = return []
-downsCachedBatch RenderCache{rcDownsCache} fsm stems = do
-  cached <- mapM (MC.lookupMorphCache rcDownsCache) stems
-  let missing = stableNub [s | (s, Nothing) <- zip stems cached]
-  fetched <- if null missing then return [] else downsBatch fsm missing
-  let fetchedMap = M.fromList (zip missing fetched)
-  mapM_ (\(key, value) -> MC.insertMorphCache rcDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
-  let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
-  return (zipWith resolve stems cached)
-
--- | Remove duplicates while preserving first-occurrence order.
-stableNub :: Ord a => [a] -> [a]
-stableNub = go Set.empty
-  where
-    go _ [] = []
-    go seen (x:xs)
-      | x `Set.member` seen = go seen xs
-      | otherwise = x : go (Set.insert x seen) xs
+downsCachedBatch RenderCache{rcDownsCache} = MC.downsCachedBatch rcDownsCache
+{-# INLINE downsCachedBatch #-}
 
 -- | Render a dotted identifier to a single dash-separated string.
 prettyIdent :: Identifier -- ^ Identifier to render.

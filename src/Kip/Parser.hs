@@ -110,7 +110,6 @@ import qualified Text.Megaparsec.Char.Lexer as L
 import Language.Foma
 import Kip.AST
 import qualified Kip.MorphCache as MC
-import Kip.MorphTracking
 
 -- | Parser-specific error categories for human-friendly rendering.
 data ParserError
@@ -1616,68 +1615,34 @@ upsCached :: Text -- ^ Surface form.
           -> KipParser [Text] -- ^ Morphology analyses.
 upsCached s = do
   MkParserState{fsm, parserUpsCache} <- getP
-  cached <- liftIO $ MC.lookupMorphCache parserUpsCache s
-  case cached of
-    Just res -> return res
-    Nothing -> do
-      res <- liftIO (ups fsm s)
-      liftIO $ do
-        MC.insertMorphCache parserUpsCache s res
-        recordMorphInsert MorphUps s res
-      return res
+  liftIO (MC.upsCached parserUpsCache fsm s)
+{-# INLINE upsCached #-}
 
 -- | Cached batch morphology analysis lookup.
 -- Uses batch FFI when multiple surfaces are missing to avoid repeated handle setup.
 upsCachedBatch :: [Text] -- ^ Surface forms.
                -> KipParser [[Text]] -- ^ Analyses per surface.
-upsCachedBatch [] = return []
 upsCachedBatch surfaces = do
   MkParserState{fsm, parserUpsCache} <- getP
-  cached <- liftIO $ mapM (MC.lookupMorphCache parserUpsCache) surfaces
-  let missing = ordNub [s | (s, Nothing) <- zip surfaces cached]
-  fetched <-
-    if null missing
-      then return []
-      else liftIO (upsBatch fsm missing)
-  let fetchedMap = M.fromList (zip missing fetched)
-  liftIO $
-    mapM_ (\(key, value) -> MC.insertMorphCache parserUpsCache key value >> recordMorphInsert MorphUps key value) (zip missing fetched)
-  let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
-  return (zipWith resolve surfaces cached)
+  liftIO (MC.upsCachedBatch parserUpsCache fsm surfaces)
+{-# INLINE upsCachedBatch #-}
 
 -- | Cached morphology generation lookup.
 downsCached :: Text -- ^ Morphology stem.
             -> KipParser [Text] -- ^ Generated surface forms.
 downsCached s = do
   MkParserState{fsm, parserDownsCache} <- getP
-  cached <- liftIO $ MC.lookupMorphCache parserDownsCache s
-  case cached of
-    Just res -> return res
-    Nothing -> do
-      res <- liftIO (downs fsm s)
-      liftIO $ do
-        MC.insertMorphCache parserDownsCache s res
-        recordMorphInsert MorphDowns s res
-      return res
+  liftIO (MC.downsCached parserDownsCache fsm s)
+{-# INLINE downsCached #-}
 
 -- | Cached batch morphology generation lookup.
 -- Uses batch FFI when multiple stems are missing to avoid repeated handle setup.
 downsCachedBatch :: [Text] -- ^ Morphology stems.
                 -> KipParser [[Text]] -- ^ Generated surface forms per stem.
-downsCachedBatch [] = return []
 downsCachedBatch stems = do
   MkParserState{fsm, parserDownsCache} <- getP
-  cached <- liftIO (mapM (MC.lookupMorphCache parserDownsCache) stems)
-  let missing = ordNub [s | (s, Nothing) <- zip stems cached]
-  fetched <-
-    if null missing
-      then return []
-      else liftIO (downsBatch fsm missing)
-  let fetchedMap = M.fromList (zip missing fetched)
-  liftIO $
-    mapM_ (\(key, value) -> MC.insertMorphCache parserDownsCache key value >> recordMorphInsert MorphDowns key value) (zip missing fetched)
-  let resolve s = fromMaybe (fromMaybe [] (M.lookup s fetchedMap))
-  return (zipWith resolve stems cached)
+  liftIO (MC.downsCachedBatch parserDownsCache fsm stems)
+{-# INLINE downsCachedBatch #-}
 
 -- | Parse an identifier with inferred case (context-aware).
 casedIdentifier :: KipParser (Identifier, Case) -- ^ Identifier and inferred case.

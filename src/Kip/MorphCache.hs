@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 -- | Mutable morphology misses layered over a compact immutable snapshot.
 module Kip.MorphCache
@@ -7,13 +8,24 @@ module Kip.MorphCache
   , insertMorphCache
   , morphCacheToList
   , installFrozenMorphCache
+  , upsCached
+  , upsCachedBatch
+  , downsCached
+  , downsCachedBatch
   ) where
 
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.HashTable.IO as HT
+import Data.List (foldl')
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Vector as V
+import Language.Foma (FSM)
+import qualified Language.Foma as Foma
+
+import Kip.MorphTracking
 
 -- | A small mutable overlay plus a sorted, directly queryable base image.
 data MorphCache = MorphCache
@@ -48,6 +60,75 @@ morphCacheToList MorphCache{mutableEntries, frozenEntries} = do
 installFrozenMorphCache :: MorphCache -> [(Text, [Text])] -> IO ()
 installFrozenMorphCache MorphCache{frozenEntries} =
   writeIORef frozenEntries . V.fromList
+
+-- | Analyze one surface form, caching and tracking genuine misses.
+upsCached :: MorphCache -> FSM -> Text -> IO [Text]
+upsCached = cachedLookup MorphUps Foma.ups
+{-# INLINE upsCached #-}
+
+-- | Analyze surface forms in one batch, caching and tracking genuine misses.
+upsCachedBatch :: MorphCache -> FSM -> [Text] -> IO [[Text]]
+upsCachedBatch = cachedLookupBatch MorphUps Foma.upsBatch
+{-# INLINE upsCachedBatch #-}
+
+-- | Generate one surface form, caching and tracking genuine misses.
+downsCached :: MorphCache -> FSM -> Text -> IO [Text]
+downsCached = cachedLookup MorphDowns Foma.downs
+{-# INLINE downsCached #-}
+
+-- | Generate surface forms in one batch, caching and tracking genuine misses.
+downsCachedBatch :: MorphCache -> FSM -> [Text] -> IO [[Text]]
+downsCachedBatch = cachedLookupBatch MorphDowns Foma.downsBatch
+{-# INLINE downsCachedBatch #-}
+
+cachedLookup :: MorphDirection
+             -> (FSM -> Text -> IO [Text])
+             -> MorphCache
+             -> FSM
+             -> Text
+             -> IO [Text]
+cachedLookup direction fetch cache fsm key = do
+  cached <- lookupMorphCache cache key
+  case cached of
+    Just result -> return result
+    Nothing -> do
+      result <- fetch fsm key
+      insertMorphCache cache key result
+      recordMorphInsert direction key result
+      return result
+{-# INLINE cachedLookup #-}
+
+cachedLookupBatch :: MorphDirection
+                  -> (FSM -> [Text] -> IO [[Text]])
+                  -> MorphCache
+                  -> FSM
+                  -> [Text]
+                  -> IO [[Text]]
+cachedLookupBatch _ _ _ _ [] = return []
+cachedLookupBatch direction fetch cache fsm keys = do
+  cached <- mapM (lookupMorphCache cache) keys
+  let missing = stableNub [key | (key, Nothing) <- zip keys cached]
+  fetched <- if null missing then return [] else fetch fsm missing
+  let fetchedMap = Map.fromList (zip missing fetched)
+  mapM_ insertTracked (zip missing fetched)
+  let resolve key = fromMaybe (fromMaybe [] (Map.lookup key fetchedMap))
+  return (zipWith resolve keys cached)
+  where
+    insertTracked (key, value) = do
+      insertMorphCache cache key value
+      recordMorphInsert direction key value
+{-# INLINE cachedLookupBatch #-}
+
+-- | Remove duplicate text values while retaining their first occurrence.
+stableNub :: [Text] -> [Text]
+stableNub values = reverse uniquesRev
+  where
+    (_, uniquesRev) = foldl' step (Set.empty, []) values
+    step (!seen, acc) value
+      | value `Set.member` seen = (seen, acc)
+      | otherwise =
+          let !seen' = Set.insert value seen
+          in (seen', value : acc)
 
 -- | Binary search over the sorted base vector.
 binaryLookup :: Text -> V.Vector (Text, [Text]) -> Maybe [Text]
