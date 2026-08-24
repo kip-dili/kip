@@ -10,10 +10,10 @@ module Repl.Steps
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (foldM, when)
+import Control.Monad (when)
 import Data.Char (isAlpha, isAsciiLower, isAsciiUpper, isDigit, toLower)
 import qualified Data.Map.Strict as Map
-import Data.List (find, findIndex, foldl', intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, splitAt, tails)
+import Data.List (find, findIndex, isInfixOf, isPrefixOf, isSuffixOf, nub, splitAt, tails)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -567,18 +567,6 @@ collapseSeqAfterStep expr =
         Nothing -> (expr, False)
     _ -> (expr, False)
 
--- | Format steps grouped by top-level evaluation.
-formatStepsGrouped :: Bool
-                   -> (Exp Ann -> IO String)
-                   -> (Exp Ann -> IO String)
-                   -> [(Int, TraceStep)]
-                   -> IO String
-formatStepsGrouped useColor renderInput renderOutput steps = do
-  groups <- groupByTopLevel steps
-  formattedGroups <- mapM (formatGroup useColor renderInput renderOutput) groups
-  let nonEmpty = filter (not . null) formattedGroups
-      deduped = dedupeGroupBoundaries nonEmpty
-  return (intercalate "\n\n" deduped)
 
 -- | Strip Turkish copula suffixes from rendered trace text using TRmorph.
 -- Uses morphological analysis to identify copulas, then strips them manually.
@@ -640,106 +628,6 @@ stripStepsCopulaTRmorph cache fsm s = do
            Just suf -> take (length w - length suf) w
            Nothing -> w
 
--- | Remove duplicated boundary lines where a group's first line repeats
--- the previous group's last line.
-dedupeGroupBoundaries :: [String] -> [String]
-dedupeGroupBoundaries [] = []
-dedupeGroupBoundaries (g:gs) = reverse (foldl' step [g] gs)
-  where
-    step acc next =
-      case acc of
-        [] -> [next]
-        prev:rest ->
-          let prevLines = lines prev
-              nextLines = lines next
-          in case (reverse prevLines, nextLines) of
-               (pLast:_, nFirst:nRest) | pLast == nFirst && not (null nRest) ->
-                 intercalate "\n" (prevLines ++ nRest) : rest
-               _ -> next : acc
-
--- | Group steps by top-level (depth 0) steps.
--- Each group consists of sub-steps (depth > 0) followed by their parent (depth 0).
-groupByTopLevel :: [(Int, TraceStep)] -> IO [[(Int, TraceStep)]]
-groupByTopLevel [] = return []
-groupByTopLevel steps = do
-  let go [] currentSubsRev groupsRev =
-        case groupsRev of
-          [] -> []
-          lastGroupRev:restRev ->
-            let groupsWithTrailingSubs =
-                  if null currentSubsRev
-                    then groupsRev
-                    else (currentSubsRev ++ lastGroupRev) : restRev
-            in map reverse (reverse groupsWithTrailingSubs)
-      go ((i, s):xs) currentSubsRev groupsRev
-        | tsDepth s > 0 = go xs ((i, s) : currentSubsRev) groupsRev
-        | otherwise =
-            let grpRev = (i, s) : currentSubsRev
-            in go xs [] (grpRev : groupsRev)
-  return (go steps [] [])
-
--- | Format a single group (sub-steps followed by their parent top-level step).
-formatGroup :: Bool
-            -> (Exp Ann -> IO String)
-            -> (Exp Ann -> IO String)
-            -> [(Int, TraceStep)]
-            -> IO String
-formatGroup _ _ _ [] = return ""
-formatGroup useColor renderInput renderOutput group = do
-  let (preSubs, rest) = span (\(_, s) -> tsDepth s > 0) group
-      arrow = if useColor then dim "⇝ " else "⇝ "
-  case rest of
-    [] -> return ""
-    ((_, topStep):postSubs) -> do
-      let pre = map snd preSubs
-          post = map snd postSubs
-          allSubs = pre ++ post
-      if null allSubs
-        then do
-          topInput <- renderInput (tsInput topStep)
-          topOutput <- renderOutput (tsOutput topStep)
-          return (topInput ++ "\n" ++ arrow ++ topOutput)
-        else do
-          let startAST = chooseTraceStart topStep pre
-          startText <- renderInput startAST
-          (_, _, outLines) <- foldM
-            (processSubStepAST arrow renderInput renderOutput)
-            (startAST, startText, [arrow ++ startText])
-            (zip [0 ..] allSubs)
-          return (intercalate "\n" outLines)
-
--- | Pick whether sub-step substitution should start from the top input
--- or top output expression for this group.
-chooseTraceStart :: TraceStep -> [TraceStep] -> Exp Ann
-chooseTraceStart topStep subSteps =
-  case subSteps of
-    [] -> tsInput topStep
-    firstSub : _ ->
-      let needle = tsInput firstSub
-          inInput = containsExp needle (tsInput topStep)
-          inOutput = containsExp needle (tsOutput topStep)
-      in if inOutput && not inInput then tsOutput topStep else tsInput topStep
-
--- | Check whether an expression appears as a sub-expression.
-containsExp :: Exp Ann -> Exp Ann -> Bool
-containsExp needle haystack
-  | eqTraceExp needle haystack = True
-  | otherwise =
-      case haystack of
-        App _ fn args ->
-          containsExp needle fn || any (containsExp needle) args
-        Match _ scrut cls ->
-          containsExp needle scrut
-            || any (\(Clause _ body) -> containsExp needle body) cls
-        Seq _ first second ->
-          containsExp needle first || containsExp needle second
-        Bind _ _ _ bindExp ->
-          containsExp needle bindExp
-        Let _ _ body ->
-          containsExp needle body
-        Ascribe _ _ ascExp ->
-          containsExp needle ascExp
-        _ -> False
 
 -- ============================================================================
 -- String Utilities
@@ -821,40 +709,6 @@ highlightSubstring useColor needle haystack
               (match, after) = splitAt (length needle) rest
           in before ++ blue match ++ after
 
--- | Process a single sub-step using AST-level substitution.
--- Returns the updated parent AST, rendered parent string, and accumulated output lines.
-processSubStepAST :: String  -- Arrow prefix
-                  -> (Exp Ann -> IO String)  -- Renderer for inputs
-                  -> (Exp Ann -> IO String)  -- Renderer for outputs
-                  -> (Exp Ann, String, [String])  -- (current parent AST, current parent string, accumulated lines)
-                  -> (Int, TraceStep)             -- Sub-step to process
-                  -> IO (Exp Ann, String, [String])
-processSubStepAST arrow renderInput renderOutput (currentParentAST, currentParent, accLines) (_, subStep) = do
-  let replacement = tsOutput subStep
-      (changed, newParentAST) = substituteFirstChild (tsInput subStep) replacement currentParentAST
-  subInput <- renderInput (tsInput subStep)
-  subOutput <- renderOutput (tsOutput subStep)
-  newParent <- if changed then renderInput newParentAST else return currentParent
-
-  if newParent == currentParent
-    then return (currentParentAST, currentParent, accLines)
-    else do
-      let pos = findSubstring subInput currentParent
-          subLen = length subInput
-      let (underlineLine, resultLine) =
-            case pos of
-              Just idx | subLen >= 3 ->
-                let underline = replicate idx ' ' ++ "└" ++ replicate (subLen - 2) '─' ++ "┘"
-                    centerOffset = idx + subLen `div` 2
-                    result = replicate centerOffset ' ' ++ subOutput
-                in (underline, result)
-              Just idx ->
-                let result = replicate idx ' ' ++ subOutput
-                in ("", result)
-              Nothing -> ("", "")
-          pointerLines = filter (not . null) [underlineLine, resultLine]
-          newLines = accLines ++ pointerLines ++ [arrow ++ newParent]
-      return (newParentAST, newParent, newLines)
 
 
 -- ============================================================================
