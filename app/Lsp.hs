@@ -1092,7 +1092,7 @@ onHover req respond = do
                             mScrutTy <- liftIO (scrutineeTypeForExp pos scrutExp doc)
                             case mScrutTy of
                               Just scrutTy ->
-                                case unifyTypes (Map.toList (tcTyCons tcSt)) [retTy] [scrutTy] of
+                                case unifyTypes (tcTyCons tcSt) [retTy] [scrutTy] of
                                   Just subst ->
                                     return (applySubst subst retTy)
                                   Nothing -> return retTy
@@ -1100,7 +1100,7 @@ onHover req respond = do
                                 case mPatArgTys of
                                   Just patTys
                                     | length patTys == length argTysAligned ->
-                                        case unifyTypes (Map.toList (tcTyCons tcSt)) argTysAligned patTys of
+                                        case unifyTypes (tcTyCons tcSt) argTysAligned patTys of
                                           Just subst ->
                                             return (applySubst subst retTy)
                                           Nothing -> return retTy
@@ -1108,7 +1108,7 @@ onHover req respond = do
                                     res <- liftIO (runTCM (inferType scrutExp) tcSt)
                                     case res of
                                       Right (Just scrutTy, _) ->
-                                        case unifyTypes (Map.toList (tcTyCons tcSt)) [retTy] [scrutTy] of
+                                        case unifyTypes (tcTyCons tcSt) [retTy] [scrutTy] of
                                           Just subst ->
                                             return (applySubst subst retTy)
                                           Nothing -> return retTy
@@ -1118,7 +1118,7 @@ onHover req respond = do
                               Just (args, _) ->
                                 case args of
                                   ((_, _), scrutTy):_ ->
-                                    case unifyTypes (Map.toList (tcTyCons tcSt)) [retTy] [scrutTy] of
+                                    case unifyTypes (tcTyCons tcSt) [retTy] [scrutTy] of
                                       Just subst ->
                                         return (applySubst subst retTy)
                                       Nothing -> return retTy

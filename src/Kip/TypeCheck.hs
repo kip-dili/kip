@@ -471,13 +471,12 @@ tcExp1With allowEffect e =
                 annCase annFn /= Gen && isBoundHigherOrderVar && isEffectfulHigherOrderVar
               isConditionalResultTy ty =
                 let tyNorm = normalizePrimTy ty
-                    tyConsList = Map.toList tcTyCons
                     nullaryCtorCount =
                       length
                         [ ()
                         | (ctorArgs, resTy) <- Map.elems tcCtors
                         , null ctorArgs
-                        , tyEq tyConsList resTy tyNorm || tyEq tyConsList tyNorm resTy
+                        , tyEq tcTyCons resTy tyNorm || tyEq tcTyCons tyNorm resTy
                         ]
                 in nullaryCtorCount >= 2
           case higherOrderResultTy of
@@ -530,7 +529,7 @@ tcExp1With allowEffect e =
                           if and (zipWith (typeMatchesAllowUnknown tcTyCons) argTys tys)
                             then do
                               unless (Nothing `elem` argTys) $
-                                case unifyTypes (Map.toList tcTyCons) tys (catMaybes argTys) of
+                                case unifyTypes tcTyCons tys (catMaybes argTys) of
                                   Just subst ->
                                     recordResolvedType (annSpan annApp) (applySubst subst resTy)
                                   Nothing -> return ()
@@ -684,7 +683,7 @@ tcExp1With allowEffect e =
                           case ctorMatched of
                             Just (ctorCand, ctorArgTys, resTy) -> do
                               unless (Nothing `elem` argTys) $
-                                case unifyTypes (Map.toList tcTyCons) ctorArgTys (catMaybes argTys) of
+                                case unifyTypes tcTyCons ctorArgTys (catMaybes argTys) of
                                   Just subst -> recordResolvedType (annSpan annApp) (applySubst subst resTy)
                                   Nothing -> return ()
                               let ctorFnResolved = narrowResolvedVarCandidate fnResolved ctorCand
@@ -760,8 +759,7 @@ tcExp1With allowEffect e =
       MkTCState{tcTyCons, tcFuncSigs} <- get
       when (containsTyVars tcTyCons ascType) $
         lift (throwE (NoType (annSpan annExp)))
-      let tcList = Map.toList tcTyCons
-          nAsc = normalizeTy tcList ascType
+      let nAsc = normalizeTy tcTyCons ascType
           expIsAppToOverload =
             case exp' of
               App {fn = Var {varCandidates}, args} ->
@@ -774,7 +772,7 @@ tcExp1With allowEffect e =
                       ]
                 in length exactSigs > 1
               _ -> False
-          matchesKnownType expTy = tyEq tcList nAsc (normalizeTy tcList expTy)
+          matchesKnownType expTy = tyEq tcTyCons nAsc (normalizeTy tcTyCons expTy)
       case mExpTy of
         Just expTy
           | matchesKnownType expTy -> return (Ascribe annExp ascType exp')
@@ -1319,54 +1317,31 @@ narrowResolvedVarCandidate fnExp (ident, cas) =
     _ -> fnExp
 
 -- | Lookup a function return type by candidates and argument types.
-lookupFuncRet :: [(Identifier, Int)] -- ^ Type constructor arities for type comparison.
-              -> [((Identifier, [Ty Ann]), Ty Ann)] -- ^ Return types by identifier and arg types.
-              -> [(Identifier, Case)] -- ^ Candidate identifiers.
-              -> [Ty Ann] -- ^ Argument types to match.
-              -> Maybe (Ty Ann) -- ^ Matching return type.
-lookupFuncRet tyCons env candidates argTys =
-  let names = map fst candidates
-  in go names
-  where
-    go :: [Identifier] -- ^ Remaining candidate names.
-       -> Maybe (Ty Ann) -- ^ Matching return type.
-    go [] = Nothing
-    go (n:ns) =
-      case find (\((name, sigArgTys), _) -> name == n && matchArgTypes sigArgTys) env of
-        Just (_, retTy) -> Just retTy
-        Nothing -> go ns
-    matchArgTypes sigArgTys =
-      length sigArgTys == length argTys &&
-      and (zipWith (tyEq tyCons) argTys sigArgTys)
-
--- | Lookup a function return type by candidates and argument types (Map version).
 lookupFuncRetMap :: Map.Map Identifier Int -- ^ Type constructor arities for type comparison.
                  -> HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann)) -- ^ Return types grouped by identifier.
                  -> [(Identifier, Case)] -- ^ Candidate identifiers.
                  -> [Ty Ann] -- ^ Argument types to match.
                  -> Maybe (Ty Ann) -- ^ Matching return type.
 lookupFuncRetMap tyCons env candidates argTys =
-  let tyConsList = Map.toList tyCons
-  in go (map fst candidates) tyConsList
+  go (map fst candidates)
   where
     argTysNorm = map normalizePrimTy argTys
     go :: [Identifier] -- ^ Remaining candidate names.
-       -> [(Identifier, Int)] -- ^ Type constructor arities as list.
        -> Maybe (Ty Ann) -- ^ Matching return type.
-    go [] _ = Nothing
-    go (n:ns) tcList =
+    go [] = Nothing
+    go (n:ns) =
       case HM.lookup n env of
         Just sigRets ->
           case Map.lookup argTysNorm sigRets of
             Just retTy -> Just retTy
             Nothing ->
-              case find (matchArgTypes tcList . fst) (Map.toList sigRets) of
+              case find (matchArgTypes . fst) (Map.toList sigRets) of
                 Just (_, retTy) -> Just retTy
-                Nothing -> go ns tcList
-        Nothing -> go ns tcList
-    matchArgTypes tcList sigArgTys =
+                Nothing -> go ns
+        Nothing -> go ns
+    matchArgTypes sigArgTys =
       length sigArgTys == length argTys &&
-      and (zipWith (tyEq tcList) argTys sigArgTys)
+      and (zipWith (tyEq tyCons) argTys sigArgTys)
 
 -- | When an arg's inferred type is a TyVar referencing a 0-arg function,
 -- replace it with that function's return type for better overload resolution.
@@ -1492,7 +1467,7 @@ inferType e = inferTypeUncached
                             then return Nothing
                             else do
                               let actuals = catMaybes argTys
-                              case unifyTypes (Map.toList tcTyCons) tys actuals of
+                              case unifyTypes tcTyCons tys actuals of
                                 Just subst -> return (Just (applySubst subst resTy))
                                 Nothing -> return Nothing
                     _ -> do
@@ -1640,13 +1615,12 @@ inferFunctionValueSig candidates (Just inferredTy) = do
         , argsSig <- Map.findWithDefault [] name tcFuncSigs
         , not (null argsSig)
         ]
-      tcList = Map.toList tcTyCons
       mkFunTy argTys retTy = foldr (Arr (mkAnn Nom NoSpan)) retTy argTys
       matches =
         [ (name, argTys)
         | (name, argTys) <- sigEntries
         , Just retTy <- [Map.lookup (name, argTys) tcFuncSigRets]
-        , tyEq tcList (mkFunTy argTys retTy) inferredTy
+        , tyEq tcTyCons (mkFunTy argTys retTy) inferredTy
         ]
   return $
     case nub matches of
@@ -1694,7 +1668,7 @@ analyzePatForArgs pat args =
         Just (argTys, resTy) ->
           let resTyNorm = stripTyCaseForMatch resTy
               scrutTyNorm = stripTyCaseForMatch scrutTy
-          in case unifyTypes (Map.toList tcTyCons) [resTyNorm] [scrutTyNorm] of
+          in case unifyTypes tcTyCons [resTyNorm] [scrutTyNorm] of
                Just subst -> do
                  let argTys' = map (applySubst subst) argTys
                      patsOrdered = reorderCtorPatternArgs argTys' pats
@@ -1895,7 +1869,7 @@ ctorsForType ty =
     _ -> do
       MkTCState{tcCtors, tcTyCons} <- get
       let pickCtor (ctor, (argTys, resTy)) =
-            case unifyTypes (Map.toList tcTyCons) [resTy] [ty] of
+            case unifyTypes tcTyCons [resTy] [ty] of
               Just subst -> Just (CtorInfo ctor (map (applySubst subst) argTys))
               Nothing -> Nothing
           ctors = mapMaybe pickCtor (Map.toList tcCtors)
@@ -2222,29 +2196,18 @@ isUseful tys matrix vec =
         Just (pref, 'ğ') -> Just (pref <> T.pack "k")
         _ -> Nothing
 
--- | Compare a maybe-inferred type with an expected type.
-typeMatches :: [(Identifier, Int)] -- ^ Type constructor arities.
-            -> Maybe (Ty Ann) -- ^ Possibly unknown type.
-            -> Ty Ann -- ^ Expected type.
-            -> Bool -- ^ True when the types match.
-typeMatches tyCons mTy ty =
-  case mTy of
-    Nothing -> False
-    Just t -> tyEq tyCons t ty
-
 -- | Compare types while allowing unknown inferred types.
 typeMatchesAllowUnknown :: Map.Map Identifier Int -- ^ Type constructor arities.
                         -> Maybe (Ty Ann) -- ^ Possibly unknown type.
                         -> Ty Ann -- ^ Expected type.
                         -> Bool -- ^ True when the types match.
 typeMatchesAllowUnknown tyCons mTy ty =
-  let tyCons' = Map.toList tyCons
-  in case mTy of
+  case mTy of
     Nothing -> True
     Just t ->
-      tyEq tyCons' t ty
-      || isJust (unifyTypes tyCons' [ty] [t])
-      || isJust (unifyTypes tyCons' [t] [ty])
+      tyEq tyCons t ty
+      || isJust (unifyTypes tyCons [ty] [t])
+      || isJust (unifyTypes tyCons [t] [ty])
 
 -- | Check if a type contains any type variables or undefined type identifiers.
 -- In Kip, undefined type identifiers are treated as implicitly quantified type variables.
@@ -2269,8 +2232,8 @@ tyMatchesRigid :: Map.Map Identifier Int -- ^ Type constructor arities.
                -> Ty Ann -- ^ Declared type (with rigid type variables).
                -> Bool -- ^ True when the inferred type matches the declared type.
 tyMatchesRigid tyCons inferred declared =
-  let n1 = canonicalizeTypeVars tyCons (normalizeTyMap tyCons inferred)
-      n2 = canonicalizeTypeVars tyCons (normalizeTyMap tyCons declared)
+  let n1 = canonicalizeTypeVars tyCons (normalizeTy tyCons inferred)
+      n2 = canonicalizeTypeVars tyCons (normalizeTy tyCons declared)
       isDefinedType name = Map.member name tyCons
   in case (n1, n2) of
     (TyString _, TyString _) -> True
@@ -2349,7 +2312,7 @@ canonicalizeTypeVars tyCons ty =
           in (TyVar ann canon, Map.insert name canon env, n + 1)
 
 -- | Check two types for compatibility.
-tyEq :: [(Identifier, Int)] -- ^ Type constructor arities.
+tyEq :: Map.Map Identifier Int -- ^ Type constructor arities.
      -> Ty Ann -- ^ Left type.
      -> Ty Ann -- ^ Right type.
      -> Bool -- ^ True when types are compatible.
@@ -2377,7 +2340,7 @@ tyEq tyCons t1 t2 =
     _ -> False
 
 -- | Normalize type applications by constructor arity and primitive types.
-normalizeTy :: [(Identifier, Int)] -- ^ Type constructor arities.
+normalizeTy :: Map.Map Identifier Int -- ^ Type constructor arities.
             -> Ty Ann -- ^ Type to normalize.
             -> Ty Ann -- ^ Normalized type.
 normalizeTy tyCons ty =
@@ -2391,7 +2354,7 @@ normalizeTy tyCons ty =
     TySkolem ann name ->
       TySkolem ann name
     TyApp ann (TyInd _ name) args ->
-      case lookup name tyCons of
+      case Map.lookup name tyCons of
         Just arity | arity > 0 ->
           TyApp ann (TyInd (mkAnn Nom NoSpan) name) (map (normalizeTy tyCons) args)
         _ -> TyInd ann name
@@ -2399,31 +2362,6 @@ normalizeTy tyCons ty =
       TyApp ann (normalizeTy tyCons ctor) (map (normalizeTy tyCons) args)
     Arr ann d i ->
       Arr ann (normalizeTy tyCons d) (normalizeTy tyCons i)
-    _ -> ty
-
--- | Normalize type applications by constructor arity and primitive types (Map version).
-normalizeTyMap :: Map.Map Identifier Int -- ^ Type constructor arities.
-               -> Ty Ann -- ^ Type to normalize.
-               -> Ty Ann -- ^ Normalized type.
-normalizeTyMap tyCons ty =
-  case ty of
-    TyInd ann name
-      | isIntIdent name -> TyInt ann
-      | isFloatIdent name -> TyFloat ann
-      | isStringIdent name -> TyString ann
-      | isCharIdent name -> TyChar ann
-      | otherwise -> TyInd ann name
-    TySkolem ann name ->
-      TySkolem ann name
-    TyApp ann (TyInd _ name) args ->
-      case Map.lookup name tyCons of
-        Just arity | arity > 0 ->
-          TyApp ann (TyInd (mkAnn Nom NoSpan) name) (map (normalizeTyMap tyCons) args)
-        _ -> TyInd ann name
-    TyApp ann ctor args ->
-      TyApp ann (normalizeTyMap tyCons ctor) (map (normalizeTyMap tyCons) args)
-    Arr ann d i ->
-      Arr ann (normalizeTyMap tyCons d) (normalizeTyMap tyCons i)
     _ -> ty
 
 -- | Unify expected and actual types to produce substitutions.
@@ -2469,7 +2407,7 @@ data ITy
   | ITyApp !Ann !ITy ![ITy]
   deriving (Eq)
 
-unifyTypes :: [(Identifier, Int)] -- ^ Type constructor arities.
+unifyTypes :: Map.Map Identifier Int -- ^ Type constructor arities.
            -> [Ty Ann] -- ^ Expected types.
            -> [Ty Ann] -- ^ Actual types.
            -> Maybe Subst -- ^ Substitution when unification succeeds.
