@@ -36,6 +36,7 @@ module Kip.Runner
   , resolveBuildTargets
   , listKipFilesRecursive
   , collectNonInfinitiveRefs
+  , mergeTCState
   , locateDataFile
     -- * Utilities
   , foldM'
@@ -44,6 +45,7 @@ module Kip.Runner
   , replace
   , splitOn
   , breakOn
+  , uniquePreserve
   ) where
 
 import Control.Monad (forM, when, unless, filterM, foldM)

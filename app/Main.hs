@@ -44,7 +44,7 @@ import Language.Foma
 import System.Console.Chalk
 import Kip.Parser
 import Kip.AST
-import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender, isRuntimeValue)
+import Kip.Eval (EvalState, EvalM, EvalError, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender, isRuntimeValue)
 import qualified Kip.Eval as Eval
 import Kip.TypeCheck
 import qualified Kip.TypeCheck as TC
@@ -52,7 +52,22 @@ import Kip.Render
 import Kip.Cache
 import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
-import Kip.Runner (Lang(..), renderEvalError, locateDataFile, resolveBuildTargets)
+import Kip.Runner
+  ( Lang(..)
+  , breakOn
+  , collectNonInfinitiveRefs
+  , locateDataFile
+  , mapParseErrorBundle
+  , mergeTCState
+  , mkEvalState
+  , renderEvalError
+  , replace
+  , resolveBuildTargets
+  , splitOn
+  , tcErrSpan
+  , turkifyParseError
+  , uniquePreserve
+  )
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts)
 import Data.Word
 import Crypto.Hash.SHA256 (hash)
@@ -589,24 +604,6 @@ effectBoundaryHint lang =
         , "Suggestion: use `x için ...yup, ...` to bind and continue with an effectful result."
         ]
 
--- | Extract a span from a type checker error when present.
-tcErrSpan :: TCError -- ^ Type checker error.
-          -> Maybe Span -- ^ Associated span.
-tcErrSpan tcErr =
-  case tcErr of
-    NoType sp -> Just sp
-    EffectfulExprInPureCtx _ sp -> Just sp
-    Ambiguity sp -> Just sp
-    UnknownName _ sp -> Just sp
-    NoMatchingOverload _ _ _ sp -> Just sp
-    NoMatchingCtor _ _ _ sp -> Just sp
-    PatternTypeMismatch _ _ _ _ sp -> Just sp
-    ArgTypeMismatch _ _ sp -> Just sp
-    NonExhaustivePattern _ _ sp -> Just sp
-    UnimplementedPrimitive _ _ sp -> Just sp
-    InvalidReturnCase _ sp -> Just sp
-    TC.Unknown -> Nothing
-
 -- | Extract one secondary span for unification-style diagnostics.
 --
 -- We use the expected type annotation span when available so REPL users can
@@ -1025,65 +1022,6 @@ findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
           | ErrorCustom (ErrAmbiguousBareApplicationOverload ident arities sp) <- Set.toList xs
           ]
         _ -> []
-
--- | Map custom error components inside a parse error bundle.
-mapParseErrorBundle :: Ord e'
-                    => (e -> e') -- ^ Error mapping function.
-                    -> ParseErrorBundle s e -- ^ Source bundle.
-                    -> ParseErrorBundle s e' -- ^ Mapped bundle.
-mapParseErrorBundle f (ParseErrorBundle errs posState) =
-  ParseErrorBundle (NE.map (mapParseError f) errs) posState
-  where
-    mapParseError :: Ord e' => (e -> e') -> ParseError s e -> ParseError s e'
-    mapParseError g err =
-      case err of
-        TrivialError o u e -> TrivialError o u e
-        FancyError o xs -> FancyError o (Set.map (mapFancy g) xs)
-    mapFancy :: (e -> e') -> ErrorFancy e -> ErrorFancy e'
-    mapFancy g fancy =
-      case fancy of
-        ErrorCustom e -> ErrorCustom (g e)
-        ErrorFail msg -> ErrorFail msg
-        ErrorIndentation o r lvl -> ErrorIndentation o r lvl
-
--- | Translate parse error text into Turkish labels.
-turkifyParseError :: String -- ^ Raw error text.
-                  -> String -- ^ Translated error text.
-turkifyParseError =
-  replace "unexpected end of input" "beklenmeyen girişin sonu"
-  . replace "unexpected" "beklenmeyen"
-  . replace "expecting" "bekleniyor"
-  . replace "end of input" "girişin sonu"
-  . replace "line" "satır"
-  . replace "column" "sütun"
-
--- | Replace all occurrences of a substring.
-replace :: String -- ^ Substring to replace.
-        -> String -- ^ Replacement substring.
-        -> String -- ^ Input string.
-        -> String -- ^ Output string.
-replace old new = intercalate new . splitOn old
-
--- | Split a string on a substring.
-splitOn :: String -- ^ Separator substring.
-        -> String -- ^ Input string.
-        -> [String] -- ^ Split components.
-splitOn pat s =
-  case breakOn pat s of
-    Nothing -> [s]
-    Just (before, after) -> before : splitOn pat after
-
--- | Break a string on the first occurrence of a substring.
-breakOn :: String -- ^ Separator substring.
-        -> String -- ^ Input string.
-        -> Maybe (String, String) -- ^ Prefix and suffix when found.
-breakOn pat s =
-  case findIndex (isPrefixOf pat) (tails s) of
-    Nothing -> Nothing
-    Just idx ->
-      let (before, rest) = splitAt idx s
-          after = drop (length pat) rest
-      in Just (before, after)
 
 -- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
 -- GC worker threads, returning committed memory to the OS) when possible.
@@ -2013,16 +1951,6 @@ main = do
 
                       return (pstFinal, tcSt', evalSt', loaded')
 
-    -- | Merge a cached type-checker snapshot into the current state.
-    --
-    -- Cached entries are preferred for overlapping keys so that overloaded
-    -- signature order stays stable with the source module that produced the
-    -- cache. Current-state entries are retained for keys not present in cache.
-    mergeTCState :: TCState -- ^ Current TC state.
-                 -> TCState -- ^ Cached TC state.
-                 -> TCState -- ^ Combined TC state.
-    mergeTCState = mergeCachedTCState
-
     -- | Run a single statement in the context of a file.
     runStmt :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.
@@ -2218,64 +2146,6 @@ main = do
                       liftIO (die (T.unpack msg))
                     Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
 
-    -- | Collect non-infinitive primitive references from statements.
-    --
-    -- ==== Performance note (Optimization: Set-backed dedupe)
-    -- This walk accumulates references in a strict set instead of building
-    -- intermediate lists and deduplicating afterward.
-    collectNonInfinitiveRefs :: [Stmt Ann] -- ^ Statements to inspect.
-                         -> [Identifier] -- ^ Referenced identifiers.
-    collectNonInfinitiveRefs stmts =
-      Set.toList (foldl' stmtRefs Set.empty stmts)
-      where
-        -- | Collect references from a statement into a set.
-        stmtRefs :: Set Identifier -- ^ Accumulated references.
-                 -> Stmt Ann -- ^ Statement to inspect.
-                 -> Set Identifier -- ^ Updated references.
-        stmtRefs acc stmt =
-          case stmt of
-            Defn name _ body ->
-              expRefs (Set.singleton name) body acc
-            Function _ args _ clauses _ ->
-              let bound = Set.fromList (map argIdent args)
-              in foldl' (clauseRefs bound) acc clauses
-            ExpStmt e ->
-              expRefs Set.empty e acc
-            _ -> acc
-        -- | Collect references from a clause into a set.
-        clauseRefs :: Set Identifier -- ^ Bound identifiers.
-                   -> Set Identifier -- ^ Accumulated references.
-                   -> Clause Ann -- ^ Clause to inspect.
-                   -> Set Identifier -- ^ Updated references.
-        clauseRefs bound acc (Clause _ body) = expRefs bound body acc
-        -- | Collect references from an expression into a set.
-        expRefs :: Set Identifier -- ^ Bound identifiers.
-                -> Exp Ann -- ^ Expression to inspect.
-                -> Set Identifier -- ^ Accumulated references.
-                -> Set Identifier -- ^ Updated references.
-        expRefs bound exp acc =
-          case exp of
-            Var {varCandidates} ->
-              foldl'
-                (\acc' (ident, _) ->
-                  if Set.member ident bound then acc' else Set.insert ident acc')
-                acc
-                varCandidates
-            Bind {bindExp} ->
-              expRefs bound bindExp acc
-            App {fn, args} ->
-              foldl' (flip (expRefs bound)) (expRefs bound fn acc) args
-            Match {scrutinee, clauses} ->
-              foldl' (clauseRefs bound) (expRefs bound scrutinee acc) clauses
-            Seq {first, second} ->
-              case first of
-                Bind {bindName, bindExp} ->
-                  expRefs (Set.insert bindName bound) second (expRefs bound bindExp acc)
-                _ -> expRefs bound second (expRefs bound first acc)
-            Let {varName, body} ->
-              expRefs (Set.insert varName bound) body acc
-            _ -> acc
-
     -- | Check whether an identifier refers to the write primitive.
     isWritePrim :: Identifier -- ^ Identifier to inspect.
                 -> Bool -- ^ True when identifier is `yaz`.
@@ -2305,18 +2175,6 @@ main = do
     takeDirectories :: FilePath -- ^ Path to split.
                     -> [FilePath] -- ^ Parent directories.
     takeDirectories path = [takeDirectory path]
-
-    -- | Remove duplicates while preserving first occurrence order.
-    --
-    -- ==== Performance note (Optimization: strict order-preserving dedupe)
-    -- Set-membership dedupe avoids quadratic @nub@ behavior on large module
-    -- and dependency lists while keeping deterministic first-seen order.
-    uniquePreserve :: Ord a => [a] -> [a]
-    uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
-      where
-        go (seen, acc) x
-          | Set.member x seen = (seen, acc)
-          | otherwise = (Set.insert x seen, x : acc)
 
     isExpStmt :: Stmt Ann -> Bool
     isExpStmt ExpStmt {} = True
@@ -2441,13 +2299,6 @@ main = do
                 runFile False False False moduleDirs (pst', tcSt, evalSt, Set.empty) path
               liftIO (saveCachedPrelude snapshotPath pstLoaded tcLoaded evalLoaded loaded')
               return state'
-
-    -- | Build an evaluator state wired to the render cache.
-    mkEvalState :: RenderCache -- ^ Render cache.
-                -> FSM -- ^ Morphology FSM.
-                -> EvalState -- ^ Evaluator state.
-    mkEvalState cache fsm =
-      emptyEvalState { evalRender = renderExpValue cache fsm }
 
     -- | Strict monadic left fold to avoid building thunks on large inputs.
     foldM' :: forall m b a.
