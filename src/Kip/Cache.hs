@@ -815,14 +815,16 @@ saveCachedModule ::
   FilePath -- ^ Cache file path.
   -> CachedModule -- ^ Module payload to write.
   -> IO () -- ^ Writes the cache file.
-saveCachedModule path m = do
+saveCachedModule path = writeCacheBytesIfChanged path . toStrict . encode
+
+-- | Write cache bytes only when their contents differ from the existing file.
+writeCacheBytesIfChanged :: FilePath -> ByteString -> IO ()
+writeCacheBytesIfChanged path bytes = do
   absPath <- canonicalizePathCached path
-  let bytes = toStrict (encode m)
-      newSize = fromIntegral (BS.length bytes)
   mCurrentMeta <- getFileMeta absPath
   shouldWrite <-
     case mCurrentMeta of
-      Just (oldSize, _) | oldSize == newSize -> do
+      Just (oldSize, _) | oldSize == fromIntegral (BS.length bytes) -> do
         oldRes <- try (BS.readFile absPath)
         case oldRes of
           Left (_ :: SomeException) -> return True
@@ -997,19 +999,7 @@ saveCachedPrelude snapshotPath pst tcSt evalSt loaded = do
                   , preludeEval = toCachedEvalState evalSt
                   , preludePrimStmts = primStmts
                   }
-          absSnapshotPath <- canonicalizePathCached snapshotPath
-          let bytes = toStrict (encode snap)
-          -- Same write dedup shortcut as module caches.
-          mCurrentMeta <- getFileMeta absSnapshotPath
-          shouldWrite <-
-            case mCurrentMeta of
-              Just (oldSize, _) | oldSize == fromIntegral (BS.length bytes) -> do
-                oldRes <- try (BS.readFile absSnapshotPath)
-                case oldRes of
-                  Left (_ :: SomeException) -> return True
-                  Right oldBytes -> return (oldBytes /= bytes)
-              _ -> return True
-          when shouldWrite (BS.writeFile absSnapshotPath bytes)
+          writeCacheBytesIfChanged snapshotPath (toStrict (encode snap))
 
 -- | Validate a prelude snapshot against current compiler and source metadata.
 isCachedPreludeValid :: CachedPrelude -> IO Bool
