@@ -1294,36 +1294,32 @@ lookupByCandidates :: forall a.
                      [(Identifier, a)] -- ^ Candidate bindings.
                    -> [(Identifier, Case)] -- ^ Candidate identifiers.
                    -> Maybe a -- ^ Matching binding when found.
-lookupByCandidates env candidates =
-  let names = map fst candidates
-  in go names
+lookupByCandidates env = go
   where
     -- | Try candidates in order.
-    go :: [Identifier] -- ^ Remaining candidate names.
+    go :: [(Identifier, Case)] -- ^ Remaining candidates.
        -> Maybe a -- ^ Matching binding.
     go [] = Nothing
-    go (n:ns) =
+    go ((n, _):rest) =
       case lookup n env of
         Just v -> Just v
-        Nothing -> go ns
+        Nothing -> go rest
 
 -- | Lookup a binding by candidate identifiers (Map version).
 lookupByCandidatesMap :: forall a.
                         Map.Map Identifier a -- ^ Candidate bindings.
                       -> [(Identifier, Case)] -- ^ Candidate identifiers.
                       -> Maybe a -- ^ Matching binding when found.
-lookupByCandidatesMap env candidates =
-  let names = map fst candidates
-  in go names
+lookupByCandidatesMap env = go
   where
     -- | Try candidates in order.
-    go :: [Identifier] -- ^ Remaining candidate names.
+    go :: [(Identifier, Case)] -- ^ Remaining candidates.
        -> Maybe a -- ^ Matching binding.
     go [] = Nothing
-    go (n:ns) =
+    go ((n, _):rest) =
       case Map.lookup n env of
         Just v -> Just v
-        Nothing -> go ns
+        Nothing -> go rest
 
 -- | Lookup a binding and return the matched candidate (identifier + case).
 lookupByCandidatesMapWithCandidate :: forall a.
