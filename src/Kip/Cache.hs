@@ -740,24 +740,19 @@ loadCachedModule ::
   FilePath -- ^ Cache file path.
   -> IO (Maybe CachedModule) -- ^ Cached module when valid.
 loadCachedModule path = do
-  absCachePath <- canonicalizePathCached path
-  exists <- doesFileExist absCachePath
-  if not exists
-    then return Nothing
-    else do
-      res <- try (BS.readFile absCachePath)
-      case res of
-        Left (_ :: SomeException) -> return Nothing
-        Right bytes ->
-          case runGetOrFail getCacheHeader (fromStrict bytes) of
-            Left _ -> return Nothing
-            Right (_, _, meta) -> do
-              valid <- isCacheValidMeta absCachePath meta
-              if not valid
-                then return Nothing
-                else case decodeOrFail (fromStrict bytes) of
-                  Left _ -> return Nothing
-                  Right (_, _, m) -> return (Just m)
+  mCacheFile <- readCacheBytes path
+  case mCacheFile of
+    Nothing -> return Nothing
+    Just (absCachePath, bytes) ->
+      case runGetOrFail getCacheHeader (fromStrict bytes) of
+        Left _ -> return Nothing
+        Right (_, _, meta) -> do
+          valid <- isCacheValidMeta absCachePath meta
+          if not valid
+            then return Nothing
+            else case decodeOrFail (fromStrict bytes) of
+              Left _ -> return Nothing
+              Right (_, _, m) -> return (Just m)
 
 -- | Load only the typed-statement section from a valid module cache.
 loadCachedTypedStmts :: FilePath -> IO (Maybe [Stmt Ann])
@@ -784,23 +779,29 @@ loadCachedAstParser path =
 -- | Read, validate, and decode a selected cache prefix.
 loadCachedSections :: FilePath -> Get prefix -> (prefix -> CacheMetadata) -> (prefix -> Either String value) -> IO (Maybe value)
 loadCachedSections path getPrefix prefixMetadata decodePrefix = do
-  absCachePath <- canonicalizePathCached path
-  exists <- doesFileExist absCachePath
+  mCacheFile <- readCacheBytes path
+  case mCacheFile of
+    Nothing -> return Nothing
+    Just (absCachePath, bytes) ->
+      case runGetOrFail getPrefix (fromStrict bytes) of
+        Left _ -> return Nothing
+        Right (_, _, prefix) -> do
+          let meta = prefixMetadata prefix
+          valid <- isCacheValidMeta absCachePath meta
+          if not valid
+            then return Nothing
+            else return (either (const Nothing) Just (decodePrefix prefix))
+
+-- | Read a cache file, swallowing missing-file and I/O failures.
+readCacheBytes :: FilePath -> IO (Maybe (FilePath, ByteString))
+readCacheBytes path = do
+  absPath <- canonicalizePathCached path
+  exists <- doesFileExist absPath
   if not exists
     then return Nothing
     else do
-      res <- try (BS.readFile absCachePath)
-      case res of
-        Left (_ :: SomeException) -> return Nothing
-        Right bytes ->
-          case runGetOrFail getPrefix (fromStrict bytes) of
-            Left _ -> return Nothing
-            Right (_, _, prefix) -> do
-              let meta = prefixMetadata prefix
-              valid <- isCacheValidMeta absCachePath meta
-              if not valid
-                then return Nothing
-                else return (either (const Nothing) Just (decodePrefix prefix))
+      result <- try (BS.readFile absPath) :: IO (Either SomeException ByteString)
+      return (either (const Nothing) (\bytes -> Just (absPath, bytes)) result)
 
 decodeSectionValue :: Binary a => ByteString -> Either String a
 decodeSectionValue bytes =
@@ -940,34 +941,29 @@ loadCachedPrelude ::
   -> FSM -- ^ Morphology FSM handle.
   -> IO (Maybe (ParserState, TCState, EvalState, Set.Set FilePath))
 loadCachedPrelude snapshotPath cache fsm = do
-  absSnapshotPath <- canonicalizePathCached snapshotPath
-  exists <- doesFileExist absSnapshotPath
-  if not exists
-    then return Nothing
-    else do
-      res <- try (BS.readFile absSnapshotPath)
-      case res of
-        Left (_ :: SomeException) -> return Nothing
-        Right bytes ->
-          case decodeOrFail (fromStrict bytes) of
-            Left _ -> return Nothing
-            Right (_, _, preludeSnap) -> do
-              valid <- isCachedPreludeValid preludeSnap
-              if not valid
-                then return Nothing
-                else do
-                  let cachedParser = preludeParser preludeSnap
-                      upsCache = MC.morphUpsCache cache
-                      downsCache = MC.morphDownsCache cache
-                  MC.installFrozenMorphCache upsCache (pupsCache cachedParser)
-                  MC.installFrozenMorphCache downsCache (pdownsCache cachedParser)
-                  pst <- fromCachedParserState fsm Nothing cache
-                    cachedParser { pupsCache = [], pdownsCache = [] }
-                  let tcSt = fromCachedTCState (preludeTC preludeSnap)
-                      evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
-                  evalSt <- replayPreludePrimStmts (preludePrimStmts preludeSnap) evalBase
-                  loadedSet <- Set.fromList <$> mapM canonicalizePathCached (preludeLoaded preludeSnap)
-                  return (Just (pst, tcSt, evalSt, loadedSet))
+  mCacheFile <- readCacheBytes snapshotPath
+  case mCacheFile of
+    Nothing -> return Nothing
+    Just (_, bytes) ->
+      case decodeOrFail (fromStrict bytes) of
+        Left _ -> return Nothing
+        Right (_, _, preludeSnap) -> do
+          valid <- isCachedPreludeValid preludeSnap
+          if not valid
+            then return Nothing
+            else do
+              let cachedParser = preludeParser preludeSnap
+                  upsCache = MC.morphUpsCache cache
+                  downsCache = MC.morphDownsCache cache
+              MC.installFrozenMorphCache upsCache (pupsCache cachedParser)
+              MC.installFrozenMorphCache downsCache (pdownsCache cachedParser)
+              pst <- fromCachedParserState fsm Nothing cache
+                cachedParser { pupsCache = [], pdownsCache = [] }
+              let tcSt = fromCachedTCState (preludeTC preludeSnap)
+                  evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
+              evalSt <- replayPreludePrimStmts (preludePrimStmts preludeSnap) evalBase
+              loadedSet <- Set.fromList <$> mapM canonicalizePathCached (preludeLoaded preludeSnap)
+              return (Just (pst, tcSt, evalSt, loadedSet))
 
 -- | Persist a fully merged prelude snapshot.
 saveCachedPrelude ::
