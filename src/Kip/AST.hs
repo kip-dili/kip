@@ -37,6 +37,12 @@ instance Binary Pos where
 -- | Fully qualified identifier with namespace parts.
 type Identifier = ([Text], Text)
 
+-- | Compare identifiers, allowing either side to omit its namespace.
+identMatches :: Identifier -> Identifier -> Bool
+identMatches (mods1, name1) (mods2, name2) =
+  name1 == name2 && (mods1 == mods2 || null mods1 || null mods2)
+{-# INLINE identMatches #-}
+
 -- | Recognize the canonical source-level integer type name.
 isIntIdent :: Identifier -> Bool
 isIntIdent (mods, name) = mods == ["tam"] && name == "sayı"

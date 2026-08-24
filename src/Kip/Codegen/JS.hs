@@ -340,11 +340,6 @@ uniqIdents = reverse . fst . foldl' add ([], Set.empty)
       | Set.member ident seen = (acc, seen)
       | otherwise = (ident : acc, Set.insert ident seen)
 
--- | Identifier equality that tolerates missing namespace qualification.
-identMatches :: Identifier -> Identifier -> Bool
-identMatches (mods1, name1) (mods2, name2) =
-  name1 == name2 && (mods1 == mods2 || null mods1 || null mods2)
-
 -- | Get the JS primitive name for a given function name and arg types.
 -- Falls back to the bare JS identifier if no special mapping exists.
 lookupPrimJsName :: Identifier -> [Ty Ann] -> Text

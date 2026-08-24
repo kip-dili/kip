@@ -3465,11 +3465,6 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
       MkParserState{parserTyConsNames} <- getP
       let tyNames = parserTyConsNames
           prefix = fst firstIdent ++ [snd firstIdent]
-          identMatches :: Identifier -- ^ Candidate identifier.
-                       -> Identifier -- ^ Target identifier.
-                       -> Bool -- ^ True when identifiers match loosely.
-          identMatches (xs1, x1) (xs2, x2) =
-            x1 == x2 && (xs1 == xs2 || null xs1 || null xs2)
       candidates <- estimateCandidates False secondIdent
       let matches =
             [ (tyName, cas)

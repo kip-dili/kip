@@ -1449,13 +1449,6 @@ normalizeTy tyCons ty =
       Arr ann (normalizeTy tyCons d) (normalizeTy tyCons i)
     _ -> ty
 
--- | Compare identifiers, allowing missing namespace prefixes.
-identMatches :: Identifier -- ^ Left identifier.
-             -> Identifier -- ^ Right identifier.
-             -> Bool -- ^ True when identifiers match loosely.
-identMatches (xs1, x1) (xs2, x2) =
-  x1 == x2 && (xs1 == xs2 || null xs1 || null xs2)
-
 -- | Unify expected types with actual types, returning substitutions.
 --
 -- ==== Performance note
