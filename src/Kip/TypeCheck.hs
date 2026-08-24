@@ -237,18 +237,6 @@ data TCState =
     , tcResolvedTypes :: ![(Span, Ty Ann)] -- ^ Resolved variable types by span.
     , tcDefLocations :: !(Map.Map Identifier (FilePath, Span)) -- ^ Definition locations by identifier.
     , tcFuncSigLocs :: !(Map.Map (Identifier, [Ty Ann]) (FilePath, Span)) -- ^ Definition locations by signature.
-    -- | Environment-change token for inferType memo safety.
-    --
-    -- The token is bumped whenever surrounding typing context changes.
-    -- This lets future memoized inferType lookups remain context-aware.
-    , tcInferMemoToken :: !Int
-    -- | Per-pass inferType memo table.
-    --
-    -- ==== Note
-    -- The memo infrastructure is intentionally conservative right now; we
-    -- keep the state plumbing and invalidation hooks in place, but inference
-    -- currently uses the uncached path to preserve exact behavior.
-    , tcInferTypeMemo :: !(Map.Map (Int, Span, T.Text) (Maybe (Ty Ann)))
     }
   deriving (Generic)
 
@@ -291,11 +279,11 @@ instance Binary TCState where
     let byArity = buildFuncSigsByArity funcSigs
     let retByName = buildFuncRetByName funcSigRets
     let namesByArity = buildFuncNamesByArity funcs
-    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName funcEffectsByArity varTys vals ctors tyCons infinitives outputMode resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs 0 Map.empty)
+    return (MkTCState ctx funcs namesByArity funcSigs byArity funcSigRets retByName funcEffectsByArity varTys vals ctors tyCons infinitives outputMode resolvedNames resolvedSigs resolvedTypes defLocs funcSigLocs)
 
 -- | Empty type checker state.
 emptyTCState :: TCState -- ^ Empty type checker state.
-emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty TCOutputRuntime [] [] [] Map.empty Map.empty 0 Map.empty
+emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.empty HM.empty HM.empty [] Map.empty Map.empty Map.empty Set.empty TCOutputRuntime [] [] [] Map.empty Map.empty
 
 -- | Prepend a single value to the list stored under a key in a 'Map.Map'.
 --
@@ -366,17 +354,6 @@ insertFuncEffect name args isEffectful st
   | isEffectful =
       st { tcFuncEffectsByArity = HM.insert (name, length args) True (tcFuncEffectsByArity st) }
   | otherwise = st
-
--- | Invalidate inferType memo after any environment-affecting state change.
---
--- This centralizes invalidation so future memo-enabled inference can remain
--- sound as bindings/signatures enter and leave scope.
-invalidateInferMemo :: TCState -> TCState
-invalidateInferMemo st =
-  st
-    { tcInferMemoToken = tcInferMemoToken st + 1
-    , tcInferTypeMemo = Map.empty
-    }
 
 -- | Type checker errors.
 data TCError =
@@ -1049,9 +1026,9 @@ withCtx idents m = do
   st <- get
   let added = Set.fromList idents
       ctx' = Set.union added (tcCtx st)
-  put (invalidateInferMemo (st { tcCtx = ctx' }))
+  put (st { tcCtx = ctx' })
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcCtx = tcCtx st }))
+  modify (\s -> s { tcCtx = tcCtx st })
   return res
 
 -- | Normalize primitive types to their canonical forms.
@@ -1113,9 +1090,9 @@ tcStmt stmt =
               lift (throwE (NoType NoSpan))
           Nothing -> return ()
       let valueSummary = maybe (DeferredValueExp e') KnownValueType mInferredTy
-      modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
-                                           , tcVals = Map.insert name valueSummary (tcVals s)
-                                           }))
+      modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
+                      , tcVals = Map.insert name valueSummary (tcVals s)
+                      })
       return (Defn name ty e')
     Function name args ty body isInfinitive -> do
       let argNames = map argIdent args
@@ -1155,11 +1132,10 @@ tcStmt stmt =
             retTy = if explicit then ty else inferredRet
             s' = insertFuncEffect name args isInfinitive (insertFuncDecl name args s)
             s'' = insertFuncRet name (map (normalizePrimTy . snd) args) (normalizePrimTy retTy) s'
-        in invalidateInferMemo
-             (s''
-               { tcCtx = Set.insert name (tcCtx s'')
-               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s'') else tcInfinitives s''
-               }))
+        in s''
+             { tcCtx = Set.insert name (tcCtx s'')
+             , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s'') else tcInfinitives s''
+             })
       return (Function name args ty body' isInfinitive)
     PrimFunc name args ty isInfinitive -> do
       -- Check that the return type case is one of the allowed forms.
@@ -1174,11 +1150,10 @@ tcStmt stmt =
       modify (\s ->
         let s' = insertFuncEffect name args isInfinitive (insertFuncDecl name args s)
             s'' = insertFuncRet name (map (normalizePrimTy . snd) args) (normalizePrimTy ty) s'
-        in invalidateInferMemo
-             (s''
-               { tcCtx = Set.insert name (tcCtx s'')
-               , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s'') else tcInfinitives s''
-               }))
+        in s''
+             { tcCtx = Set.insert name (tcCtx s'')
+             , tcInfinitives = if isInfinitive then Set.insert name (tcInfinitives s'') else tcInfinitives s''
+             })
       return (PrimFunc name args ty isInfinitive)
     Load dirPath name ->
       return (Load dirPath name)
@@ -1212,15 +1187,15 @@ tcStmt stmt =
               validateTy i
             _ -> return ()
       mapM_ (\((_, _), ctorArgs) -> mapM_ validateTy ctorArgs) ctors
-      modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
-                                           , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
-                                           , tcTyCons = Map.insert name (length params) (tcTyCons s)
-                                           }))
+      modify (\s -> s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
+                      , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
+                      , tcTyCons = Map.insert name (length params) (tcTyCons s)
+                      })
       return (NewType name params ctors)
     PrimType name params -> do
-      modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
-                                           , tcTyCons = Map.insert name (length params) (tcTyCons s)
-                                           }))
+      modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
+                      , tcTyCons = Map.insert name (length params) (tcTyCons s)
+                      })
       return (PrimType name params)
     ExpStmt e -> do
       e' <- tcExp1With True e
@@ -1832,9 +1807,9 @@ withFuncRet :: Identifier -- ^ Function name.
 withFuncRet _ _ Nothing m = m
 withFuncRet name argTys (Just ty) m = do
   st <- get
-  put (invalidateInferMemo (insertFuncRet name argTys ty st))
+  put (insertFuncRet name argTys ty st)
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcFuncSigRets = tcFuncSigRets st, tcFuncRetByName = tcFuncRetByName st }))
+  modify (\s -> s { tcFuncSigRets = tcFuncSigRets st, tcFuncRetByName = tcFuncRetByName st })
   return res
 
 -- | Run a computation with a function signature in scope.
@@ -1844,9 +1819,9 @@ withFuncSig :: Identifier -- ^ Function name.
             -> TCM a -- ^ Result of the computation.
 withFuncSig name args m = do
   st <- get
-  put (invalidateInferMemo (insertFuncDecl name args st))
+  put (insertFuncDecl name args st)
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcFuncs = tcFuncs st, tcFuncNamesByArity = tcFuncNamesByArity st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st, tcFuncEffectsByArity = tcFuncEffectsByArity st }))
+  modify (\s -> s { tcFuncs = tcFuncs st, tcFuncNamesByArity = tcFuncNamesByArity st, tcFuncSigs = tcFuncSigs st, tcFuncSigsByArity = tcFuncSigsByArity st, tcFuncEffectsByArity = tcFuncEffectsByArity st })
   return res
 
 -- | Run a computation with variable types in scope.
@@ -1856,9 +1831,9 @@ withVarTypes :: [(Identifier, Ty Ann)] -- ^ Variable bindings.
 withVarTypes [] m = m
 withVarTypes tys m = do
   st <- get
-  put (invalidateInferMemo (st { tcVarTys = tys ++ tcVarTys st }))
+  put (st { tcVarTys = tys ++ tcVarTys st })
   res <- m
-  modify (\s -> invalidateInferMemo (s { tcVarTys = tcVarTys st }))
+  modify (\s -> s { tcVarTys = tcVarTys st })
   return res
 
 -- | Infer types for identifiers bound in a pattern.
@@ -3058,7 +3033,7 @@ setTyCase cas ty =
 runTCM :: TCM a -- ^ Type checker computation.
        -> TCState -- ^ Initial type checker state.
        -> IO (Either TCError (a, TCState)) -- ^ Result or error.
-runTCM m s = runExceptT (runStateT m (invalidateInferMemo s))
+runTCM m s = runExceptT (runStateT m s)
 
 -- | Pre-register forward declarations for all functions and types.
 -- This allows forward references within a file.
@@ -3066,9 +3041,6 @@ registerForwardDecls :: [Stmt Ann] -- ^ Statements to scan.
                      -> TCM () -- ^ No result.
 registerForwardDecls stmts = do
   mapM_ registerStmt stmts
-  -- Forward-declaration registration performs no local inference; we only
-  -- need one memo invalidation after the batch update.
-  modify invalidateInferMemo
   where
     -- | Register a single statement for forward references.
     registerStmt :: Stmt Ann -- ^ Statement to register.
@@ -3123,14 +3095,14 @@ registerForwardDecls stmts = do
                   validateTy i
                 _ -> return ()
           mapM_ (\((_, _), ctorArgs) -> mapM_ validateTy ctorArgs) ctors
-          modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
-                                               , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
-                                               , tcTyCons = Map.insert name (length params) (tcTyCons s)
-                                               }))
+          modify (\s -> s { tcCtx = Set.insert name (Set.union (Set.fromList ctorNames) (tcCtx s))
+                          , tcCtors = Map.union (Map.fromList ctorSigs) (tcCtors s)
+                          , tcTyCons = Map.insert name (length params) (tcTyCons s)
+                          })
         PrimType name params ->
-          modify (\s -> invalidateInferMemo (s { tcCtx = Set.insert name (tcCtx s)
-                                               , tcTyCons = Map.insert name (length params) (tcTyCons s)
-                                               }))
+          modify (\s -> s { tcCtx = Set.insert name (tcCtx s)
+                          , tcTyCons = Map.insert name (length params) (tcTyCons s)
+                          })
         _ -> return ()
 -- | Build a function-name index grouped by function arity.
 buildFuncNamesByArity :: Map.Map Identifier [Int]
