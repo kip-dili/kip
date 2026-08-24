@@ -109,7 +109,6 @@ executable kip
     , containers
     , directory
     , haskeline
-    , hashtables
     , optparse-applicative
     , transformers
     , megaparsec
@@ -118,10 +117,8 @@ executable kip
     , chalk
     , text
     , filepath
-    , binary
     , cryptohash-sha256
     , mtl
-    , time
     , vector
   default-language: Haskell2010
   default-extensions: CPP
@@ -140,20 +137,9 @@ executable kip-playground
     ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
   build-depends:
       base >=4.7 && <5
-    , bytestring
-    , containers
-    , directory
-    , hashtables
     , optparse-applicative
-    , transformers
-    , megaparsec
     , kip
     , text
-    , filepath
-    , binary
-    , cryptohash-sha256
-    , mtl
-    , time
   default-language: Haskell2010
 
 executable kip-playground-reactor
@@ -207,7 +193,6 @@ executable kip-lsp
     , row-types
     , text
     , transformers
-    , binary
     , cryptohash-sha256
     , mtl
     , vector
