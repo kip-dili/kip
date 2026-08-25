@@ -140,7 +140,7 @@ runPlaygroundRequest req = do
     PlaygroundExec -> do
       when (null (prFiles req)) $
         die . T.unpack =<< runReaderT (renderMsg MsgNeedFile) renderCtx
-      _ <- runReaderT (runFiles False False False preludePst preludeTC preludeEval moduleDirs preludeLoaded (prFiles req)) renderCtx
+      _ <- runReaderT (runFiles False preludePst preludeTC preludeEval moduleDirs preludeLoaded (prFiles req)) renderCtx
       return PlaygroundNoOutput
     PlaygroundBuild -> do
       when (null (prFiles req)) $
@@ -150,7 +150,7 @@ runPlaygroundRequest req = do
           buildModuleDirs = uniquePreserve (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
         runReaderT (loadPreludeState (prNoPrelude req) buildModuleDirs renderCache fsm) renderCtx
-      _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
+      _ <- runReaderT (runFiles True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx
       return PlaygroundNoOutput
     PlaygroundCodegen target ->
       case target of
