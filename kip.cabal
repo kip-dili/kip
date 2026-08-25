@@ -81,7 +81,6 @@ library
     , unordered-containers
     , megaparsec
 
-    , split
     , text
     , transformers
     , binary
@@ -111,7 +110,6 @@ executable kip
     build-depends: unix
   build-depends:
       base >=4.7 && <5
-    , bytestring
     , containers
     , directory
     , haskeline
@@ -123,9 +121,7 @@ executable kip
     , chalk
     , text
     , filepath
-    , cryptohash-sha256
     , mtl
-    , vector
   default-extensions: CPP
 
 executable kip-playground
@@ -197,7 +193,6 @@ executable kip-lsp
     , megaparsec
 
     , text
-    , transformers
     , cryptohash-sha256
     , mtl
     , vector
