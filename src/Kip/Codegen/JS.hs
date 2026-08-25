@@ -992,16 +992,6 @@ uniqTexts = reverse . fst . foldl' add ([], Set.empty)
       | Set.member txt seen = (acc, seen)
       | otherwise = (txt : acc, Set.insert txt seen)
 
--- | Render a Kip function definition as an async JS function.
---
--- Generated functions are always async so all call sites can uniformly use
--- @await@, even for logically pure functions.
---
--- Single wildcard clauses are emitted as direct returns; multi-clause bodies
--- are lowered through the pattern-matching chain renderer.
-renderFunction :: CodegenCtx -> Identifier -> [Arg Ann] -> [Clause Ann] -> Text
-renderFunction ctx name = renderFunctionNamed ctx (toJsIdent name)
-
 -- | Render a Kip function using an explicit JS function name.
 renderFunctionNamed :: CodegenCtx -> Text -> [Arg Ann] -> [Clause Ann] -> Text
 renderFunctionNamed ctx jsName args clauses =
@@ -1133,10 +1123,6 @@ renderMatch ctx scrutinee clauses =
 -- | Render match clauses with the same ordered semantics as function clauses.
 renderMatchClauses :: CodegenCtx -> Text -> [Clause Ann] -> [Text]
 renderMatchClauses = renderClauseIfChain
-
--- | Compatibility alias for pattern condition + bindings rendering.
-renderPatMatch :: CodegenCtx -> Text -> Pat Ann -> (Text, [Text])
-renderPatMatch = renderPatMatchCond
 
 -- | Render both the boolean guard and binding statements for a pattern.
 --
