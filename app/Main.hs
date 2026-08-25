@@ -379,17 +379,6 @@ isExplicitRetTy :: Ty Ann -- ^ Return type annotation.
 isExplicitRetTy ty =
   annSpan (annTy ty) /= NoSpan
 
--- | Render a type checker error through the shared diagnostic renderer.
-renderTCError :: [Identifier] -> [(Identifier, [Identifier])] -> TCError -> RenderM Text
-renderTCError paramTyCons tyMods tcErr =
-  runSharedDiagnostic (Runner.renderTCError paramTyCons tyMods tcErr)
-
--- | Render a type checker error with a source snippet.
-renderTCErrorWithSource ::
-  [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
-renderTCErrorWithSource paramTyCons tyMods source tcErr =
-  runSharedDiagnostic (Runner.renderTCErrorWithSource paramTyCons tyMods source tcErr)
-
 -- | Supply the CLI's concrete morphology resources to a shared diagnostic.
 runSharedDiagnostic :: Runner.RenderM Text -> RenderM Text
 runSharedDiagnostic diagnostic = do
@@ -560,8 +549,9 @@ instance Render RenderParseError where
 instance Render RenderTCError where
   render RenderTCError{rteErr, rteSource, rteParamTyCons, rteTyMods} =
     case rteSource of
-      Nothing -> renderTCError rteParamTyCons rteTyMods rteErr
-      Just source -> renderTCErrorWithSource rteParamTyCons rteTyMods source rteErr
+      Nothing -> runSharedDiagnostic (Runner.renderTCError rteParamTyCons rteTyMods rteErr)
+      Just source ->
+        runSharedDiagnostic (Runner.renderTCErrorWithSource rteParamTyCons rteTyMods source rteErr)
 
 -- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
 -- GC worker threads, returning committed memory to the OS) when possible.
