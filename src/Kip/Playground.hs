@@ -289,7 +289,7 @@ emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
               tyMods = parserTyMods pst'
               loaded' = Set.insert absPath loaded
           let loadStmts = [(dirPath, name) | Load dirPath name <- fileStmts]
-          (depStmts, pst'', tcSt', loaded'') <- foldM' (emitJsLoad moduleDirs progressHooks paramTyCons tyMods) ([], pst', tcSt, loaded') loadStmts
+          (depStmts, pst'', tcSt', loaded'') <- foldM' (emitJsLoad moduleDirs progressHooks) ([], pst', tcSt, loaded') loadStmts
           liftIO (runTCM (registerForwardDecls fileStmts) tcSt') >>= \case
             Left tcErr -> do
               msg <- renderMsg (MsgTCError tcErr (Just input) paramTyCons tyMods)
@@ -317,12 +317,10 @@ isLoadStmt _ = False
 emitJsLoad ::
   [FilePath] ->
   Maybe (FilePath -> IO (), FilePath -> IO ()) ->
-  [Identifier] ->
-  [(Identifier, [Identifier])] ->
   ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath) ->
   ([Text], Identifier) ->
   RenderM ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
-emitJsLoad moduleDirs progressHooks _paramTyCons _tyMods (acc, pst, tcSt, loaded) (dirPath, name) = do
+emitJsLoad moduleDirs progressHooks (acc, pst, tcSt, loaded) (dirPath, name) = do
   path <- resolveModulePath moduleDirs dirPath name
   absPath <- liftIO (canonicalizePathCached path)
   emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) absPath
