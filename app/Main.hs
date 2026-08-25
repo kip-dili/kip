@@ -57,6 +57,7 @@ import Kip.Runner
   , foldM'
   , locateDataFile
   , mergeTCState
+  , missingDataFileMessage
   , mkEvalState
   , parseLang
   , renderEvalError
@@ -456,15 +457,9 @@ renderCompilerMsgBasic msg = do
             LangTr -> renderError (rcUseColor ctx) "En az bir dosya veya dizin bekleniyor."
             LangEn -> renderError (rcUseColor ctx) "Expected at least one file or directory."
       MsgTrmorphMissing ->
-        Just $
-          case rcLang ctx of
-            LangTr -> renderError (rcUseColor ctx) "vendor/trmorph.fst bulunamadı."
-            LangEn -> renderError (rcUseColor ctx) "vendor/trmorph.fst not found."
+        Just (renderError (rcUseColor ctx) (missingDataFileMessage (rcLang ctx) "vendor/trmorph.fst"))
       MsgLibMissing ->
-        Just $
-          case rcLang ctx of
-            LangTr -> renderError (rcUseColor ctx) "lib/temel.kip bulunamadı."
-            LangEn -> renderError (rcUseColor ctx) "lib/temel.kip not found."
+        Just (renderError (rcUseColor ctx) (missingDataFileMessage (rcLang ctx) "lib/temel.kip"))
       MsgFileNotFound path ->
         Just $
           case rcLang ctx of

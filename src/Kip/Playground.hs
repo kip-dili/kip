@@ -86,23 +86,9 @@ data PlaygroundOutput
   | PlaygroundTextOutput Text
   deriving (Eq, Show)
 
--- | Bootstrap-time playground failures before full runtime init.
-data PlaygroundBootstrapError
-  = PlaygroundTrmorphMissing
-  | PlaygroundLibMissing
-
 type CodegenState = ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
 
 type CodegenProgressHooks = Maybe (FilePath -> IO (), FilePath -> IO ())
-
--- | Render bootstrap failures for the selected language.
-renderPlaygroundBootstrapError :: Lang -> PlaygroundBootstrapError -> Text
-renderPlaygroundBootstrapError lang err =
-  case (lang, err) of
-    (LangTr, PlaygroundTrmorphMissing) -> "vendor/trmorph.fst bulunamadı."
-    (LangEn, PlaygroundTrmorphMissing) -> "vendor/trmorph.fst not found."
-    (LangTr, PlaygroundLibMissing) -> "lib/temel.kip bulunamadı."
-    (LangEn, PlaygroundLibMissing) -> "lib/temel.kip not found."
 
 {- |
 Execute one request with fresh compiler and evaluator state.
@@ -223,7 +209,7 @@ locateTrmorph lang = do
   exists <- doesFileExist path
   if exists
     then return path
-    else die . T.unpack $ renderPlaygroundBootstrapError lang PlaygroundTrmorphMissing
+    else die . T.unpack $ missingDataFileMessage lang "vendor/trmorph.fst"
 
 -- | Locate stdlib root (@lib/temel.kip@) with data-dir fallback behavior.
 locateLibDir :: Lang -> IO FilePath
@@ -232,7 +218,7 @@ locateLibDir lang = do
   exists <- doesFileExist path
   if exists
     then return (takeDirectory path)
-    else die . T.unpack $ renderPlaygroundBootstrapError lang PlaygroundLibMissing
+    else die . T.unpack $ missingDataFileMessage lang "lib/temel.kip"
 
 {- |
 Generate one JS program text from entry files and transitive dependencies.

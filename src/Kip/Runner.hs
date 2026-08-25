@@ -20,6 +20,7 @@ module Kip.Runner
   , renderParseError
   , renderParseErrorFor
   , renderEvalError
+  , missingDataFileMessage
   , renderTCError
   , renderTCErrorWithSource
   , renderSpan
@@ -103,6 +104,14 @@ parseLang :: String -> Either String Lang
 parseLang "tr" = Right LangTr
 parseLang "en" = Right LangEn
 parseLang _ = Left "LANG must be 'tr' or 'en'"
+
+-- | Render a missing packaged-data-file diagnostic.
+missingDataFileMessage :: Lang -> FilePath -> Text
+missingDataFileMessage lang path =
+  T.pack path <>
+    case lang of
+      LangTr -> " bulunamadı."
+      LangEn -> " not found."
 
 -- | Rendering context for diagnostics.
 data RenderCtx =
@@ -243,15 +252,9 @@ renderMsg msg = do
           LangTr -> "En az bir dosya veya dizin bekleniyor."
           LangEn -> "Expected at least one file or directory."
     MsgTrmorphMissing ->
-      return $
-        case rcLang ctx of
-          LangTr -> "vendor/trmorph.fst bulunamadı."
-          LangEn -> "vendor/trmorph.fst not found."
+      return (missingDataFileMessage (rcLang ctx) "vendor/trmorph.fst")
     MsgLibMissing ->
-      return $
-        case rcLang ctx of
-          LangTr -> "lib/temel.kip bulunamadı."
-          LangEn -> "lib/temel.kip not found."
+      return (missingDataFileMessage (rcLang ctx) "lib/temel.kip")
     MsgFileNotFound path ->
       return $
         case rcLang ctx of
