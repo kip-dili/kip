@@ -12,7 +12,6 @@ import Data.Binary (Binary)
 import Kip.AST
 import qualified Kip.Primitive as Prim
 
-import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
 import Control.Monad.Except (throwError)
@@ -22,19 +21,18 @@ import Data.Bifunctor (bimap)
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef')
 import System.IO (hFlush, stdout)
 import System.Environment (lookupEnv)
-import System.FilePath (takeFileName, takeDirectory, (</>), isRelative)
+import System.FilePath (takeDirectory, (</>), isRelative)
 import System.Random (randomRIO)
 import Data.Word (Word32)
-import Control.Monad (guard, unless, when, zipWithM)
+import Control.Monad (unless, zipWithM)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Text.Read (readMaybe)
 import Data.Maybe (isNothing, listToMaybe, maybeToList)
-import Data.List (find, foldl')
+import Data.List (find)
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
-import Data.Fixed (mod')
 
 -- | Evaluator state: runtime bindings plus render function.
 --

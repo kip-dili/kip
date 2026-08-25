@@ -36,7 +36,6 @@ import Data.List (intercalate, maximumBy, minimumBy, find, isInfixOf, isSuffixOf
 import qualified Data.Bifunctor as B
 import Data.Maybe (fromMaybe, catMaybes, listToMaybe, maybeToList)
 import qualified Data.Map.Strict as M
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 

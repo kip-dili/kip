@@ -2,7 +2,6 @@
 -- | Small utilities shared across compiler layers.
 module Kip.Util (stableNub) where
 
-import Data.List (foldl')
 import qualified Data.Set as Set
 
 -- | Remove duplicates while preserving first-occurrence order.

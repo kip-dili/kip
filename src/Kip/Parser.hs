@@ -85,8 +85,7 @@ import Data.Maybe (maybeToList, mapMaybe, listToMaybe, isJust, isNothing, fromMa
 import qualified Data.Map.Strict as M
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Set as Set
-import Control.Applicative (optional)
-import Control.Monad (foldM, forM, forM_, guard, unless, void, when)
+import Control.Monad (foldM, forM_, guard, unless, void, when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, get, put, modify, runStateT)
@@ -96,8 +95,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Builder as TB
-import Data.Void (Void)
-import Data.Hashable (Hashable)
 import Data.Functor (($>))
 import Text.Read (readMaybe)
 import System.IO.Unsafe (unsafePerformIO)

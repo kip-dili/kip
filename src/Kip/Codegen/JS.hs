@@ -47,7 +47,7 @@ module Kip.Codegen.JS
 
 import Data.Char (isAlphaNum, isLetter)
 import qualified Data.Foldable as F
-import Data.List (foldl', partition)
+import Data.List (partition)
 import Data.Maybe (mapMaybe)
 import qualified Data.Sequence as Seq
 import Data.Text (Text)

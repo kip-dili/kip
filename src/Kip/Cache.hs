@@ -8,9 +8,8 @@ module Kip.Cache where
 
 import GHC.Generics (Generic)
 import Data.Binary
-import Data.Binary.Get (runGetOrFail, getWord8, getWord16be, getWord32be, getWord64be, getByteString)
-import Data.Binary.Put (putWord8, putWord16be, putWord32be, putWord64be, putByteString)
-import Data.Word
+import Data.Binary.Get (runGetOrFail, getWord16be, getWord32be, getWord64be, getByteString)
+import Data.Binary.Put (putWord16be, putWord32be, putWord64be, putByteString)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Text as T
@@ -21,7 +20,7 @@ import System.Directory
 import System.Environment (getExecutablePath)
 import Control.Exception (try, SomeException)
 import Control.Monad (when, foldM, replicateM)
-import Data.List (delete, foldl', isPrefixOf, sort)
+import Data.List (delete, isPrefixOf, sort)
 import Data.Maybe (fromMaybe)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
@@ -29,10 +28,11 @@ import qualified Data.Set as Set
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 import System.IO.Unsafe (unsafePerformIO)
-import Data.Time.Clock (UTCTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 #if !defined(mingw32_HOST_OS) && !defined(wasi_HOST_OS)
 import qualified System.Posix.Files as Posix
+#else
+import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 #endif
 import Crypto.Hash.SHA256 (hash, hashlazy)
 import qualified Data.ByteString as BS

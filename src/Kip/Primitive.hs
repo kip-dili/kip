@@ -23,14 +23,13 @@ module Kip.Primitive
 import qualified Data.Text as T
 import Data.Text (Text)
 import qualified Data.Bifunctor as B
-import Data.Char (chr, ord, toLower, toUpper, isAlpha, isAlphaNum, isDigit, isLower, isSpace, isUpper, generalCategory, GeneralCategory(..))
+import Data.Char (chr, ord, toLower, toUpper, isAlpha, isAlphaNum, isDigit, isLower, isSpace, isUpper)
 import Data.Fixed (mod')
-import Data.List (foldl')
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import qualified Data.Set as Set
 import Data.Word (Word32)
-import System.FilePath (isRelative, takeBaseName, takeDirectory, takeFileName, (</>))
+import System.FilePath (isRelative, takeBaseName, takeDirectory, (</>))
 import Text.Read (readMaybe)
 import Kip.AST
 

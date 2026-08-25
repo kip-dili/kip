@@ -61,7 +61,7 @@ module Kip.Runner
 import Control.Monad (forM, unless, filterM, foldM)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
-import Data.List (intercalate, isPrefixOf, tails, findIndex, foldl')
+import Data.List (intercalate, isPrefixOf, tails, findIndex)
 import Data.Char (isDigit)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -85,7 +85,7 @@ import Language.Foma
 import Kip.AST
 import Kip.Cache
 import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
-import Kip.Eval (EvalState, EvalM, EvalError, emptyEvalState, runEvalM, evalExp, evalStmtInFile, evalRender)
+import Kip.Eval (EvalState, EvalError, emptyEvalState, runEvalM, evalStmtInFile, evalRender)
 import qualified Kip.Eval as Eval
 import Kip.Parser
 import Kip.Render

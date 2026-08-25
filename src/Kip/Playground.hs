@@ -24,11 +24,11 @@ module Kip.Playground
   , runPlaygroundRequest
   ) where
 
-import Control.Monad (filterM, forM_, unless, when)
+import Control.Monad (forM_, unless, when)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (runReaderT)
 import Data.Char (toLower)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set

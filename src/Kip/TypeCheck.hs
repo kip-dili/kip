@@ -108,18 +108,15 @@ import Data.Bits ((.&.), (.|.), bit, setBit, testBit)
 import Kip.AST
 import qualified Kip.Primitive as Prim
 
-import Control.Monad (unless, when, forM_, guard, foldM)
+import Control.Monad (unless, when, forM_, guard)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
-import Control.Monad.IO.Class
 import Control.Monad.ST (ST, runST)
-import Data.List (find, foldl', intersect, nub, zipWith4)
-import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust, maybeToList, listToMaybe)
+import Data.List (find, intersect, nub, zipWith4)
+import Data.Maybe (fromMaybe, catMaybes, mapMaybe, isJust, listToMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
-import Data.STRef (modifySTRef', newSTRef, readSTRef, writeSTRef)
-import System.FilePath (FilePath)
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Vector as V

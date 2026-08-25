@@ -12,8 +12,6 @@ import Data.List (find, partition, sort)
 import Foreign.C
 import Foreign.Ptr (Ptr, FunPtr, nullPtr)
 import Foreign.Marshal
-import Foreign.Marshal.Array (withArray, peekArray, peekArray0)
-import Foreign.Marshal.Utils (withMany)
 import Foreign.ForeignPtr (ForeignPtr, newForeignPtr, withForeignPtr)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
