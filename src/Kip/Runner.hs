@@ -944,6 +944,18 @@ runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
 mergeTCState :: TCState -> TCState -> TCState
 mergeTCState = mergeCachedTCState
 
+-- | Evaluate a file statement, omitting expression statements in build mode.
+evalFileStmt :: Bool -> FilePath -> EvalState -> Stmt Ann -> RenderM EvalState
+evalFileStmt buildOnly currentPath evalSt stmt =
+  case stmt of
+    ExpStmt _ | buildOnly -> return evalSt
+    _ ->
+      liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
+        Left evalErr -> do
+          msg <- renderMsg (MsgEvalError evalErr)
+          liftIO (die (T.unpack msg))
+        Right (_, evalSt') -> return evalSt'
+
 -- | Run a single statement in the context of a file.
 runStmt :: Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> Text -> CompilerState -> Stmt Ann -> RenderM CompilerState
 runStmt buildOnly moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, evalSt, loaded) stmt =
@@ -962,22 +974,8 @@ runStmt buildOnly moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, e
           msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
           liftIO (die (T.unpack msg))
         Right (stmt', tcSt') -> do
-          if buildOnly
-            then
-              case stmt' of
-                ExpStmt _ -> return (pst, tcSt', evalSt, loaded)
-                _ ->
-                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                    Left evalErr -> do
-                      msg <- renderMsg (MsgEvalError evalErr)
-                      liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
-            else
-              liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                Left evalErr -> do
-                  msg <- renderMsg (MsgEvalError evalErr)
-                  liftIO (die (T.unpack msg))
-                Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
+          evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
+          return (pst, tcSt', evalSt', loaded)
 
 -- | Run a pre-typechecked statement in the context of a file.
 --
@@ -996,22 +994,8 @@ runTypedStmt buildOnly moduleDirs currentPath (pst, tcSt, evalSt, loaded) stmt =
           (pst', tcSt', evalSt', loaded') <- runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
           return (pst', tcSt', evalSt', loaded')
     _ -> do
-      if buildOnly
-        then
-          case stmt of
-            ExpStmt _ -> return (pst, tcSt, evalSt, loaded)
-            _ ->
-              liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
-                Left evalErr -> do
-                  msg <- renderMsg (MsgEvalError evalErr)
-                  liftIO (die (T.unpack msg))
-                Right (_, evalSt') -> return (pst, tcSt, evalSt', loaded)
-        else
-          liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
-            Left evalErr -> do
-              msg <- renderMsg (MsgEvalError evalErr)
-              liftIO (die (T.unpack msg))
-            Right (_, evalSt') -> return (pst, tcSt, evalSt', loaded)
+      evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt
+      return (pst, tcSt, evalSt', loaded)
 
 -- | Run a single statement while collecting type-checked statements for caching.
 --
@@ -1034,22 +1018,8 @@ runStmtCollect buildOnly moduleDirs currentPath paramTyCons tyMods source (pst, 
           msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
           liftIO (die (T.unpack msg))
         Right (stmt', tcSt') -> do
-          if buildOnly
-            then
-              case stmt' of
-                ExpStmt _ -> return (pst, tcSt', evalSt, loaded, stmt' : typedAcc, depPathsAcc)
-                _ ->
-                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                    Left evalErr -> do
-                      msg <- renderMsg (MsgEvalError evalErr)
-                      liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
-            else
-              liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                Left evalErr -> do
-                  msg <- renderMsg (MsgEvalError evalErr)
-                  liftIO (die (T.unpack msg))
-                Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
+          evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
+          return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
 
 -- | Collect non-infinitive primitive references from statements.
 --
