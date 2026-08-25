@@ -916,7 +916,7 @@ main = do
           loop rs
         ReplShowTypes -> do
           rs <- ensurePreludeLoaded rs
-          let names = nub [name | ((_, name), _arity) <- replTyCons rs]
+          let names = uniquePreserve [name | ((_, name), _arity) <- replTyCons rs]
           forM_ (sort names) $ \name ->
             lift (outputStrLn (T.unpack name))
           loop rs

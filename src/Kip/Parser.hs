@@ -110,6 +110,7 @@ import qualified Text.Megaparsec.Char.Lexer as L
 import Language.Foma
 import Kip.AST
 import qualified Kip.MorphCache as MC
+import Kip.Util (stableNub)
 
 -- | Parser-specific error categories for human-friendly rendering.
 data ParserError
@@ -488,14 +489,7 @@ withPatVars patVars p = do
 
 -- | O(n log n) duplicate removal preserving first-occurrence order.
 ordNub :: Ord a => [a] -> [a]
-ordNub xs = reverse uniquesRev
-  where
-    ( _, uniquesRev) = foldl' step (Set.empty, []) xs
-    step (!seen, acc) x
-      | x `Set.member` seen = (seen, acc)
-      | otherwise =
-          let !seen' = Set.insert x seen
-          in (seen', x : acc)
+ordNub = stableNub
 
 -- | Append items to an already deduplicated list, keeping first occurrence.
 --
@@ -4406,7 +4400,7 @@ ambiguousBareReplError st sourceText expItem =
                       Nothing -> Nothing
                   )
                   directIds
-              ids = nub (directIds ++ strippedIds)
+              ids = ordNub (directIds ++ strippedIds)
           in aritiesForIds arityMap arityByName ids
         _ -> []
 

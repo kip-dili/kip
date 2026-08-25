@@ -33,7 +33,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (runReaderT)
-import Data.List (foldl', nub, isPrefixOf, sortOn)
+import Data.List (foldl', isPrefixOf, sortOn)
 import Data.Char (isAlphaNum, isDigit, ord)
 import Data.Maybe (fromMaybe, mapMaybe, maybeToList, listToMaybe, isJust)
 import qualified Data.Map.Strict as Map
@@ -69,7 +69,7 @@ import Kip.Eval (EvalState)
 import Kip.Parser
 import Kip.Render
 import qualified Kip.Render as Render
-import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeStateWithMode, locateDataFile, listKipFilesRecursiveSkipping)
+import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeStateWithMode, locateDataFile, listKipFilesRecursiveSkipping, uniquePreserve)
 import Kip.TypeCheck
 import Language.Foma
 
@@ -371,7 +371,7 @@ stripTrailingVowel (mods, word) =
 
 infinitiveCandidates :: [Identifier] -> [Identifier]
 infinitiveCandidates candidates =
-  nub (candidates ++ mapMaybe stripTrailingVowel candidates)
+  uniquePreserve (candidates ++ mapMaybe stripTrailingVowel candidates)
 
 findInfinitiveDef :: [Identifier] -> [Stmt Ann] -> Maybe Identifier
 findInfinitiveDef names stmts =
@@ -2702,8 +2702,7 @@ lookupDefLocPreferExternal currentUri keys m =
 
 -- | Remove duplicate identifiers while preserving order.
 dedupeIdents :: [Identifier] -> [Identifier]
-dedupeIdents =
-  nub
+dedupeIdents = uniquePreserve
 
 -- | Collect all concrete type constructor identifiers from a type.
 --
@@ -2868,7 +2867,7 @@ resolveIndexRoots st uri = do
     Nothing -> return Nothing
     Just path -> findProjectRoot path
   let roots = lsModuleDirs st ++ maybeToList mRoot
-  return (nub roots, mRoot)
+  return (uniquePreserve roots, mRoot)
 
 -- | Walk upward from a path to find the project root.
 findProjectRoot :: FilePath -> IO (Maybe FilePath)

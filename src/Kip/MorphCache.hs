@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 -- | Mutable morphology misses layered over a compact immutable snapshot.
@@ -25,14 +24,13 @@ module Kip.MorphCache
 
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.HashTable.IO as HT
-import Data.List (foldl')
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Vector as V
 import Language.Foma (FSM)
 import qualified Language.Foma as Foma
+import Kip.Util (stableNub)
 import System.IO.Unsafe (unsafePerformIO)
 
 -- | A small mutable overlay plus a sorted, directly queryable base image.
@@ -222,17 +220,6 @@ cachedLookupBatch direction fetch cache fsm keys = do
       insertMorphCache cache key value
       recordMorphInsert direction key value
 {-# INLINE cachedLookupBatch #-}
-
--- | Remove duplicate text values while retaining their first occurrence.
-stableNub :: [Text] -> [Text]
-stableNub values = reverse uniquesRev
-  where
-    (_, uniquesRev) = foldl' step (Set.empty, []) values
-    step (!seen, acc) value
-      | value `Set.member` seen = (seen, acc)
-      | otherwise =
-          let !seen' = Set.insert value seen
-          in (seen', value : acc)
 
 -- | Binary search over the sorted base vector.
 binaryLookup :: Text -> V.Vector (Text, [Text]) -> Maybe [Text]

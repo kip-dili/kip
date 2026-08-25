@@ -20,7 +20,7 @@ import qualified Data.ByteString.Unsafe as BSU
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import qualified Data.Set as Set
+import Kip.Util (stableNub)
 
 -- | Opaque handle for a Foma finite state machine.
 newtype FSM = FSM (Ptr ())
@@ -241,7 +241,7 @@ suggestContextLike fsm word = do
         | (cand, as) <- zip strippedCandidates strippedAnalyses
         , not (null as)
         ]
-  return (take 50 (sort (dedupStable strippedValid)))
+  return (take 50 (sort (stableNub strippedValid)))
 
 -- | Generate one-edit surface candidates and validate them with TRmorph analysis.
 suggestFromEditDistanceOnly ::
@@ -259,14 +259,14 @@ suggestFromEditDistanceOnly fsm word = do
         ]
       (sameLength, differentLength) = partition (\cand -> T.length cand == T.length word) valid
       ordered = sameLength ++ differentLength
-  return (take 50 (sort (dedupStable ordered)))
+  return (take 50 (sort (stableNub ordered)))
 
 -- | Generate unique candidates at Levenshtein distance 1.
 generateEditDistance1 ::
   Text -- ^ Source word.
   -> [Text] -- ^ Unique candidates, in stable order.
 generateEditDistance1 word =
-  dedupStable (deletes ++ transposes ++ replaces ++ inserts)
+  stableNub (deletes ++ transposes ++ replaces ++ inserts)
   where
     turkishAlphabet :: [Char]
     turkishAlphabet = "abcçdefgğhıijklmnoöprsştuüvyzqwx"
@@ -334,12 +334,3 @@ generateSuffixStrips = go 0 []
     firstStrip txt = do
       suff <- find (\suff -> T.isSuffixOf suff txt && T.length txt > T.length suff) suffixes
       return (T.dropEnd (T.length suff) txt)
-
--- | Keep first occurrence of each item while preserving order.
-dedupStable :: Ord a => [a] -> [a]
-dedupStable = go Set.empty
-  where
-    go _ [] = []
-    go seen (x:xs)
-      | Set.member x seen = go seen xs
-      | otherwise = x : go (Set.insert x seen) xs

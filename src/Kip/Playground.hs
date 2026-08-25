@@ -29,7 +29,6 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader (runReaderT)
 import Data.Char (toLower)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (nub)
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -127,7 +126,7 @@ runPlaygroundRequest req = do
   fsm <- fsmReadBinaryFile trmorphPath
   reportProgress 20 "init-caches"
   renderCache <- newRenderCache
-  let moduleDirs = nub (libDir : prIncludeDirs req)
+  let moduleDirs = uniquePreserve (libDir : prIncludeDirs req)
       renderCtx = RenderCtx (prLang req) renderCache fsm
   reportProgress 30 "load-prelude"
   (preludePst, preludeTC, preludeEval, preludeLoaded) <-
@@ -143,8 +142,8 @@ runPlaygroundRequest req = do
       when (null (prFiles req)) $
         die . T.unpack =<< runReaderT (renderMsg MsgNeedFileOrDir) renderCtx
       buildTargets <- resolveBuildTargets (prFiles req)
-      let extraDirs = nub (map takeDirectory buildTargets)
-          buildModuleDirs = nub (moduleDirs ++ extraDirs)
+      let extraDirs = uniquePreserve (map takeDirectory buildTargets)
+          buildModuleDirs = uniquePreserve (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
         runReaderT (loadPreludeState (prNoPrelude req) buildModuleDirs renderCache fsm) renderCtx
       _ <- runReaderT (runFiles False False True preludeBuildPst preludeBuildTC preludeBuildEval buildModuleDirs preludeBuildLoaded buildTargets) renderCtx

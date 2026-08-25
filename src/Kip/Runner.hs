@@ -61,7 +61,7 @@ module Kip.Runner
 import Control.Monad (forM, when, unless, filterM, foldM)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
-import Data.List (intercalate, isPrefixOf, nub, tails, findIndex, foldl')
+import Data.List (intercalate, isPrefixOf, tails, findIndex, foldl')
 import Data.Char (isDigit)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
@@ -91,6 +91,7 @@ import Kip.Parser
 import Kip.Render
 import Kip.TypeCheck
 import qualified Kip.TypeCheck as TC
+import Kip.Util (stableNub)
 
 -- | Diagnostic language selection.
 data Lang
@@ -214,7 +215,7 @@ locateDataFile rel = do
       parentDir = takeDirectory exeDir
       envPaths = maybe [] (\base -> [base </> rel]) mEnv
       candidates =
-        nub
+        uniquePreserve
           ( envPaths
             ++ [ cabalPath
                , exeDir </> rel
@@ -1177,11 +1178,7 @@ listKipFilesRecursiveSkipping skipped root = do
 -- Set-backed dedupe preserves deterministic output ordering while avoiding
 -- the O(n^2) behavior of repeated list scans.
 uniquePreserve :: Ord a => [a] -> [a]
-uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
-  where
-    go (seen, acc) x
-      | Set.member x seen = (seen, acc)
-      | otherwise = (Set.insert x seen, x : acc)
+uniquePreserve = stableNub
 
 -- | Load the prelude module into parser/type/eval states unless disabled.
 loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState

@@ -54,6 +54,7 @@ library
       Kip.TypeCheck
       Language.Foma
   other-modules:
+      Kip.Util
       Paths_kip
   autogen-modules:
       Paths_kip
