@@ -48,56 +48,28 @@ import Kip.MorphCache (MorphDelta(..))
 import Kip.Render (RenderCache, renderExpValue)
 import Paths_kip (getLibDir, version)
 
--- | Memoized file hash cache for the current process.
--- Stores (mtime in microseconds, hash) so we can skip re-hashing unchanged files.
-{-# NOINLINE hashCache #-}
-hashCache :: IORef (Map.Map FilePath (Integer, ByteString))
-hashCache = unsafePerformIO (newIORef Map.empty)
+-- | Process-local memo state shared by cache operations.
+data CacheMemo = CacheMemo
+  { memoHashes :: !(IORef (Map.Map FilePath (Integer, ByteString)))
+  , memoCanonicalPaths :: !(IORef (Map.Map FilePath FilePath))
+  , memoCompilerHash :: !(IORef (Maybe ByteString))
+  , memoVerifiedPaths :: !(IORef (Map.Map (FilePath, Integer, Integer, ByteString) Bool))
+  , memoReverseDependencies :: !(IORef (Map.Map FilePath (Set.Set FilePath)))
+  , memoDirtySources :: !(IORef (Set.Set FilePath))
+  , memoValidatedRoots :: !(IORef (Set.Set ByteString))
+  }
 
--- | Memoized canonical-path cache for the current process.
---
--- ==== Performance note (Optimization: canonical path interning)
--- Many startup code paths repeatedly canonicalize the same module and cache
--- paths. Interning canonicalization results avoids redundant filesystem calls.
-{-# NOINLINE canonicalPathCache #-}
-canonicalPathCache :: IORef (Map.Map FilePath FilePath)
-canonicalPathCache = unsafePerformIO (newIORef Map.empty)
-
--- | Memoized compiler hash for the current process.
--- The executable hash is stable per process, so compute once.
-{-# NOINLINE compilerHashCache #-}
-compilerHashCache :: IORef (Maybe ByteString)
-compilerHashCache = unsafePerformIO (newIORef Nothing)
-
--- | Memoized dependency validation results for the current process.
---
--- ==== Performance note (Optimization: cache validation short-circuit)
--- Multiple module caches often depend on the same library files. During a
--- warm startup we may validate the same @(path,size,mtime,hash)@ tuple many
--- times. Caching positive validations avoids repeated filesystem metadata reads
--- and hash checks across those modules.
-{-# NOINLINE verifyPathCache #-}
-verifyPathCache :: IORef (Map.Map (FilePath, Integer, Integer, ByteString) Bool)
-verifyPathCache = unsafePerformIO (newIORef Map.empty)
-
--- | Reverse dependency graph (dep source file -> direct dependent source files).
---
--- ==== Performance note (Optimization: dependency invalidation propagation)
--- When one source changes, we propagate a dirty marker through this graph so
--- subsequent cache validations can fail fast without re-checking all metadata.
-{-# NOINLINE reverseDepGraphCache #-}
-reverseDepGraphCache :: IORef (Map.Map FilePath (Set.Set FilePath))
-reverseDepGraphCache = unsafePerformIO (newIORef Map.empty)
-
--- | Dirty source files known to invalidate dependent module caches.
-{-# NOINLINE dirtySourcesCache #-}
-dirtySourcesCache :: IORef (Set.Set FilePath)
-dirtySourcesCache = unsafePerformIO (newIORef Set.empty)
-
--- | Content-addressed dependency roots validated in this process.
-{-# NOINLINE validatedDependencyRoots #-}
-validatedDependencyRoots :: IORef (Set.Set ByteString)
-validatedDependencyRoots = unsafePerformIO (newIORef Set.empty)
+{-# NOINLINE cacheMemo #-}
+cacheMemo :: CacheMemo
+cacheMemo = unsafePerformIO $
+  CacheMemo
+    <$> newIORef Map.empty
+    <*> newIORef Map.empty
+    <*> newIORef Nothing
+    <*> newIORef Map.empty
+    <*> newIORef Map.empty
+    <*> newIORef Set.empty
+    <*> newIORef Set.empty
 
 -- | Metadata stored alongside cached modules for validation.
 data CacheMetadata = CacheMetadata
@@ -715,12 +687,12 @@ canonicalizePathCached ::
   FilePath -- ^ Path to canonicalize.
   -> IO FilePath -- ^ Canonical absolute path.
 canonicalizePathCached path = do
-  cached <- readIORef canonicalPathCache
+  cached <- readIORef (memoCanonicalPaths cacheMemo)
   case Map.lookup path cached of
     Just absPath -> return absPath
     Nothing -> do
       absPath <- canonicalizePath path
-      modifyIORef' canonicalPathCache (Map.insert path absPath)
+      modifyIORef' (memoCanonicalPaths cacheMemo) (Map.insert path absPath)
       return absPath
 
 -- | Load a cached module from disk if it is valid.
@@ -851,7 +823,7 @@ isCacheValidMeta path meta = do
         else do
           sourcePath <- canonicalizePathCached sourcePathRaw
           registerDependencyEdges sourcePath (map (\(p, _, _, _) -> p) (dependencies meta))
-          dirty <- readIORef dirtySourcesCache
+          dirty <- readIORef (memoDirtySources cacheMemo)
           if Set.member sourcePath dirty
             then return False
             else validateSources sourcePath meta
@@ -865,7 +837,7 @@ isCacheValidMeta path meta = do
       if not sourceOk
         then markDirtySource sourcePath >> return False
         else do
-          rootValidated <- Set.member (dependencyRootHash meta) <$> readIORef validatedDependencyRoots
+          rootValidated <- Set.member (dependencyRootHash meta) <$> readIORef (memoValidatedRoots cacheMemo)
           if rootValidated
             then return True
             else do
@@ -874,7 +846,7 @@ isCacheValidMeta path meta = do
                 verifyPath depPath depHash depSize depMTime) (dependencies meta)
               let allValid = and depsValid
               when allValid
-                (modifyIORef' validatedDependencyRoots (Set.insert (dependencyRootHash meta)))
+                (modifyIORef' (memoValidatedRoots cacheMemo) (Set.insert (dependencyRootHash meta)))
               return allValid
 
     -- | Verify a file by fast metadata check and fallback hashing.
@@ -885,12 +857,12 @@ isCacheValidMeta path meta = do
                -> Integer -- ^ Expected mtime.
                -> IO Bool -- ^ True when dependency matches.
     verifyPath depPath depHash depSize depMTime = do
-      dirty <- readIORef dirtySourcesCache
+      dirty <- readIORef (memoDirtySources cacheMemo)
       if Set.member depPath dirty
         then return False
         else do
           let cacheKey = (depPath, depSize, depMTime, depHash)
-          validationCache <- readIORef verifyPathCache
+          validationCache <- readIORef (memoVerifiedPaths cacheMemo)
           case Map.lookup cacheKey validationCache of
             Just ok -> return ok
             Nothing -> do
@@ -903,7 +875,7 @@ isCacheValidMeta path meta = do
                     mDepHash <- hashFile depPath
                     return (mDepHash == Just depHash)
               if ok
-                then modifyIORef' verifyPathCache (Map.insert cacheKey True)
+                then modifyIORef' (memoVerifiedPaths cacheMemo) (Map.insert cacheKey True)
                 else markDirtySource depPath
               return ok
 
@@ -912,7 +884,7 @@ registerDependencyEdges :: FilePath -> [FilePath] -> IO ()
 registerDependencyEdges source deps = do
   deps' <- mapM canonicalizePathCached deps
   modifyIORef'
-    reverseDepGraphCache
+    (memoReverseDependencies cacheMemo)
     (\g ->
       foldl
         (\acc dep -> Map.insertWith Set.union dep (Set.singleton source) acc)
@@ -923,8 +895,8 @@ registerDependencyEdges source deps = do
 markDirtySource :: FilePath -> IO ()
 markDirtySource sourceRaw = do
   source <- canonicalizePathCached sourceRaw
-  graph <- readIORef reverseDepGraphCache
-  dirty <- readIORef dirtySourcesCache
+  graph <- readIORef (memoReverseDependencies cacheMemo)
+  dirty <- readIORef (memoDirtySources cacheMemo)
   let go [] seen = seen
       go (x:xs) seen
         | Set.member x seen = go xs seen
@@ -932,7 +904,7 @@ markDirtySource sourceRaw = do
             let parents = Set.toList (Map.findWithDefault Set.empty x graph)
             in go (parents ++ xs) (Set.insert x seen)
       newlyDirty = go [source] Set.empty
-  writeIORef dirtySourcesCache (Set.union dirty newlyDirty)
+  writeIORef (memoDirtySources cacheMemo) (Set.union dirty newlyDirty)
   
 -- | Load a prelude snapshot if present and valid.
 loadCachedPrelude ::
@@ -1102,7 +1074,7 @@ hashFile ::
   FilePath -- ^ Path to hash.
   -> IO (Maybe ByteString) -- ^ Digest, or Nothing on error.
 hashFile path = do
-  cached <- readIORef hashCache
+  cached <- readIORef (memoHashes cacheMemo)
   mMeta <- getFileMeta path
   case (Map.lookup path cached, mMeta) of
     -- Cache hit and mtime unchanged: skip re-hashing.
@@ -1115,7 +1087,7 @@ hashFile path = do
         Left (_ :: SomeException) -> return Nothing
         Right bytes -> do
           let digest = hashlazy bytes
-          modifyIORef' hashCache (Map.insert path (currentMtime, digest))
+          modifyIORef' (memoHashes cacheMemo) (Map.insert path (currentMtime, digest))
           return (Just digest)
     -- Can't get metadata, try hashing anyway.
     _ -> do
@@ -1138,7 +1110,7 @@ hashFile path = do
 getCompilerHash ::
   IO (Maybe ByteString) -- ^ Cached fingerprint of the shared compiler implementation.
 getCompilerHash = do
-  cached <- readIORef compilerHashCache
+  cached <- readIORef (memoCompilerHash cacheMemo)
   case cached of
     Just digest -> return (Just digest)
     Nothing -> do
@@ -1150,7 +1122,7 @@ getCompilerHash = do
         Just (size, mtime) ->
           return (BS8.pack ("kip-lib-" ++ show size ++ "-" ++ show mtime))
         Nothing -> executableFingerprint
-      writeIORef compilerHashCache (Just fingerprint)
+      writeIORef (memoCompilerHash cacheMemo) (Just fingerprint)
       return (Just fingerprint)
   where
     executableFingerprint = do
