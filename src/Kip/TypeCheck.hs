@@ -206,7 +206,6 @@ instance Binary TCValueSummary
 -- | Type checker state for names, signatures, and constructors.
 data TCState =
   MkTCState
-    -- ==== Performance note (Optimization: strict state spine)
     -- Keep the environment record fields strict so repeated 'modify' updates
     -- do not accumulate thunk chains across parser/typechecker bootstrap.
     { tcCtx :: !(Set.Set Identifier) -- ^ Names in scope.
@@ -215,7 +214,6 @@ data TCState =
     , tcFuncSigs :: !(Map.Map Identifier [[Arg Ann]]) -- ^ Function argument signatures (list for overloading).
     -- | Exact-arity signature index for overload resolution.
     --
-    -- ==== Performance note (Optimization: overload candidate pruning)
     -- Call checking repeatedly requests "signatures of name N with arity K".
     -- Keeping this index avoids filtering every signature list on each call.
     , tcFuncSigsByArity :: !(HM.HashMap (Identifier, Int) [[Arg Ann]])
@@ -336,7 +334,6 @@ insertFuncSig name args st =
 
 -- | Insert one function declaration into function-arity and signature indices.
 --
--- ==== Performance note (Optimization: strict TC env updates)
 -- Function declarations update three maps in tandem ('tcFuncs',
 -- 'tcFuncSigs', 'tcFuncSigsByArity'). Updating them through a single helper
 -- reduces intermediate state allocations on stdlib bootstrap paths.
@@ -819,7 +816,6 @@ data UniqueMatch
 -- | Match provided argument cases to expected signature cases for partial application.
 -- Returns expected argument indices matched by each provided argument, in order.
 --
--- ==== Performance note (Optimization: compact used-position mask)
 -- Matching uses a small strict state machine (`NoMatch/OneMatch/ManyMatches`)
 -- with an integer bitset of used indices, avoiding tree nodes and intermediate
 -- candidate lists. 'Integer' remains correct for arbitrary arity while using
@@ -2689,7 +2685,6 @@ unifyTypes tyCons expected actual
           if oc then return True else anyM (occursIn parent binds needle) args
         _ -> return False
 
-    -- ==== Performance note (Optimization: shallow prune in hot path)
     -- Most unification checks only need head-normal form. Deep recursive prune
     -- is kept for final substitution freezing and binding canonicalization.
     --

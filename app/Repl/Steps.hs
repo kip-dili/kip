@@ -319,7 +319,6 @@ substituteFirstByHead from to = go False
 -- | Find a trace step that matches the current expression.
 -- Returns the step index, the step itself, and the expression after applying it.
 --
--- ==== Performance note (Optimization: strict index scan)
 -- Indexes are tracked explicitly with strict recursion to avoid allocation from
 -- zipped index lists in the hot replay loop.
 pickStep :: Exp Ann
@@ -348,7 +347,6 @@ pickStep current _currentText _renderInput steps =
 
 -- | Remove element at the given index from a list.
 --
--- ==== Performance note (Optimization note)
 -- This stays as one `splitAt` + concatenation because replay step lists are
 -- typically short; keeping behavior simple here was faster to validate.
 removeAt :: Int -> [a] -> [a]

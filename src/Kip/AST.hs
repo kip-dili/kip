@@ -22,7 +22,6 @@ import Data.Binary.Put (putWord32be, putWord64be)
 
 -- | Binary instance for parser positions.
 --
--- ==== Performance note (Optimization 11)
 -- Encodes 'Pos' as a fixed-width 'Word32' to reduce decode overhead and
 -- allocation pressure compared to generic integer decoding.
 instance Binary Pos where
@@ -78,7 +77,6 @@ data Case =
 
 -- | Binary instance for source positions.
 --
--- ==== Performance note (Optimization 11)
 -- Packs line and column into a single 'Word64' payload for faster cache
 -- deserialization of span-heavy ASTs.
 instance Binary SourcePos where
@@ -212,7 +210,6 @@ data Exp a =
 
 -- | Flatten nested applications into a root function and accumulated arguments.
 --
--- ==== Performance note
 -- Uses a difference list (@[Exp a] -> [Exp a]@) to collect arguments in
 -- a single pass.  The previous version built the result via
 -- @prefixArgs ++ appArgs@ at each recursive step, which is O(n^2) for

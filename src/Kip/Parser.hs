@@ -267,7 +267,6 @@ chooseLongestCandidate (x:xs) =
 
 -- | Memoized possessive normalization roots for the current process.
 --
--- ==== Performance note (Optimization: morphology normalization memo)
 -- @normalizePossessive@ is hit repeatedly while loading and resolving stdlib
 -- names. Keeping a process-local cache avoids repeating the same
 -- morphology-based normalization work for identical surface words.
@@ -310,7 +309,6 @@ The parser state is updated as we parse to track:
 -}
 data ParserState =
   MkParserState
-    -- ==== Performance note (Optimization: strict parser state spine)
     -- These strict fields keep parser context/index updates in WHNF as the
     -- state is threaded through large files and stdlib bootstrap.
     { fsm :: FSM
@@ -332,7 +330,6 @@ data ParserState =
     , parserFuncArities :: !(M.Map Identifier (Set.Set Int))
     -- | Secondary index used by hot-path overload checks.
     --
-    -- ==== Performance note (Optimization: parser overload lookup)
     -- Ambiguity detection in REPL used to scan the whole
     -- 'parserFuncArities' map to gather all entries with matching surface
     -- names. Keeping this precomputed name-based map makes those lookups
@@ -374,7 +371,6 @@ newParserStateWithCaches fsm' =
 
 -- | Create a parser state with context and shared caches.
 --
--- ==== Performance note (Optimization: parser state indexing)
 -- We compute 'parserFuncAritiesByName' eagerly here so all call sites
 -- (fresh states and cache-restored states) get the same fast-path lookup.
 newParserStateWithCtxAndCaches :: FSM -- ^ Morphology FSM.
@@ -442,7 +438,6 @@ recordDefSpan ident sp =
 
 -- | Track declared arities for functions seen by the parser.
 --
--- ==== Performance note (Optimization: incremental index maintenance)
 -- Updates both arity maps in one state transition so the secondary name
 -- index stays in sync without requiring periodic rebuilds.
 registerFuncArity :: Identifier -> Int -> KipParser ()
@@ -493,7 +488,6 @@ ordNub = stableNub
 
 -- | Append items to an already deduplicated list, keeping first occurrence.
 --
--- ==== Performance note (Optimization 12)
 -- This avoids re-running 'ordNub' over the entire left list when only a
 -- small right list is appended.
 ordNubAppend :: Ord a => [a] -> [a] -> [a]
@@ -1401,7 +1395,6 @@ pickCase allowP3s candidates =
 
 -- | Find a case that has multiple distinct identifiers (potential ambiguity).
 --
--- ==== Performance note (Optimization 12)
 -- Uses a single pass to build case order and per-case identifier sets,
 -- replacing repeated @ordNub@ and per-case list scans.
 findAmbiguousCase :: [(Identifier, Case)] -> Maybe Case
@@ -1436,7 +1429,6 @@ identRoot (_, x) = x
 
 -- | Match a context identifier by inflected surface forms.
 --
--- ==== Performance note (Optimization 12)
 -- Builds the candidate case list in one pass while preserving first-seen
 -- order, reducing repeated dedup work in this hot matching path.
 matchCtxByInflection :: Set.Set Identifier -- ^ Context identifiers.
@@ -1465,7 +1457,7 @@ matchCtxByInflection ctx ident candidates = do
             filter (\a -> "<N>" `T.isInfixOf` a && not ("<V>" `T.isInfixOf` a)) analyses
           baseAnalyses =
             if null nounAnalyses then analyses else nounAnalyses
-      -- Optimization: analyze the surface once and only generate roots for
+      -- Analyze the surface once and only generate roots for
       -- the analyses that do not already match the context roots.
       goAnalyses mods ctxFiltered baseAnalyses cases
   where
@@ -2099,7 +2091,6 @@ parseExpWithCtx' useCtx allowMatch =
                   -> [Exp Ann]
                   -> KipParser [[Exp Ann]]
         --
-        -- ==== Performance note (Optimization: reverse argument builders)
         -- Candidate argument vectors are built with cons and reversed once to
         -- avoid nested @prevArgs ++ [arg]@ allocations in split enumeration.
         splitArgs arityMap arityNameMap arity tokens
@@ -4378,7 +4369,6 @@ ambiguousBareReplError st sourceText expItem =
 
     -- | Gather candidate arities by exact identifier and by surface name.
     --
-    -- ==== Performance note (Optimization: ambiguity arity lookup)
     -- Name-based collection uses the prebuilt 'parserFuncAritiesByName'
     -- index, avoiding full scans of all known arities on each REPL parse.
     aritiesForIds :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int) -> [Identifier] -> [Int]

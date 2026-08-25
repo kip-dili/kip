@@ -265,7 +265,6 @@ data CachedPrelude = CachedPrelude
     -- ^ Source path and 'PrimFunc' statement pairs needed to rebuild
     -- 'evalPrimFuncs' host callbacks (see 'Kip.Eval.evalPrimFuncs').
     --
-    -- ==== Performance note (Optimization: prelude prim-func snapshot)
     -- Previously these were recovered at __every__ load by re-decoding the
     -- full @.iz@ cache of each prelude module (~25 MB across ~11 files) just
     -- to filter out a handful of 'PrimFunc' statements. We now do that
@@ -310,7 +309,6 @@ instance Binary CachedPrelude where
 
 -- | Serialized parser state subset needed to restore a module.
 --
--- ==== Performance note (Optimization 10)
 -- Stores serialized snapshots of parser morphology caches
 -- ('pupsCache'/'pdownsCache') so repeated runs can avoid cold-start Foma
 -- calls after loading @.iz@ files.
@@ -421,7 +419,6 @@ getMorphText dictionary = do
 -- | Convert a parser state into a cached representation, including a full
 -- snapshot of the shared morphology caches.
 --
--- ==== Performance note (Optimization 10)
 -- Materializes parser hash-table morphology caches into lists so they can be
 -- persisted in the module cache.
 --
@@ -491,7 +488,6 @@ attachMorphDelta MorphDelta{..} cached =
 
 -- | Restore a parser state from its cached representation.
 --
--- ==== Performance note (Optimization 10)
 -- Rehydrates persisted morphology cache entries into the shared parser cache
 -- tables before returning the parser state.
 fromCachedParserState ::
@@ -620,7 +616,6 @@ mergeCachedTCState current delta =
 
 -- | Unwrap a cached type checker state.
 --
--- ==== Performance note (A1)
 -- 'TCState' stores overloadable entries as @Map k [v]@ encoded by flattening
 -- each list entry; decoding via @Map.fromListWith (++)@ reverses per-key order.
 -- We reverse those lists here to preserve declaration order expected by REPL
@@ -715,7 +710,6 @@ canonicalizePathCached path = do
 
 -- | Load a cached module from disk if it is valid.
 --
--- ==== Performance note (Optimization: header-first cache validation)
 -- 'CachedModule' encodes its 'metadata' field first, followed by the much
 -- larger AST/parser/typechecker/evaluator payload. Previously we fully
 -- decoded the entire payload before checking whether the cache was even

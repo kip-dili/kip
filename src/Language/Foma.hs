@@ -55,7 +55,6 @@ foreign import ccall unsafe "fomalib.h fsm_read_binary_file"
 
 -- | Read an FSM from a binary file on disk.
 --
--- ==== Performance note (Optimization: lazy FSM load)
 -- @trmorph.fst@ is gzip-compressed on disk; @fsm_read_binary_file@
 -- decompresses and parses it (measured ~34 ms standalone) on __every__
 -- process start, even for runs whose morphology needs are fully satisfied
@@ -154,7 +153,6 @@ withApplyHandle fsm pickHandle initHandle action = do
 -- | Morphological analysis (surface form to analyses).
 -- Uses 'Text' to match the parser and avoid extra conversions.
 --
--- ==== Performance note (Optimization: reuse cached apply handle)
 -- Previously this called the C @ups()@ entry point, which runs
 -- @apply_init@ (building the FST's apply indices) on __every single call__.
 -- Sampling showed this dominating warm-run time once the process-startup
@@ -176,7 +174,6 @@ ups fsm t = do
 -- | Morphological generation (analysis to surface forms).
 -- Uses 'Text' to match the parser and avoid extra conversions.
 --
--- ==== Performance note (Optimization: reuse cached apply handle)
 -- See 'ups': routes through 'downsBatch' to reuse the cached 'ApplyHandle'
 -- instead of paying a fresh @apply_init@ per call.
 downs ::

@@ -566,7 +566,6 @@ instance Render RenderTCError where
 -- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
 -- GC worker threads, returning committed memory to the OS) when possible.
 --
--- ==== Performance note (Optimization: skip RTS shutdown on CLI exit)
 -- @+RTS -s@ showed ~9 ms of EXIT time per invocation for a batch-mode run
 -- (near-zero CPU, mostly RTS teardown) that is pure waste for a process
 -- about to terminate anyway. All output must be explicitly flushed first
@@ -762,7 +761,6 @@ main = do
 
     -- | Canonicalize existing module roots once and reuse interned paths.
     --
-    -- ==== Performance note (Optimization: module root canonicalization)
     -- Module resolution repeatedly combines search roots with relative module
     -- paths. Canonicalizing roots once avoids repeated canonicalization churn.
     internModuleRoots :: [FilePath] -> IO [FilePath]
@@ -772,7 +770,6 @@ main = do
 
     -- | Construct an empty REPL state and defer prelude loading until needed.
     --
-    -- ==== Performance note (Optimization: lazy REPL bootstrap)
     -- Starting the REPL no longer eagerly loads @lib/giriş.kip@ when
     -- @autoPrelude@ is enabled. Instead, we start from empty parser/type/eval
     -- state and load the prelude on the first command that requires language
@@ -797,7 +794,6 @@ main = do
 
     -- | Start prelude loading in the background while REPL waits for input.
     --
-    -- ==== Performance note (Optimization: parallel REPL warmup)
     -- REPL startup now overlaps prelude load with user think-time: prompt is
     -- shown immediately, and `giriş.kip` loading runs on a background thread.
     -- Commands that do not require prelude stay non-blocking.
@@ -1129,7 +1125,6 @@ main = do
 
     -- | Lazily load prelude state on first command that needs language context.
     --
-    -- ==== Performance note (Optimization: lazy prelude loading)
     -- The REPL carries a lightweight empty state at startup and only pays the
     -- prelude parse/typecheck/eval cost when a command requires names/types.
     ensurePreludeLoaded :: ReplState -> ReplM ReplState
@@ -1303,7 +1298,6 @@ main = do
 
     -- | Collect statements from a single file (recursively handles Load).
     --
-    -- ==== Performance note (Optimization: reverse accumulator)
     -- Statement collection uses reverse accumulation to avoid repeated
     -- @acc ++ [x]@ allocation in recursive load/typecheck traversal.
     collectFileStmts :: [FilePath] -- ^ Module search paths.
@@ -1546,7 +1540,6 @@ main = do
 
     -- | Run a single statement while collecting type-checked statements for caching.
     --
-    -- ==== Performance note (Optimization: cache-builder consing)
     -- Typechecked statements are accumulated with cons and reversed once at
     -- the end of file processing, avoiding per-statement list append cost.
     runStmtCollect :: Bool -- ^ Whether to show definitions.
@@ -1642,7 +1635,6 @@ main = do
         then return (pst, tcSt, Set.empty)
         else do
           snapshotPath <- liftIO preludeSnapshotPath
-          -- ==== Performance note (Optimization: prelude snapshot reuse)
           -- Reuse the merged prelude graph snapshot for codegen startup. Even
           -- though codegen does not evaluate terms, restoring parser+TC from a
           -- validated snapshot avoids reparsing and re-typechecking stdlib.
@@ -1669,7 +1661,6 @@ main = do
         then return (pst, tcSt, evalSt, Set.empty)
         else do
           snapshotPath <- liftIO preludeSnapshotPath
-          -- ==== Performance note (Optimization: prelude snapshot/image cache)
           -- The first successful prelude load persists a merged snapshot. Later
           -- startups validate file fingerprints and restore parser/TC/eval in
           -- one step instead of traversing the whole stdlib graph.

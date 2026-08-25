@@ -38,7 +38,6 @@ import Data.Fixed (mod')
 
 -- | Evaluator state: runtime bindings plus render function.
 --
--- ==== Performance note
 -- The overloadable bindings ('evalFuncs', 'evalPrimFuncs', 'evalSelectors')
 -- use @'Map.Map' k [v]@ instead of @Data.MultiMap@.  This eliminates the
 -- @MultiMap@ wrapper overhead (an extra @Int@ count field and lazy
@@ -47,7 +46,6 @@ import Data.Fixed (mod')
 -- @'Map.insertWith' (++) k [v]@.
 data EvalState =
   MkEvalState
-    -- ==== Performance note (Optimization: strict state spine)
     -- Strict fields prevent deferred record updates from building up in the
     -- evaluator state during long REPL sessions and module loads.
     { evalVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings.
@@ -98,7 +96,6 @@ reference that will be resolved when used in an App. Otherwise, it's truly undef
 -}
 -- | Check if a variable can be resolved in an application context.
 --
--- ==== Performance note
 -- Iterates the candidate list __once__, checking all namespaces per
 -- candidate and short-circuiting on the first hit.  The previous
 -- implementation allocated @fnCandidates = map fst varCandidates@ (1.9 %
@@ -499,7 +496,7 @@ evalStepWith subEval localEnv e =
               primMatches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalPrimFuncs]
               selectorMatches = [idx | n <- fnCandidates, idx <- Map.findWithDefault [] n evalSelectors]
               hasTyConCandidate = any (\(ident, _) -> Map.member ident evalTyCons) varCandidates
-          -- Optimization: if there are no function/primitive candidates, we can
+          -- If there are no function/primitive candidates, we can
           -- decide selector/random/constructor outcomes without type inference.
           if null matches && null primMatches
             then
@@ -724,7 +721,6 @@ matchCtor ctor pats v =
 
     -- | Compare identifiers, allowing possessive/root normalization.
     --
-    -- ==== Performance note
     -- 'roots' produces at most 2 candidates (@txt@ itself plus an
     -- optional vowel-drop variant).  The previous @nub . catMaybes@
     -- and @intersect@ on such tiny lists allocated intermediate lists
@@ -771,7 +767,6 @@ matchCtor ctor pats v =
 
     -- | Strip copula suffixes from a surface word.
     --
-    -- ==== Performance note
     -- Uses the module-level 'copulaSuffixes' list (all 3 chars long)
     -- instead of allocating a local list on every call.  Strips from
     -- the original text using character count to preserve the original
@@ -795,7 +790,6 @@ matchCtor ctor pats v =
 matchList :: [Pat Ann] -- ^ Element patterns.
           -> Exp Ann -- ^ Scrutinee expression.
           -> Maybe [(Identifier, Exp Ann)] -- ^ Bindings when matched.
--- ==== Performance note
 -- With @OverloadedStrings@ enabled, string literals are compiled as
 -- top-level 'Text' constants by GHC, avoiding a per-call 'T.pack'
 -- allocation.  The previous @T.pack \"boş\"@ / @T.pack \"eki\"@ calls
@@ -832,7 +826,6 @@ applySelector idx arg fallback =
 -- as soon as one list is exhausted before the other.  This is O(min(m,n))
 -- instead of O(m + n) for @'length' xs == 'length' ys@.
 --
--- ==== Performance note
 -- The @length tys == length args@ guard appears in every list
 -- comprehension inside 'pickFunctionByTypes', 'pickPrimByTypes' and
 -- their @Partial@ variants.  For programs with many overloaded
@@ -856,7 +849,6 @@ reorderSectionArgs preApplied args =
 
 -- | Choose a function definition based on inferred argument types.
 --
--- ==== Performance note
 -- Previously called @mapM inferType args@ internally.  Since overload
 -- resolution tries primitives first ('pickPrimByTypes') and then falls
 -- back to functions, the same argument list had its types inferred
@@ -895,7 +887,6 @@ pickFunctionByTypes defs args argTys = do
 
 -- | Choose a primitive implementation based on inferred argument types.
 --
--- ==== Performance note
 -- Accepts pre-computed @argTys@ to avoid duplicate 'inferType' calls.
 -- See 'pickFunctionByTypes' for full rationale.
 pickPrimByTypes :: [(Identifier, ([Arg Ann], [Exp Ann] -> EvalM (Exp Ann)))] -- ^ Primitive candidates.
@@ -918,7 +909,6 @@ pickPrimByTypes defs args argTys = do
 -- | Choose a function definition for calls that originated from partial application.
 -- Reorders arguments by expected case, allowing nominative values to fill gaps.
 --
--- ==== Performance note
 -- Accepts pre-computed @argTys@ to avoid duplicate 'inferType' calls.
 -- See 'pickFunctionByTypes' for full rationale.
 pickFunctionByTypesPartial :: [(Identifier, ([Arg Ann], [Clause Ann]))]
@@ -958,7 +948,6 @@ pickFunctionByTypesPartial defs args argTys = do
 
 -- | Choose a primitive implementation for calls that originated from partial application.
 --
--- ==== Performance note
 -- Accepts pre-computed @argTys@ to avoid duplicate 'inferType' calls.
 -- See 'pickFunctionByTypes' for full rationale.
 pickPrimByTypesPartial :: [(Identifier, ([Arg Ann], [Exp Ann] -> EvalM (Exp Ann)))]
@@ -985,7 +974,6 @@ pickPrimByTypesPartial defs args argTys = do
 -- | Type comparison used in partial-application primitive dispatch.
 -- Unknown argument types are accepted to avoid dropping valid sections.
 --
--- ==== Performance note
 -- Takes 'Map.Map' directly to avoid repeated 'Map.toList' conversions
 -- at each call site (see 'typeMatchesAllowUnknown' for details).
 typeMatchesAllowUnknownPartial :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
@@ -1034,7 +1022,6 @@ reorderByCasesForEval expected actual xs =
 
 -- | Type comparison allowing unknowns for primitive resolution.
 --
--- ==== Performance note
 -- Previously accepted @[(Identifier, Int)]@ which forced every call site
 -- (4 in total across 'pickFunctionByTypes', 'pickPrimByTypes', and their
 -- @Partial@ variants) to convert via @'Map.toList' evalTyCons@.  Each of
@@ -1068,7 +1055,6 @@ typeMatchesAllowUnknown tyCons mTy ty =
 -- Iterates the candidate pairs directly, avoiding the intermediate list
 -- allocation that @map fst candidates@ would create.
 --
--- ==== Performance note
 -- Profiling showed the previous @let names = map fst candidates@ pattern
 -- accounted for __3.6 % of allocation__ in evaluation-heavy workloads.
 lookupByCandidatesList :: forall a.
@@ -1089,7 +1075,6 @@ lookupByCandidatesList env = go
 -- @[Identifier]@ list.  This is the primary lookup function used by
 -- 'evalStepWith' for global value bindings.
 --
--- ==== Performance note
 -- Combined with the HashMap variant, eliminating the @map fst@ allocation
 -- saves __~6 % of total allocation__ in evaluation-heavy workloads.
 lookupByCandidates :: forall a.
@@ -1138,7 +1123,6 @@ lookupBySuffixMap env (mods, word) =
 -- @[Identifier]@ list via @map fst@.  Uses 'HM.lookup' for O(1) average
 -- lookup time.
 --
--- ==== Performance note
 -- Profiling showed the previous @map fst candidates@ allocation in this
 -- function alone accounted for __2.3 % of allocation__.
 lookupByCandidatesHM :: forall a.
@@ -1177,7 +1161,6 @@ lookupBySuffixHM env (mods, word) =
 -- In addition to the plain stripped root, a trailing-@n@ fallback is
 -- included for pronoun stems (e.g. @bun@ → @bu@).
 --
--- ==== Performance note
 -- Profiling showed the previous implementation at __18.6 % of runtime__
 -- and __23 % of allocation__ for evaluation-heavy workloads because it
 -- generated up to 48 candidates (24 suffixes × 2 variants) and then
@@ -1301,7 +1284,6 @@ inferType e =
     -- inferring each argument's type only when the expected type still has
     -- free variables not yet pinned down by the substitution so far.
     --
-    -- ==== Performance note (Optimization: lazy constructor arg unification)
     -- The previous implementation called 'mapM inferType' on __every__
     -- constructor argument up front, before unification even started. For a
     -- binary constructor like list cons (@eki :: a -> Liste a -> Liste a@),
@@ -1381,7 +1363,6 @@ applyTypeCase cas exp =
 
 -- | Check whether an inferred type matches an expected type.
 --
--- ==== Performance note
 -- Accepts 'Map.Map' to stay consistent with 'typeMatchesAllowUnknown'
 -- and avoid list conversion overhead (see that function's documentation).
 typeMatches :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
@@ -1395,7 +1376,6 @@ typeMatches tyCons mTy ty =
 
 -- | Compare two types for compatibility.
 --
--- ==== Performance note
 -- Accepts 'Map.Map' so that the recursive calls to 'normalizeTy' benefit
 -- from O(log n) lookups instead of O(n) list scans.
 tyEq :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
@@ -1425,7 +1405,6 @@ tyEq tyCons t1 t2 =
 
 -- | Normalize type applications using constructor arities.
 --
--- ==== Performance note
 -- Previously accepted @[(Identifier, Int)]@ and used 'lookup' (O(n) linear
 -- scan).  Now accepts 'Map.Map' and uses 'Map.lookup' (O(log n)).  Since
 -- 'normalizeTy' is called recursively on every sub-term during type
@@ -1451,7 +1430,6 @@ normalizeTy tyCons ty =
 
 -- | Unify expected types with actual types, returning substitutions.
 --
--- ==== Performance note
 -- Accepts 'Map.Map' so that 'normalizeTy' (called on every type pair)
 -- uses O(log n) lookups instead of O(n) list scans.
 unifyTypes :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').

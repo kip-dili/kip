@@ -1023,7 +1023,6 @@ runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath _paramTyCons _ty
 
 -- | Run a single statement while collecting type-checked statements for caching.
 --
--- ==== Performance note (Optimization: reverse cache accumulators)
 -- Both typed statements and dependency paths are accumulated in reverse and
 -- normalized once per file, avoiding repeated append allocation.
 runStmtCollect :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath]) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath])
@@ -1064,7 +1063,6 @@ runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons ty
 
 -- | Collect non-infinitive primitive references from statements.
 --
--- ==== Performance note (Optimization: set-based reference collection)
 -- Uses a strict set accumulator through the AST walk instead of list
 -- concatenation and end-of-pass dedupe.
 collectNonInfinitiveRefs :: [Stmt Ann] -> [Identifier]
@@ -1126,7 +1124,6 @@ resolveModulePath dirs dirPath name@(xs, x) = do
 
 -- | Resolve build targets from file or directory inputs.
 --
--- ==== Performance note (Optimization: fused expansion and dedupe)
 -- Performs path expansion and uniqueness filtering in one fold, avoiding
 -- temporary flattened lists and quadratic @nub@ work.
 resolveBuildTargets :: [FilePath] -> IO [FilePath]
@@ -1174,7 +1171,6 @@ listKipFilesRecursiveSkipping skipped root = do
 
 -- | Remove duplicates while preserving first occurrence order.
 --
--- ==== Performance note (Optimization: strict stable dedupe)
 -- Set-backed dedupe preserves deterministic output ordering while avoiding
 -- the O(n^2) behavior of repeated list scans.
 uniquePreserve :: Ord a => [a] -> [a]
@@ -1194,7 +1190,6 @@ loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm = do
     then return (pst, tcSt, evalSt, Set.empty)
     else do
       snapshotPath <- liftIO preludeSnapshotPath
-      -- ==== Performance note (Optimization: prelude snapshot/image cache)
       -- Restore the merged prelude graph from a validated snapshot when
       -- possible; otherwise load and persist it for future startup runs.
       mSnapshot <- liftIO (loadCachedPrelude snapshotPath cache fsm)
