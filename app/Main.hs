@@ -1286,6 +1286,25 @@ main = do
               liftIO (die (T.unpack msg))
             Right (_, evalSt') -> return evalSt'
 
+    -- | Load a dependency statement and optionally report it.
+    runLoadStmt ::
+      Bool ->
+      Bool ->
+      [FilePath] ->
+      CompilerState ->
+      [Text] ->
+      Identifier ->
+      AppM CompilerState
+    runLoadStmt showLoad buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath name = do
+      path <- resolveModulePath moduleDirs dirPath name
+      absPath <- liftIO (canonicalizePathCached path)
+      state' <-
+        if Set.member absPath loaded
+          then return state
+          else runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
+      when showLoad (emitMsgIOCtx (MsgLoaded name))
+      return state'
+
     codegenFilesTagged :: ParserState
                        -> TCState
                        -> [FilePath]
@@ -1501,19 +1520,8 @@ main = do
             -> AppM CompilerState -- ^ Updated states.
     runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded) stmt =
       case stmt of
-        Load dirPath name -> do
-          path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePathCached path)
-          if Set.member absPath loaded
-            then do
-              when showLoad $
-                emitMsgIOCtx (MsgLoaded name)
-              return (pst, tcSt, evalSt, loaded)
-            else do
-              (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-              when showLoad $
-                emitMsgIOCtx (MsgLoaded name)
-              return (pst', tcSt', evalSt', loaded')
+        Load dirPath name ->
+          runLoadStmt showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
         _ ->
           liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
             Left tcErr -> do
@@ -1543,19 +1551,8 @@ main = do
                  -> AppM CompilerState -- ^ Updated states.
     runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs _source (pst, tcSt, evalSt, loaded) stmt =
       case stmt of
-        Load dirPath name -> do
-          path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePathCached path)
-          if Set.member absPath loaded
-            then do
-              when showLoad $
-                emitMsgIOCtx (MsgLoaded name)
-              return (pst, tcSt, evalSt, loaded)
-            else do
-              (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-              when showLoad $
-                emitMsgIOCtx (MsgLoaded name)
-              return (pst', tcSt', evalSt', loaded')
+        Load dirPath name ->
+          runLoadStmt showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
         _ -> do
           when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt)
           evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt
@@ -1581,18 +1578,9 @@ main = do
     runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAccRev) stmt =
       case stmt of
         Load dirPath name -> do
-          path <- resolveModulePath moduleDirs dirPath name
-          absPath <- liftIO (canonicalizePathCached path)
-          if Set.member absPath loaded
-            then do
-              when showLoad $
-                emitMsgIOCtx (MsgLoaded name)
-              return (pst, tcSt, evalSt, loaded, stmt : typedAccRev)
-            else do
-              (pst', tcSt', evalSt', loaded') <- runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-              when showLoad $
-                emitMsgIOCtx (MsgLoaded name)
-              return (pst', tcSt', evalSt', loaded', stmt : typedAccRev)
+          (pst', tcSt', evalSt', loaded') <-
+            runLoadStmt showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
+          return (pst', tcSt', evalSt', loaded', stmt : typedAccRev)
         _ ->
           liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
             Left tcErr -> do
