@@ -1048,25 +1048,6 @@ typeMatchesAllowUnknown tyCons mTy ty =
         TyApp _ c args -> allowsUnknown c || any allowsUnknown args
         _ -> False
 
--- | Lookup a binding by candidate identifiers in a list-based environment.
---
--- Iterates the candidate pairs directly, avoiding the intermediate list
--- allocation that @map fst candidates@ would create.
---
--- Profiling showed the previous @let names = map fst candidates@ pattern
--- accounted for __3.6 % of allocation__ in evaluation-heavy workloads.
-lookupByCandidatesList :: forall a.
-                          [(Identifier, a)] -- ^ Candidate bindings.
-                       -> [(Identifier, Case)] -- ^ Candidate identifiers.
-                       -> Maybe a -- ^ Matching binding when found.
-lookupByCandidatesList env = go
-  where
-    go [] = Nothing
-    go ((n, _):rest) =
-      case lookup n env of
-        Just v -> Just v
-        Nothing -> go rest
-
 -- | Lookup by candidates in a 'Map.Map'-based environment.
 --
 -- Iterates candidate pairs directly to avoid allocating an intermediate
@@ -1086,34 +1067,6 @@ lookupByCandidates env = go
       case Map.lookup n env of
         Just v -> Just v
         Nothing -> go rest
-
--- | Heuristic fallback for matching inflected variables in list-based local bindings.
-lookupBySuffixList :: [(Identifier, a)] -- ^ Local environment bindings.
-                   -> Identifier -- ^ Surface identifier.
-                   -> Maybe a -- ^ Matching binding when found.
-lookupBySuffixList env (mods, word) =
-  let stripped = stripCaseRoots mods word
-  in findMatch stripped
-  where
-    findMatch [] = Nothing
-    findMatch (ident:rest) =
-      case lookup ident env of
-        Just v -> Just v
-        Nothing -> findMatch rest
-
--- | Heuristic fallback for matching inflected variables in Map-based local bindings.
-lookupBySuffixMap :: Map.Map Identifier a -- ^ Local environment bindings.
-                  -> Identifier -- ^ Surface identifier.
-                  -> Maybe a -- ^ Matching binding when found.
-lookupBySuffixMap env (mods, word) =
-  let stripped = stripCaseRoots mods word
-  in findMatch stripped
-  where
-    findMatch [] = Nothing
-    findMatch (ident:rest) =
-      case Map.lookup ident env of
-        Just v -> Just v
-        Nothing -> findMatch rest
 
 -- | Lookup by candidates in a 'HM.HashMap'-based environment (O(1) average).
 --
@@ -1583,19 +1536,6 @@ evalStmtInFile mPath stmt =
 evalStmt :: Stmt Ann -- ^ Statement to evaluate.
          -> EvalM () -- ^ No result.
 evalStmt = evalStmtInFile Nothing
-
--- | Evaluate a statement inside the REPL.
-replStmt :: Stmt Ann -- ^ Statement to evaluate.
-         -> EvalM () -- ^ No result.
-replStmt stmt =
-  case stmt of
-    ExpStmt e -> do
-      _ <- evalExp e
-      liftIO (putStrLn "")
-      -- liftIO (putStrLn (prettyExp e'))
-    PrimFunc {} -> evalStmt stmt
-    PrimType {} -> evalStmt stmt
-    _ -> evalStmt stmt
 
 -- | Lookup the primitive implementation for a name and argument list.
 primImpl :: Maybe FilePath -- ^ Current file path.
