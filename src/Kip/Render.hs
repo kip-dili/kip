@@ -194,14 +194,6 @@ lastVowel :: String -- ^ Input word.
 lastVowel =
   foldl (\acc c -> if isVowel c then Just c else acc) Nothing
 
--- | Get the last character of a string.
-lastChar :: String -- ^ Input string.
-         -> Maybe Char -- ^ Last character when present.
-lastChar s =
-  case reverse s of
-    c:_ -> Just c
-    [] -> Nothing
-
 -- | Check whether a word ends with a vowel.
 endsWithVowel :: String -- ^ Input word.
               -> Bool -- ^ True when the word ends with a vowel.
