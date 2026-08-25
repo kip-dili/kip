@@ -171,6 +171,7 @@ executable kip-lsp
   import: kip-component
   main-is: Lsp.hs
   other-modules:
+      Lsp.TextDocument
       Paths_kip
   autogen-modules:
       Paths_kip
