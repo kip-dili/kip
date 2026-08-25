@@ -211,7 +211,7 @@ main = do
         , parseConfig = \cfg _ -> Right cfg
         , onConfigChange = \_ -> return ()
         , doInitialize = \env _ -> pure (Right env)
-        , staticHandlers = \_ -> handlers
+        , staticHandlers = const handlers
         , interpretHandler = \env -> Iso (runLspT env) liftIO
         , options = lspOptions
         }

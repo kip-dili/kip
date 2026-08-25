@@ -22,6 +22,7 @@ import System.Environment (getExecutablePath)
 import Control.Exception (try, SomeException)
 import Control.Monad (when, foldM, replicateM)
 import Data.List (delete, foldl', isPrefixOf, sort)
+import Data.Maybe (fromMaybe)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -113,7 +114,7 @@ buildCacheMetadata sourcePath sourceText dependencyFingerprints = do
       let sourceBytes = encodeUtf8 sourceText
           fallbackSourceSize = fromIntegral (BS.length sourceBytes)
           (currentSourceSize, currentSourceMTime) =
-            maybe (fallbackSourceSize, 0) id mSourceMeta
+            fromMaybe (fallbackSourceSize, 0) mSourceMeta
       return . Just $
         CacheMetadata
           { compilerHash = currentCompilerHash
