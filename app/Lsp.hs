@@ -361,7 +361,7 @@ onDidSave :: TNotificationMessage 'Method_TextDocumentDidSave -> LspM Config ()
 onDidSave msg = do
   let uri = msg ^. L.params . L.textDocument . L.uri
   st <- readState
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> return ()
     Just doc -> do
       _ <- liftIO (writeCacheForDoc st uri doc)
@@ -852,7 +852,7 @@ onHover req respond = do
   let params = req ^. L.params
       uri = params ^. L.textDocument . L.uri
       pos = params ^. L.position
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> respond (Right (InR Null))
     Just doc -> do
       token <- liftIO (tokenAtPositionIO doc pos)
@@ -1224,7 +1224,7 @@ onDefinition req respond = do
   let params = req ^. L.params
       uri = params ^. L.textDocument . L.uri
       pos = params ^. L.position
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> respond (Right (InL (Definition (InR []))))
     Just doc -> do
       token <- liftIO (tokenAtPositionIO doc pos)
@@ -1350,7 +1350,7 @@ onTypeDefinition req respond = do
   let params = req ^. L.params
       uri = params ^. L.textDocument . L.uri
       pos = params ^. L.position
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> respond (Right (InL (Definition (InR []))))
     Just doc -> do
       token <- liftIO (tokenAtPositionIO doc pos)
@@ -1483,7 +1483,7 @@ onCompletion :: TRequestMessage 'Method_TextDocumentCompletion -> (Either Respon
 onCompletion req respond = do
   st <- readState
   let uri = req ^. L.params . L.textDocument . L.uri
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> respond (Right (InL []))
     Just doc -> do
       let pst = dsParser doc
@@ -1506,7 +1506,7 @@ onFormatting :: TRequestMessage 'Method_TextDocumentFormatting -> (Either Respon
 onFormatting req respond = do
   st <- readState
   let uri = req ^. L.params . L.textDocument . L.uri
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> respond (Right (InL []))
     Just doc -> do
       let formatted = formatText (dsText doc)
@@ -1532,7 +1532,7 @@ onDocumentHighlight req respond = do
   let params = req ^. L.params
       uri = params ^. L.textDocument . L.uri
       pos = params ^. L.position
-  case Map.lookup uri (lsDocs st) of
+  case lookupByUri uri (lsDocs st) of
     Nothing -> respond (Right (InL []))
     Just doc -> do
       token <- liftIO (tokenAtPositionIO doc pos)
@@ -3033,8 +3033,8 @@ buildLineStarts txt =
 -- fall back to on-disk text when this is the first seen change for a URI.
 docTextForChange :: Uri -> Map.Map Uri DocState -> IO Text
 docTextForChange uri docs =
-  case lookupDocByUri uri docs of
-    Just txt -> return txt
+  case lookupByUri uri docs of
+    Just doc -> return (dsText doc)
     Nothing ->
       case uriToFilePath uri of
         Nothing -> return ""
@@ -3044,41 +3044,20 @@ docTextForChange uri docs =
 
 -- | Lookup the latest raw text for a URI using exact/normalized matching.
 lookupLatestTextByUri :: Uri -> LspState -> Maybe Text
-lookupLatestTextByUri uri st =
-  case Map.lookup uri (lsLatestText st) of
-    Just txt -> Just txt
-    Nothing -> lookupByNormalizedUri uri (lsLatestText st)
+lookupLatestTextByUri uri st = lookupByUri uri (lsLatestText st)
 
--- | Lookup a document by exact or normalized URI.
-lookupDocByUri :: Uri -> Map.Map Uri DocState -> Maybe Text
-lookupDocByUri uri docs =
-  dsText <$> (lookupDocKeyByUri uri docs >>= (`Map.lookup` docs))
-
--- | Find the map key for a URI using exact/normalized matching.
-lookupDocKeyByUri :: Uri -> Map.Map Uri DocState -> Maybe Uri
-lookupDocKeyByUri uri docs =
-  case Map.lookup uri docs of
-    Just _ -> Just uri
-    Nothing ->
-      let norm = toNormalizedUri uri
-      in Map.foldrWithKey
-           (\k _ acc ->
-               if toNormalizedUri k == norm
-                 then Just k
-                 else acc)
-           Nothing
-           docs
-
-lookupByNormalizedUri :: Uri -> Map.Map Uri a -> Maybe a
-lookupByNormalizedUri uri mp =
-  let norm = toNormalizedUri uri
-  in Map.foldrWithKey
-       (\k v acc ->
-           if toNormalizedUri k == norm
-             then Just v
-             else acc)
-       Nothing
-       mp
+-- | Lookup a value by exact URI first, then by normalized URI.
+lookupByUri :: Uri -> Map.Map Uri a -> Maybe a
+lookupByUri uri values =
+  Map.lookup uri values <|>
+    let normalized = toNormalizedUri uri
+    in Map.foldrWithKey
+         (\key value found ->
+             if toNormalizedUri key == normalized
+               then Just value
+               else found)
+         Nothing
+         values
 
 -- | Format document: trim trailing whitespace and ensure trailing newline.
 formatText :: Text -> Text
