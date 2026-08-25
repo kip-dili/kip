@@ -368,42 +368,18 @@ deriveInflectedForms :: RenderCache -- ^ Render cache.
                      -> String -- ^ Morphology tags to apply.
                      -> IO [String] -- ^ Derived surface forms.
 deriveInflectedForms cache fsm root tags = do
-  analyses <- map T.unpack <$> upsCached cache fsm (T.pack root)
-  let nounAnalyses =
-        filter (\a -> "<N>" `isInfixOf` a && not ("<V>" `isInfixOf` a)) analyses
+  analyses <- upsCached cache fsm (T.pack root)
+  let nounTag = T.pack "<N>"
+      verbTag = T.pack "<V>"
+      nounAnalyses =
+        filter (\a -> nounTag `T.isInfixOf` a && not (verbTag `T.isInfixOf` a)) analyses
       baseAnalyses =
         if null nounAnalyses then analyses else nounAnalyses
       stemAnalyses = map stripCaseTags baseAnalyses
-      taggedStems = map (\stem -> T.pack (stem ++ tags)) stemAnalyses
+      taggedStems = map (<> T.pack tags) stemAnalyses
   -- Batch morphology generation to amortize Foma handle setup.
   forms <- downsCachedBatch cache fsm taggedStems
   return (concatMap (map T.unpack) forms)
-
--- | Strip case tags from a morphology analysis string.
-stripCaseTags :: String -- ^ Analysis string.
-              -> String -- ^ Stem without case tags.
-stripCaseTags = go
-  where
-    -- | List of case tags recognized in analyses.
-    tags :: [String] -- ^ Known case tags.
-    tags =
-      [ "<nom>"
-      , "<acc>"
-      , "<dat>"
-      , "<loc>"
-      , "<abl>"
-      , "<gen>"
-      , "<ins>"
-      , "<ise>"
-      , "<p3s>"
-      ]
-    -- | Remove case tags iteratively from the end.
-    go :: String -- ^ Analysis string.
-       -> String -- ^ Stripped stem.
-    go str =
-      case find (`isSuffixOf` str) tags of
-        Nothing -> str
-        Just tag -> go (take (length str - length tag) str)
 
 -- | Render a type into surface syntax with case inflection.
 renderTy :: RenderCache -- ^ Render cache.

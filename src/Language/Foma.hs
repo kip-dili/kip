@@ -28,6 +28,27 @@ newtype FSM = FSM (Ptr ())
 -- | Opaque handle for a Foma apply handle.
 data ApplyHandle
 
+-- | Strip trailing grammatical-case tags from an analyzer result.
+{-# INLINE stripCaseTags #-}
+stripCaseTags :: Text -> Text
+stripCaseTags = go
+  where
+    tags = map T.pack
+      [ "<nom>"
+      , "<acc>"
+      , "<dat>"
+      , "<loc>"
+      , "<abl>"
+      , "<gen>"
+      , "<ins>"
+      , "<ise>"
+      , "<p3s>"
+      ]
+    go analysis =
+      case find (`T.isSuffixOf` analysis) tags of
+        Nothing -> analysis
+        Just tag -> go (T.dropEnd (T.length tag) analysis)
+
 -- | Raw FFI binding for reading a binary FSM file.
 foreign import ccall unsafe "fomalib.h fsm_read_binary_file"
   fsmReadBinaryFile' :: CString -> IO FSM

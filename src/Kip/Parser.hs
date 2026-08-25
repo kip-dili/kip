@@ -1158,34 +1158,6 @@ stripCopulaSuffix :: Text -- ^ Surface form.
 stripCopulaSuffix txt =
   stripSuffixAny copulaSuffixesTxt (T.toLower txt)
 
--- | Strip case tags from a morphology analysis string.
--- INLINE reduces overhead in tight loops.
-{-# INLINE stripCaseTags #-}
-stripCaseTags :: Text -- ^ Analysis string.
-              -> Text -- ^ Stem without case tags.
-stripCaseTags = go
-  where
-    -- | Case tags recognized by the morphology analyzer.
-    tags :: [Text]
-    tags =
-      [ "<nom>"
-      , "<acc>"
-      , "<dat>"
-      , "<loc>"
-      , "<abl>"
-      , "<gen>"
-      , "<ins>"
-      , "<ise>"
-      , "<p3s>"
-      ]
-    -- | Remove tags iteratively from the end.
-    go :: Text -- ^ Analysis string.
-       -> Text -- ^ Stripped stem.
-    go str =
-      case find (`T.isSuffixOf` str) tags of
-        Nothing -> str
-        Just tag -> go (T.take (T.length str - T.length tag) str)
-
 -- | Resolve a candidate identifier using morphology and heuristics.
 resolveCandidate :: Bool -- ^ Whether to prefer identifiers in context.
                  -> Identifier -- ^ Surface identifier.
