@@ -20,30 +20,27 @@ import System.FilePath ((</>), joinPath, takeDirectory, replaceExtension, makeRe
 import Control.Monad (forM, forM_, when, unless, filterM)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.State.Strict
 import Control.Exception (AsyncException(UserInterrupt), SomeException, catch, displayException, try)
-import Control.Monad.Reader (ReaderT, runReaderT, ask, lift)
+import Control.Monad.Reader (ReaderT, runReaderT, ask)
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, tryReadMVar)
 
 import System.Console.Haskeline
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Data.Maybe (fromMaybe, isJust, maybeToList, mapMaybe)
+import Data.Maybe (isJust)
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import Text.Megaparsec (ParseErrorBundle)
-import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
 
 import Language.Foma
 import System.Console.Chalk
 import Kip.Parser
 import Kip.AST
-import Kip.Eval (EvalState, EvalM, EvalError, runEvalM, evalExp, evalExpTraced, evalStmt, evalStmtInFile, evalRender, isRuntimeValue)
+import Kip.Eval (EvalState, EvalError, runEvalM, evalExp, evalExpTraced, evalStmtInFile, evalRender, isRuntimeValue)
 import qualified Kip.Eval as Eval
 import Kip.TypeCheck
-import qualified Kip.TypeCheck as TC
 import Kip.Render
 import Kip.Cache
 import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
@@ -51,9 +48,7 @@ import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveStep
 import Kip.Runner
   ( Lang(..)
   , CompilerState
-  , breakOn
   , collectNonInfinitiveRefs
-  , effectBoundaryHint
   , foldM'
   , locateDataFile
   , mergeTCState
@@ -62,19 +57,11 @@ import Kip.Runner
   , parseLang
   , renderEvalError
   , renderParseError
-  , renderSpan
-  , renderSpanSnippet
-  , replace
   , resolveBuildTargets
-  , splitOn
-  , sameSpanPath
-  , tcErrRelatedSpan
-  , tcErrSpan
   , uniquePreserve
   )
 import qualified Kip.Runner as Runner
-import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts, runtimeExportNames)
-import Data.Word
+import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNamesInProgram, pruneProgramTaggedStmts, runtimeExportNames)
 
 import Data.Version (showVersion)
 

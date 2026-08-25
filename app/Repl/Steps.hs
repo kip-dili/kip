@@ -13,7 +13,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Char (isAlpha, isAsciiLower, isAsciiUpper, isDigit, toLower)
 import qualified Data.Map.Strict as Map
-import Data.List (find, findIndex, isInfixOf, isPrefixOf, isSuffixOf, nub, splitAt, tails)
+import Data.List (find, findIndex, isInfixOf, isPrefixOf, isSuffixOf, nub, tails)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T

@@ -33,9 +33,9 @@ import Control.Applicative ((<|>))
 import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (runReaderT)
-import Data.List (foldl', isPrefixOf, sortOn)
+import Data.List (isPrefixOf, sortOn)
 import Data.Char (isAlphaNum, isDigit, ord)
-import Data.Maybe (fromMaybe, mapMaybe, maybeToList, listToMaybe, isJust)
+import Data.Maybe (fromMaybe, mapMaybe, maybeToList, listToMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.HashMap.Strict as HM
@@ -47,11 +47,9 @@ import qualified Data.Vector.Unboxed as U
 import System.Directory (doesFileExist)
 import System.Environment (getExecutablePath)
 import System.FilePath (takeDirectory, (</>), normalise, addTrailingPathSeparator)
-import System.IO (hPutStrLn, stderr)
 import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Exception (finally)
-import Data.Int (Int32)
 
 import Language.LSP.Server
 import Language.LSP.Protocol.Types
@@ -59,13 +57,11 @@ import Language.LSP.Protocol.Message
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Diagnostics (partitionBySource)
 import qualified Data.HashTable.IO as HT
-import qualified Data.ByteString as BS
 import Data.Text.Encoding (encodeUtf8)
 import Crypto.Hash.SHA256 (hash)
 
 import Kip.AST
 import Kip.Cache
-import Kip.Eval (EvalState)
 import Kip.Parser
 import Kip.Render
 import qualified Kip.Render as Render
