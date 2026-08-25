@@ -72,11 +72,12 @@ library
     , z
   if !os(windows) && !os(wasi)
     build-depends: unix
+  if os(windows) || os(wasi)
+    build-depends: time
   build-depends:
       base >=4.7 && <5
     , bytestring
     , containers
-    , hashable
     , hashtables
     , unordered-containers
     , megaparsec
@@ -86,7 +87,6 @@ library
     , binary
     , cryptohash-sha256
     , mtl
-    , time
     , filepath
     , directory
     , random
@@ -180,7 +180,6 @@ executable kip-lsp
     buildable: False
   build-depends:
       base >=4.7 && <5
-    , bytestring
     , containers
     , directory
     , filepath
