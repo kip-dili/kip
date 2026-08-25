@@ -956,73 +956,6 @@ estimateCandidates useCtx (ss, s) = do
                                 then customFailure ErrNoMatchingNominative
                                 else return candidates
   where
-    -- | Find a matching identifier in context without building full candidate lists.
-    -- Short-circuits on the first context hit to avoid extra downs calls.
-    -- Returns Nothing when multiple matches exist (ambiguity) to allow full enumeration.
-    findCtxCandidate :: [Text] -- ^ Identifier modifiers.
-                     -> Text -- ^ Surface root.
-                     -> Set.Set Identifier -- ^ Context identifiers.
-                     -> KipParser (Maybe (Identifier, Case)) -- ^ Unique context match, if any.
-    findCtxCandidate mods surfaceRoot ctx = do
-      analyses <- upsCached surfaceRoot
-      findCtxCandidateWithAnalyses mods surfaceRoot ctx analyses
-
-    -- | Find a matching identifier in context using pre-fetched analyses.
-    findCtxCandidateWithAnalyses :: [Text] -- ^ Identifier modifiers.
-                                 -> Text -- ^ Surface root.
-                                 -> Set.Set Identifier -- ^ Context identifiers.
-                                 -> [Text] -- ^ Morphology analyses for the surface form.
-                                 -> KipParser (Maybe (Identifier, Case)) -- ^ Unique context match, if any.
-    findCtxCandidateWithAnalyses mods _surfaceRoot ctx analyses = do
-      let nounAnalyses =
-            filter (\a -> "<N>" `T.isInfixOf` a && not ("<V>" `T.isInfixOf` a)) analyses
-          baseAnalyses =
-            if null nounAnalyses then analyses else nounAnalyses
-      -- Collect all matches first to detect ambiguity
-      allMatches <- collectAllMatches baseAnalyses
-      case allMatches of
-        [single] -> return (Just single)  -- Unique match: use fast path
-        _ -> return Nothing  -- Zero or multiple matches: fall through to full enumeration
-      where
-        collectAllMatches :: [Text] -> KipParser [(Identifier, Case)]
-        collectAllMatches xs = do
-          (_, revAcc) <- foldM collectOne (Set.empty, []) xs
-          return (reverse revAcc)
-          where
-            addUnique :: (Set.Set (Identifier, Case), [(Identifier, Case)])
-                      -> (Identifier, Case)
-                      -> (Set.Set (Identifier, Case), [(Identifier, Case)])
-            addUnique (!seen, revAcc) candidate
-              | candidate `Set.member` seen = (seen, revAcc)
-              | otherwise =
-                  let !seen' = Set.insert candidate seen
-                  in (seen', candidate : revAcc)
-            addMany :: (Set.Set (Identifier, Case), [(Identifier, Case)])
-                    -> [(Identifier, Case)]
-                    -> (Set.Set (Identifier, Case), [(Identifier, Case)])
-            addMany = foldl' addUnique
-            collectOne :: (Set.Set (Identifier, Case), [(Identifier, Case)])
-                       -> Text
-                       -> KipParser (Set.Set (Identifier, Case), [(Identifier, Case)])
-            collectOne acc analysis =
-              case getPossibleCase analysis of
-                Nothing -> return acc
-                Just (baseRoot, cas) -> do
-                  let direct = (mods, baseRoot)
-                  matches <-
-                    if direct `Set.member` ctx
-                      then return [(direct, cas)]
-                      else do
-                        let stem = stripCaseTags analysis
-                        forms <- downsCached stem
-                        p3sForms <-
-                          if "<p3s>" `T.isInfixOf` analysis && cas /= P3s
-                            then downsCached (stem <> "<p3s>")
-                            else return []
-                        let roots = ordNub (forms ++ p3sForms ++ [baseRoot])
-                            rootsInCtx = filter (`Set.member` ctx) [(mods, root) | root <- roots]
-                        return [(rootInCtx, cas) | rootInCtx <- rootsInCtx]
-                  return $! addMany acc matches
     allCases = [Nom, Acc, Dat, Gen, Loc, Abl, Ins, Cond, P3s]
     candidatesForWithAnalyses :: Text -- ^ Surface form.
                               -> Set.Set Identifier -- ^ Context identifiers.
@@ -1461,21 +1394,6 @@ matchCtxByInflection ctx ident candidates = do
       -- the analyses that do not already match the context roots.
       goAnalyses mods ctxFiltered baseAnalyses cases
   where
-    -- | Render a case tag for morphology lookup.
-    caseTag :: Case -- ^ Case to encode.
-            -> Text -- ^ Morphology case tag.
-    caseTag cas =
-      case cas of
-        Nom -> ""
-        Acc -> "<acc>"
-        Dat -> "<dat>"
-        Loc -> "<loc>"
-        Abl -> "<abl>"
-        Gen -> "<gen>"
-        Ins -> "<ins>"
-        Cond -> "<ise>"
-        P3s -> "<p3s>"
-
     -- | Try analyses against context identifiers.
     goAnalyses :: [Text] -- ^ Identifier modifiers.
                -> Set.Set Identifier -- ^ Context identifiers.
@@ -3043,13 +2961,6 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
     -- accidentally consume clause separators.
     parsePatExp :: KipParser (Exp Ann) -- ^ Parsed expression.
     parsePatExp = parseExpWithCtx' False False
-    -- | Parse a pattern, optionally allowing a scrutinee expression.
-    parsePattern :: Bool -- ^ Whether to allow scrutinee expressions.
-                 -> [Identifier] -- ^ Function argument names.
-                 -> KipParser (Pat Ann) -- ^ Parsed pattern.
-    parsePattern allowScrutinee argNames =
-      (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
-      try (parsePatExp >>= checkedExpToPat allowScrutinee argNames)
     -- | Look ahead for a binding expression start.
     bindStartLookahead :: KipParser Bool -- ^ True when a binding start is found.
     bindStartLookahead = do
@@ -3256,15 +3167,6 @@ parseStmt = try loadStmt <|> try primTy <|> ty <|> try func <|> expFirst
                         else return (pickTy name cas)
                     Nothing ->
                       return (pickTy ident Nom)
-            -- | Check if an identifier refers to a type in scope.
-            isTypeIdent :: Identifier -- ^ Surface identifier.
-                        -> KipParser Bool -- ^ True when identifier resolves to a type.
-            isTypeIdent ident = do
-              m <- optional (resolveTypeCandidatePreferCtx ident)
-              case m of
-                Just (name, _) ->
-                  return (name `Set.member` typeScopeSet)
-                Nothing -> return False
         let -- Collect all type identifiers greedily, validating arity at the end
             collectArgsLoopRev soFarRev = do
               mNext <- optional (try (do
@@ -3513,13 +3415,6 @@ parseMatchExpr useCtx = do
     parseWildcardOrExp =
       (lexeme (string "değilse") $> Nothing) <|>
       (Just <$> parseExpAny)
-    -- | Parse a pattern for a match clause.
-    parsePattern :: Bool -- ^ Whether to allow scrutinee expressions.
-                 -> [Identifier] -- ^ Bound pattern names.
-                 -> KipParser (Pat Ann) -- ^ Parsed pattern.
-    parsePattern allowScrutinee argNames =
-      (lexeme (string "değilse") $> PWildcard (Nom, NoSpan)) <|>
-      (parseExpAny >>= checkedExpToPat allowScrutinee argNames)
     -- | Infer the scrutinee expression and its name.
     inferScrutinee :: Exp Ann -- ^ Pattern expression.
                    -> KipParser (Exp Ann, Identifier) -- ^ Scrutinee and name.
