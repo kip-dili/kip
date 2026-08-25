@@ -1025,6 +1025,16 @@ fileFingerprint pathRaw = do
         Nothing -> return Nothing
         Just digest -> return (Just (FileFingerprint path digest size mtime))
 
+-- | Fingerprint a file, falling back to a content hash when metadata fails.
+fileFingerprintOrHash :: FilePath -> IO FileFingerprint
+fileFingerprintOrHash path = do
+  mFingerprint <- fileFingerprint path
+  case mFingerprint of
+    Just fingerprint -> return fingerprint
+    Nothing -> do
+      digest <- hash <$> BS.readFile path
+      return (FileFingerprint path digest 0 0)
+
 -- | Collect the @(source path, 'PrimFunc' statement)@ pairs needed to
 -- rebuild 'evalPrimFuncs' host callbacks for a set of loaded modules.
 --

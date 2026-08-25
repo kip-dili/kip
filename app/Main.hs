@@ -77,8 +77,6 @@ import Kip.Runner
   )
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts, runtimeExportNames)
 import Data.Word
-import Crypto.Hash.SHA256 (hash)
-import qualified Data.ByteString as BS
 
 import Data.Version (showVersion)
 
@@ -1722,15 +1720,7 @@ main = do
                       let depStmts = [(dp, n) | Load dp n <- stmts]
                       depPathsRaw <- mapM (uncurry (resolveModulePath moduleDirs)) depStmts
                       depPaths <- liftIO (uniquePreserve <$> mapM canonicalizePathCached depPathsRaw)
-                      depHashes <- liftIO $ mapM (\p -> do
-                        mFp <- fileFingerprint p
-                        case mFp of
-                          Just fp -> return fp
-                          -- Fallback path is intentionally conservative; it
-                          -- should be rare and only used when metadata calls fail.
-                          Nothing -> do
-                            digest <- hash <$> BS.readFile p
-                            return (FileFingerprint p digest 0 0)) depPaths
+                      depHashes <- liftIO (mapM fileFingerprintOrHash depPaths)
                       morphDelta <- liftIO (finishMorphTracking morphToken)
                       mMeta <- liftIO (buildCacheMetadata absPath input depHashes)
                       case mMeta of

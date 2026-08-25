@@ -67,7 +67,6 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
 import qualified Data.Map.Strict as Map
-import qualified Data.ByteString as BS
 import Data.Set (Set)
 import qualified Data.Set as Set
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
@@ -78,7 +77,6 @@ import Text.Megaparsec (ParseErrorBundle(..), PosState(..), errorBundlePretty)
 import Text.Megaparsec.Error (ParseError(..), ErrorFancy(..), ShowErrorComponent(..))
 import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
 import qualified Data.List.NonEmpty as NE
-import Crypto.Hash.SHA256 (hash)
 import Paths_kip (getDataFileName)
 
 import Language.Foma
@@ -919,13 +917,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                   let typedStmts = reverse typedStmtsRev
                       depPathsRaw = reverse depPathsRawRev
                   depPaths <- liftIO (uniquePreserve <$> mapM canonicalizePathCached depPathsRaw)
-                  depHashes <- liftIO $ mapM (\p -> do
-                    mFp <- fileFingerprint p
-                    case mFp of
-                      Just fp -> return fp
-                      Nothing -> do
-                        digest <- hash <$> BS.readFile p
-                        return (FileFingerprint p digest 0 0)) depPaths
+                  depHashes <- liftIO (mapM fileFingerprintOrHash depPaths)
                   morphDelta <- liftIO (finishMorphTracking morphToken)
                   mMeta <- liftIO (buildCacheMetadata absPath input depHashes)
                   case mMeta of
