@@ -886,14 +886,7 @@ isCacheValidMeta path meta = do
           case Map.lookup cacheKey validationCache of
             Just ok -> return ok
             Nothing -> do
-              mMeta <- getFileMeta depPath
-              ok <-
-                case mMeta of
-                  Just (size, mtime)
-                    | size == depSize && mtime == depMTime -> return True
-                  _ -> do
-                    mDepHash <- hashFile depPath
-                    return (mDepHash == Just depHash)
+              ok <- fileMatchesFingerprint depPath depHash depSize depMTime
               if ok
                 then modifyIORef' (memoVerifiedPaths cacheMemo) (Map.insert cacheKey True)
                 else markDirtySource depPath
@@ -1003,14 +996,23 @@ isCachedPreludeValid snap = do
   where
     verify fingerprint = do
       path <- canonicalizePathCached (fingerprintPath fingerprint)
-      mMeta <- getFileMeta path
-      case mMeta of
-        Just (size, mtime)
-          | size == fingerprintSize fingerprint
-          , mtime == fingerprintMTime fingerprint -> return True
-        _ -> do
-          mDigest <- hashFile path
-          return (mDigest == Just (fingerprintDigest fingerprint))
+      fileMatchesFingerprint path
+        (fingerprintDigest fingerprint)
+        (fingerprintSize fingerprint)
+        (fingerprintMTime fingerprint)
+
+-- | Compare a file with an expected fingerprint, hashing only when metadata
+-- does not match.
+fileMatchesFingerprint ::
+  FilePath -> ByteString -> Integer -> Integer -> IO Bool
+fileMatchesFingerprint path expectedDigest expectedSize expectedMTime = do
+  mMeta <- getFileMeta path
+  case mMeta of
+    Just (size, mtime)
+      | size == expectedSize && mtime == expectedMTime -> return True
+    _ -> do
+      mDigest <- hashFile path
+      return (mDigest == Just expectedDigest)
 
 -- | Compute a stable fingerprint for one source file.
 fileFingerprint :: FilePath -> IO (Maybe FileFingerprint)
