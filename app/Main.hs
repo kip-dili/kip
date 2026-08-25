@@ -51,6 +51,7 @@ import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
 import Kip.Runner
   ( Lang(..)
+  , CompilerState
   , breakOn
   , collectNonInfinitiveRefs
   , effectBoundaryHint
@@ -90,7 +91,7 @@ data ReplState =
     , replLoaded :: Set FilePath
     , replPreludeLoaded :: Bool
     , replAutoPrelude :: Bool
-    , replPreludeFuture :: Maybe (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath)))
+    , replPreludeFuture :: Maybe (MVar (Either Text CompilerState))
     }
 
 replCtx :: ReplState -> Set.Set Identifier
@@ -1096,7 +1097,7 @@ main = do
       RenderCache ->
       FSM ->
       Bool ->
-      Maybe (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath))) ->
+      Maybe (MVar (Either Text CompilerState)) ->
       ReplState
     emptyReplState moduleDirs cache fsm autoPrelude =
       ReplState
@@ -1119,12 +1120,12 @@ main = do
       [FilePath] ->
       RenderCache ->
       FSM ->
-      IO (MVar (Either Text (ParserState, TCState, EvalState, Set FilePath)))
+      IO (MVar (Either Text CompilerState))
     startPreludeWarmup renderCtx moduleDirs cache fsm = do
       done <- newEmptyMVar
       _ <- forkIO $ do
         result <- try (runReaderT (loadPreludeState False moduleDirs cache fsm) renderCtx)
-          :: IO (Either SomeException (ParserState, TCState, EvalState, Set FilePath))
+          :: IO (Either SomeException CompilerState)
         putMVar done (either (Left . T.pack . displayException) Right result)
       return done
     -- | CLI option parser.
@@ -1692,9 +1693,9 @@ main = do
             -> Bool -- ^ Whether to show load messages.
             -> Bool -- ^ Whether to build-only.
             -> [FilePath] -- ^ Module search paths.
-            -> (ParserState, TCState, EvalState, Set FilePath) -- ^ Current states.
+            -> CompilerState -- ^ Current states.
             -> FilePath -- ^ File to run.
-            -> AppM (ParserState, TCState, EvalState, Set FilePath) -- ^ Updated states.
+            -> AppM CompilerState -- ^ Updated states.
     runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
       exists <- liftIO (doesFileExist path)
       unless exists $ do
@@ -1776,9 +1777,9 @@ main = do
             -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
             -> [Identifier] -- ^ Non-infinitive primitive refs.
             -> Text -- ^ Source input.
-            -> (ParserState, TCState, EvalState, Set FilePath) -- ^ Current states.
+            -> CompilerState -- ^ Current states.
             -> Stmt Ann -- ^ Statement to run.
-            -> AppM (ParserState, TCState, EvalState, Set FilePath) -- ^ Updated states.
+            -> AppM CompilerState -- ^ Updated states.
     runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded) stmt =
       case stmt of
         Load dirPath name -> do
@@ -1844,9 +1845,9 @@ main = do
                  -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
                  -> [Identifier] -- ^ Non-infinitive primitive refs.
                  -> Text -- ^ Source input.
-                 -> (ParserState, TCState, EvalState, Set FilePath) -- ^ Current states.
+                 -> CompilerState -- ^ Current states.
                  -> Stmt Ann -- ^ Statement to run.
-                 -> AppM (ParserState, TCState, EvalState, Set FilePath) -- ^ Updated states.
+                 -> AppM CompilerState -- ^ Updated states.
     runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs _source (pst, tcSt, evalSt, loaded) stmt =
       case stmt of
         Load dirPath name -> do
@@ -2049,7 +2050,7 @@ main = do
                      -> [FilePath] -- ^ Module search paths.
                      -> RenderCache -- ^ Render cache.
                      -> FSM -- ^ Morphology FSM.
-                     -> AppM (ParserState, TCState, EvalState, Set FilePath) -- ^ Loaded states.
+                     -> AppM CompilerState -- ^ Loaded states.
     loadPreludeState noPrelude moduleDirs cache fsm = do
       let pst = newParserStateWithCaches fsm Nothing cache
           tcSt = emptyTCState

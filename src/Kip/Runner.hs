@@ -9,6 +9,7 @@ module Kip.Runner
   , parseLang
   , RenderCtx(..)
   , ReplState(..)
+  , CompilerState
   , CompilerMsg(..)
   , RenderM
     -- * Error rendering
@@ -110,6 +111,9 @@ data RenderCtx =
     , rcCache :: RenderCache
     , rcFsm :: FSM
     }
+
+-- | Parser, typechecker, evaluator, and loaded-module state for file execution.
+type CompilerState = (ParserState, TCState, EvalState, Set FilePath)
 
 -- | REPL runtime state (parser/type context + evaluator).
 data ReplState =
@@ -852,7 +856,7 @@ runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded f
   return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
 
 -- | Run a single file and update all states.
-runFile :: Bool -> Bool -> Bool -> [FilePath] -> (ParserState, TCState, EvalState, Set FilePath) -> FilePath -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+runFile :: Bool -> Bool -> Bool -> [FilePath] -> CompilerState -> FilePath -> RenderM CompilerState
 runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
   exists <- liftIO (doesFileExist path)
   unless exists $ do
@@ -944,7 +948,7 @@ mergeTCState :: TCState -> TCState -> TCState
 mergeTCState = mergeCachedTCState
 
 -- | Run a single statement in the context of a file.
-runStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+runStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> CompilerState -> Stmt Ann -> RenderM CompilerState
 runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded) stmt =
   case stmt of
     Load dirPath name -> do
@@ -985,7 +989,7 @@ runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods pr
 -- This path is used when a valid module cache is loaded. It avoids
 -- re-running 'tcStmt' and any forward-declaration pre-pass by assuming the
 -- incoming statement list is already type-checked ('cachedTypedStmts').
-runTypedStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+runTypedStmt :: Bool -> Bool -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> CompilerState -> Stmt Ann -> RenderM CompilerState
 runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath _paramTyCons _tyMods _primRefs _source (pst, tcSt, evalSt, loaded) stmt =
   case stmt of
     Load dirPath name -> do
@@ -1180,11 +1184,11 @@ uniquePreserve xs = reverse (snd (foldl' go (Set.empty, []) xs))
       | otherwise = (Set.insert x seen, x : acc)
 
 -- | Load the prelude module into parser/type/eval states unless disabled.
-loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState
 loadPreludeState = loadPreludeStateWithMode TCOutputRuntime
 
 -- | Load the prelude with resolution output appropriate for the consumer.
-loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM (ParserState, TCState, EvalState, Set FilePath)
+loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState
 loadPreludeStateWithMode outputMode noPrelude moduleDirs cache fsm = do
   let pst = newParserStateWithCaches fsm Nothing cache
       tcSt = setTCOutputMode outputMode emptyTCState
