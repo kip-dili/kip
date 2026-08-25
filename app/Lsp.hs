@@ -1768,8 +1768,6 @@ processDocument jobId uri text version publish = do
 -- Returns diagnostics so the caller can publish them.
 analyzeDocument :: LspState -> Uri -> Text -> IO (DocState, [Diagnostic])
 analyzeDocument st uri text = do
-  let !docLines = V.fromList (T.lines text)
-      !docLineStarts = buildLineStarts text
   mCached <- loadCachedDoc st uri text
   case mCached of
     Just (pstCached, tcCached, stmts) -> do
@@ -1784,11 +1782,8 @@ analyzeDocument st uri text = do
           resolvedSigs = Map.fromList (filterResolved docSpans (tcResolvedSigs tcCached))
           resolvedTypes = Map.fromList (filterResolved docSpans (tcResolvedTypes tcCached))
           binderSpans = collectBinderSpans stmts
-          spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
-          (expIndex, varIndex, patVarIndex, ctorIndex, matchClauseIndex, funcClauseIndex) = buildDocIndices stmts
-      tyRenderCache <- HT.new
-      tokenCache <- HT.new
-      let doc = DocState text docLines docLineStarts pstCached tcCached stmts [] defSpans resolved resolvedSigs resolvedTypes binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
+      doc <- newDocState text pstCached tcCached stmts []
+        defSpans resolved resolvedSigs resolvedTypes binderSpans
       return (doc, [])
     Nothing -> do
       let basePst = lsBaseParser st
@@ -1797,25 +1792,19 @@ analyzeDocument st uri text = do
       case parseRes of
         Left err -> do
           let diag = parseErrorToDiagnostic text err
-          tyRenderCache <- HT.new
-          tokenCache <- HT.new
-          let emptySpanIndex = SpanIndex HM.empty []
-              emptyPosIndex = posIndexFromEntries []
-              doc = DocState text docLines docLineStarts basePst baseTC [] [diag] Map.empty Map.empty Map.empty Map.empty [] emptySpanIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex emptyPosIndex tyRenderCache tokenCache
+          doc <- newDocState text basePst baseTC [] [diag]
+            Map.empty Map.empty Map.empty Map.empty []
           return (doc, [diag])
         Right (stmts, pst') -> do
           -- Compute these once, early, and reuse throughout
           let !defSpans = defSpansFromParser (lsBaseParser st) stmts pst'
               !binderSpans = collectBinderSpans stmts
-              (expIndex, varIndex, patVarIndex, ctorIndex, matchClauseIndex, funcClauseIndex) = buildDocIndices stmts
           declRes <- runTCM (registerForwardDecls stmts) baseTC
           case declRes of
             Left tcErr -> do
               diag <- tcErrorToDiagnostic st text tcErr
-              let spanIndex = buildSpanIndex Map.empty Map.empty Map.empty binderSpans
-              tyRenderCache <- HT.new
-              tokenCache <- HT.new
-              let doc = DocState text docLines docLineStarts pst' baseTC stmts [diag] defSpans Map.empty Map.empty Map.empty binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
+              doc <- newDocState text pst' baseTC stmts [diag]
+                defSpans Map.empty Map.empty Map.empty binderSpans
               return (doc, [diag])
             Right (_, tcStWithDecls) -> do
               tcStWithDefs <- case uriToFilePath uri of
@@ -1836,11 +1825,55 @@ analyzeDocument st uri text = do
                   !resolved = Map.fromList (filterResolved docSpans (tcResolvedNames tcStFinal))
                   !resolvedSigs = Map.fromList (filterResolved docSpans (tcResolvedSigs tcStFinal))
                   !resolvedTypes = Map.fromList (filterResolved docSpans (tcResolvedTypes tcStFinal))
-                  !spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
-              tyRenderCache <- HT.new
-              tokenCache <- HT.new
-              let doc = DocState text docLines docLineStarts pst' tcStFinal stmts diags defSpans resolved resolvedSigs resolvedTypes binderSpans spanIndex expIndex varIndex patVarIndex ctorIndex matchClauseIndex funcClauseIndex tyRenderCache tokenCache
+              doc <- newDocState text pst' tcStFinal stmts diags
+                defSpans resolved resolvedSigs resolvedTypes binderSpans
               return (doc, diags)
+
+-- | Construct all text and lookup caches for one analyzed document.
+newDocState ::
+  Text ->
+  ParserState ->
+  TCState ->
+  [Stmt Ann] ->
+  [Diagnostic] ->
+  Map.Map Identifier Range ->
+  Map.Map Span Identifier ->
+  Map.Map Span (Identifier, [Ty Ann]) ->
+  Map.Map Span (Ty Ann) ->
+  [BinderInfo] ->
+  IO DocState
+newDocState text parserState tcState stmts diagnostics defSpans resolved resolvedSigs resolvedTypes binderSpans = do
+  let !docLines = V.fromList (T.lines text)
+      !docLineStarts = buildLineStarts text
+      !spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
+      (!expIndex, !varIndex, !patVarIndex, !ctorIndex, !matchClauseIndex, !funcClauseIndex) =
+        buildDocIndices stmts
+  tyRenderCache <- HT.new
+  tokenCache <- HT.new
+  return
+    DocState
+      { dsText = text
+      , dsLines = docLines
+      , dsLineStarts = docLineStarts
+      , dsParser = parserState
+      , dsTC = tcState
+      , dsStmts = stmts
+      , dsDiagnostics = diagnostics
+      , dsDefSpans = defSpans
+      , dsResolved = resolved
+      , dsResolvedSigs = resolvedSigs
+      , dsResolvedTypes = resolvedTypes
+      , dsBinderSpans = binderSpans
+      , dsSpanIndex = spanIndex
+      , dsExpIndex = expIndex
+      , dsVarIndex = varIndex
+      , dsPatVarIndex = patVarIndex
+      , dsCtorIndex = ctorIndex
+      , dsMatchClauseIndex = matchClauseIndex
+      , dsFuncClauseIndex = funcClauseIndex
+      , dsTyRenderCache = tyRenderCache
+      , dsTokenCache = tokenCache
+      }
 
 -- | Attempt to load a cached document if the on-disk cache matches the
 -- current in-memory text hash.
