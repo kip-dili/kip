@@ -1459,14 +1459,6 @@ downsCachedBatch stems = do
   liftIO (MC.downsCachedBatch (MC.morphDownsCache parserMorphCaches) fsm stems)
 {-# INLINE downsCachedBatch #-}
 
--- | Parse an identifier with inferred case (context-aware).
-casedIdentifier :: KipParser (Identifier, Case) -- ^ Identifier and inferred case.
-casedIdentifier = identifier >>= resolveCandidate True
-
--- | Parse an identifier with inferred case (no context preference).
-casedIdentifierAny :: KipParser (Identifier, Case) -- ^ Identifier and inferred case.
-casedIdentifierAny = identifier >>= resolveCandidate False
-
 -- | Parse an expression with context-sensitive name resolution.
 parseExp :: KipParser (Exp Ann) -- ^ Parsed expression.
 parseExp = parseExpWithCtx True
@@ -3295,11 +3287,6 @@ extractPatVarNamesInContext ctx e =
     App _ (Var {}) es -> concatMap (extractPatVarNamesInContext ctx) es
     _ -> []
 
--- | Legacy version that doesn't check context (returns empty for safety).
-extractPatVarNames :: Exp Ann -- ^ Pattern expression.
-                   -> [Identifier] -- ^ Pattern variable names.
-extractPatVarNames _ = []
-
 -- | Extract variable names bound by a pattern.
 extractPatVars :: Pat Ann -- ^ Pattern.
                -> [Identifier] -- ^ Bound variable names.
@@ -3969,62 +3956,6 @@ selectCondNameInCtors ctors candidates =
       base <- stripCondSuffix word
       return (mods, base)
     stripCondSuffix = stripSuffixAny condSuffixesTxt
-
--- | Select a conditional constructor name from candidates.
-selectCondName :: Set.Set Identifier -- ^ Context identifiers.
-               -> [(Identifier, Case)] -- ^ Candidate identifiers.
-               -> Maybe Identifier -- ^ Selected constructor.
-selectCondName ctx candidates =
-  case [name | (name, cas) <- candidates, cas == Cond, name `Set.member` ctx] of
-    n:_ -> Just n
-    [] ->
-      case [name | (name, _) <- candidates, name `Set.member` ctx] of
-        n:_ -> Just n
-        [] ->
-          case strippedCondMatches of
-            n:_ -> Just n
-            [] ->
-              case [name | (name, cas) <- candidates, cas == Cond] of
-                n:_ -> Just n
-                [] ->
-                  case candidates of
-                    (n, _):_ -> Just n
-                    [] -> Nothing
-  where
-    strippedCondMatches =
-      [ base
-      | (name, _) <- candidates
-      , Just base <- [stripCondSuffixIdent name]
-      , base `Set.member` ctx
-      ]
-    stripCondSuffixIdent (mods, word) = do
-      base <- stripCondSuffix word
-      return (mods, base)
-    stripCondSuffix = stripSuffixAny condSuffixesTxt
-
--- | Convert an expression into a pattern variable.
-expToPatVar :: Exp Ann -- ^ Expression to convert.
-            -> KipParser (Identifier, Ann) -- ^ Pattern variable and annotation.
-expToPatVar expItem =
-  case expItem of
-    Var _ _ candidates ->
-      case preferInflected candidates of
-        (n, c):_ -> return (n, mkAnn c NoSpan)
-        _ -> customFailure ErrPatternAmbiguousName
-    _ -> customFailure ErrPatternOnlyNames
-
--- | Drop a scrutinee variable from pattern variables when allowed.
-dropScrutinee :: Bool -- ^ Whether to allow scrutinee expressions.
-              -> [Identifier] -- ^ Bound pattern names.
-              -> [(Identifier, Ann)] -- ^ Pattern variables.
-              -> KipParser [(Identifier, Ann)] -- ^ Filtered pattern variables.
-dropScrutinee allowScrutinee argNames vars =
-  case vars of
-    ((n, ann):rest) | annCase ann == Nom && n `elem` argNames ->
-      if allowScrutinee
-        then return rest
-        else customFailure ErrPatternArgNameRepeated
-    _ -> return vars
 
 -- | Strip nested block comments from source text.
 removeComments :: Text -- ^ Raw source text.
