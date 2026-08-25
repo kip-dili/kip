@@ -24,7 +24,7 @@ module Kip.Playground
   , runPlaygroundRequest
   ) where
 
-import Control.Monad (filterM, unless, when)
+import Control.Monad (filterM, forM_, unless, when)
 import Control.Monad.IO.Class
 import Control.Monad.Reader (runReaderT)
 import Data.Char (toLower)
@@ -263,9 +263,7 @@ emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
   if Set.member absPath loaded
     then return (acc, pst, tcSt, loaded)
     else do
-      liftIO $ case progressHooks of
-        Nothing -> return ()
-        Just (onStart, _) -> onStart absPath
+      liftIO $ forM_ progressHooks $ \(onStart, _) -> onStart absPath
       input <- liftIO (TIO.readFile path)
       liftIO (parseFromFile pst input) >>= \case
         Left err -> do
@@ -290,9 +288,7 @@ emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
                   let filteredStmts = filter (not . isLoadStmt) typedStmts
                       taggedStmts = [(absPath, stmt) | stmt <- filteredStmts]
                   in do
-                    liftIO $ case progressHooks of
-                      Nothing -> return ()
-                      Just (_, onDone) -> onDone absPath
+                    liftIO $ forM_ progressHooks $ \(_, onDone) -> onDone absPath
                     return (acc ++ depStmts ++ taggedStmts, pst'', tcSt'', loaded'')
 
 -- | Check whether a statement is @Load@.
