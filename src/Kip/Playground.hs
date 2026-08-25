@@ -187,7 +187,7 @@ runPlaygroundRequest req = do
                 reportModulePhase path True
           reportProgress 52 (trLabel "kod üretimi başlatılıyor" "starting code generation")
           reportProgress 55 "resolve-modules"
-          js <- runReaderT (emitJsFilesWithDeps moduleDirs preludePst preludeTC Set.empty (prFiles req) (Just (onModuleStart, onModuleDone))) renderCtx
+          js <- runReaderT (emitJsFilesWithDeps moduleDirs preludePst preludeTC (prFiles req) (Just (onModuleStart, onModuleDone))) renderCtx
           reportProgress 98 (trLabel "çıktı yazılıyor" "writing output")
           return (PlaygroundTextOutput js)
         _ ->
@@ -240,11 +240,10 @@ emitJsFilesWithDeps ::
   [FilePath] ->
   ParserState ->
   TCState ->
-  Set FilePath ->
   [FilePath] ->
   Maybe (FilePath -> IO (), FilePath -> IO ()) ->
   RenderM Text
-emitJsFilesWithDeps moduleDirs basePst baseTC _preludeLoaded files progressHooks = do
+emitJsFilesWithDeps moduleDirs basePst baseTC files progressHooks = do
   preludePath <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
   preludeAbs <- liftIO (canonicalizePathCached preludePath)
   let codegenTC = setTCOutputMode TCOutputCodegen baseTC
