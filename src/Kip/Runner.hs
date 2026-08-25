@@ -37,7 +37,6 @@ module Kip.Runner
     -- * File running
   , runFiles
   , runFile
-  , runStmt
   , loadPreludeState
   , loadPreludeStateWithMode
   , mkEvalState
@@ -968,22 +967,6 @@ runLoadStmt buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath name 
       then return state
       else runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
   return (state', path)
-
--- | Run a single statement in the context of a file.
-runStmt :: Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> Text -> CompilerState -> Stmt Ann -> RenderM CompilerState
-runStmt buildOnly moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, evalSt, loaded) stmt =
-  case stmt of
-    Load dirPath name -> do
-      (state', _) <- runLoadStmt buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
-      return state'
-    _ ->
-      liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
-        Left tcErr -> do
-          msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
-          liftIO (die (T.unpack msg))
-        Right (stmt', tcSt') -> do
-          evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
-          return (pst, tcSt', evalSt', loaded)
 
 -- | Run a pre-typechecked statement in the context of a file.
 --
