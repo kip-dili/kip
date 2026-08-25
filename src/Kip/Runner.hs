@@ -13,8 +13,6 @@ module Kip.Runner
   , CompilerMsg(..)
   , RenderM
     -- * Error rendering
-  , ParserErrorTr(..)
-  , ParserErrorEn(..)
   , ParseErrorRenderTarget(..)
   , renderMsg
   , renderParseError
@@ -23,17 +21,7 @@ module Kip.Runner
   , missingDataFileMessage
   , renderTCError
   , renderTCErrorWithSource
-  , renderSpan
-  , renderSpanSnippet
-  , renderLocatedSpanSnippet
-  , renderTyOpt
-  , effectBoundaryHint
   , tcErrSpan
-  , tcErrRelatedSpan
-  , sameSpanPath
-  , findPatternBinderRepeatedError
-  , findUnrecognizedWordError
-  , findAmbiguousBareApplicationError
   , requireCacheFsm
     -- * File running
   , runFiles
@@ -43,18 +31,12 @@ module Kip.Runner
   , mkEvalState
   , resolveModulePath
   , resolveBuildTargets
-  , listKipFilesRecursive
   , listKipFilesRecursiveSkipping
   , collectNonInfinitiveRefs
   , mergeTCState
   , locateDataFile
     -- * Utilities
   , foldM'
-  , mapParseErrorBundle
-  , turkifyParseError
-  , replace
-  , splitOn
-  , breakOn
   , uniquePreserve
   ) where
 
