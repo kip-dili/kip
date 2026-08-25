@@ -358,11 +358,6 @@ onDidSave msg = do
       _ <- liftIO (writeCacheForDoc st uri doc)
       return ()
 
--- | Render an identifier with spaces between parts.
-renderIdentifier :: Identifier -> Text
-renderIdentifier (parts, stem) =
-  T.unwords (parts ++ [stem | not (T.null stem)])
-
 stripTrailingVowel :: Identifier -> Maybe Identifier
 stripTrailingVowel (mods, word) =
   case T.unsnoc word of
@@ -765,20 +760,6 @@ resolveAtPosition pos doc =
     , raSpanInfo = mSpanInfo
     , raResolvedType = mResolvedType
     }
-
--- | Render a constructor signature for hover.
---
--- The output mirrors the REPL signature style, preserving parameter
--- positions and using nominative case for the return type so it reads
--- naturally when displayed in hover popups.
-renderConstructorSignature :: Identifier -> [Ty Ann] -> Ty Ann -> RenderCache -> FSM -> [Identifier] -> [(Identifier, [Identifier])] -> IO Text
-renderConstructorSignature ctorName argTys retTy cache fsm paramTyCons tyMods = do
-  argStrs <- mapM (renderTy cache fsm paramTyCons tyMods) argTys
-  ctorStr <- renderIdentWithCase cache fsm ctorName (if null argTys then Nom else P3s)
-  retTyStr <- renderTyNom cache fsm [] tyMods retTy
-  let paramTexts = map (\t -> "(" ++ t ++ ")") argStrs
-      retText = "(" ++ ctorStr ++ " " ++ retTyStr ++ ")"
-  return $ T.pack $ unwords (paramTexts ++ [retText])
 
 normalizeTyForRender :: Ty Ann -> Ty Ann
 normalizeTyForRender ty =
@@ -1543,13 +1524,6 @@ applyRangeEdit txt (Range startPos endPos) replacement =
       suffix = T.drop endOff txt
   in prefix <> replacement <> suffix
 
--- | Convert an LSP position to a text offset, clamped to valid bounds.
---
--- LSP positions are UTF-16 line/character pairs. This scanner handles both
--- LF and CRLF line endings and clamps to end-of-line/file when needed.
-offsetAtPosition :: Text -> Position -> Int
-offsetAtPosition txt pos = fst (offsetsAtRange txt pos pos)
-
 -- | Convert start/end positions to byte offsets in one text scan.
 --
 -- For range edits we need two offsets from the same source text. Doing this
@@ -2191,7 +2165,6 @@ scrutineeTypeForExp pos scrutExp doc = do
         _ -> return Nothing
 
 -- | Infer a pattern-bound variable type at a position within a match clause.
--- | Infer a pattern-bound variable type at a position within a match clause.
 --
 -- This uses the enclosing match clause and runs pattern inference against
 -- the scrutinee type, falling back to nothing if any step fails.
@@ -2316,11 +2289,6 @@ findBindExpAt pos mWord doc =
                 _ | tokenMatches && posInSpan pos bindSpan -> (bindSpan, annSpan (annExp bindExp), bindExp) : nested
                   | otherwise -> nested
           _ -> nested
-
--- | Check whether a clause body or pattern contains a cursor position.
-clauseContainsPos :: Position -> Clause Ann -> Bool
-clauseContainsPos p (Clause pat body) =
-  posInSpan p (annSpan (annExp body)) || posInPat p pat
 
 -- | Check whether a cursor is inside a pattern, including nested patterns.
 posInPat :: Position -> Pat Ann -> Bool
