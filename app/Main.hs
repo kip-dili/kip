@@ -422,6 +422,16 @@ renderFunctionStatus suffixTr suffixEn name args isInfinitive paramTyCons tyMods
         LangTr -> suffixTr
         LangEn -> suffixEn
   return (renderDefnLine (rcUseColor ctx) (base <> suffix))
+
+-- | Render a named definition followed by a localized status suffix.
+renderNamedStatus :: RenderCtx -> Text -> Text -> Identifier -> Text
+renderNamedStatus ctx suffixTr suffixEn name =
+  let suffix = case rcLang ctx of
+        LangTr -> suffixTr
+        LangEn -> suffixEn
+      renderedName = renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name))
+  in renderDefnLine (rcUseColor ctx) (renderedName <> suffix)
+
 -- | Require the render cache and FSM from the context.
 requireCacheFsm :: RenderM (RenderCache, FSM) -- ^ Render cache and FSM.
 requireCacheFsm = do
@@ -508,26 +518,10 @@ renderCompilerMsgBasic msg = do
           case rcLang ctx of
             LangTr -> "İfadenin tipi " <> colorizeTyParts (rcUseColor ctx) tyParts
             LangEn -> "Expression type is " <> colorizeTyParts (rcUseColor ctx) tyParts
-      MsgLoaded name ->
-        Just $
-          case rcLang ctx of
-            LangTr -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " yüklendi.")
-            LangEn -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " loaded.")
-      MsgDefnAdded name ->
-        Just $
-          case rcLang ctx of
-            LangTr -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " tanımlandı.")
-            LangEn -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " definition defined.")
-      MsgTypeAdded name ->
-        Just $
-          case rcLang ctx of
-            LangTr -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " tipi tanımlandı.")
-            LangEn -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " type defined.")
-      MsgPrimTypeAdded name ->
-        Just $
-          case rcLang ctx of
-            LangTr -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " tipi tanımlandı.")
-            LangEn -> renderDefnLine (rcUseColor ctx) (renderNameBold (rcUseColor ctx) (T.pack (prettyIdent name)) <> " type defined.")
+      MsgLoaded name -> Just (renderNamedStatus ctx " yüklendi." " loaded." name)
+      MsgDefnAdded name -> Just (renderNamedStatus ctx " tanımlandı." " definition defined." name)
+      MsgTypeAdded name -> Just (renderNamedStatus ctx " tipi tanımlandı." " type defined." name)
+      MsgPrimTypeAdded name -> Just (renderNamedStatus ctx " tipi tanımlandı." " type defined." name)
       MsgTCError {} ->
         Nothing
       MsgFuncAdded {} ->
