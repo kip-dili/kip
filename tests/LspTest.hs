@@ -450,20 +450,6 @@ diagHas needle =
         _ -> False
     _ -> False
 
--- | Extract all diagnostic messages from a list of diagnostics.
-debugDiagMessages :: [A.Value] -> [T.Text]
-debugDiagMessages = mapMaybe diagMessage
-
--- | Extract a diagnostic message from a value.
-diagMessage :: A.Value -> Maybe T.Text
-diagMessage =
-  \case
-    A.Object obj ->
-      case lookupKey "message" obj of
-        Just (A.String msg) -> Just msg
-        _ -> Nothing
-    _ -> Nothing
-
 -- | Match publishDiagnostics messages for a specific URI.
 matchDiagnostics :: T.Text -> A.Value -> Maybe [A.Value]
 matchDiagnostics uri =
