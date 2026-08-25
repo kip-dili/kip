@@ -722,7 +722,7 @@ main = do
         die . T.unpack =<< runReaderT (render MsgNeedFileOrDir) basicCtx
       (renderCtx, moduleDirs, renderCache, fsm) <- initRuntime
       buildTargets <- resolveBuildTargets (optFiles opts)
-      let extraDirs = uniquePreserve (concatMap takeDirectories buildTargets)
+      let extraDirs = uniquePreserve (map takeDirectory buildTargets)
           buildModuleDirs = uniquePreserve (moduleDirs ++ extraDirs)
       (preludeBuildPst, preludeBuildTC, preludeBuildEval, preludeBuildLoaded) <-
         runReaderT (loadPreludeState (optNoPrelude opts) buildModuleDirs renderCache fsm) renderCtx
@@ -1616,11 +1616,6 @@ main = do
         [] -> do
           msg <- renderMsg (MsgModuleNotFound dirPath name)
           liftIO (die (T.unpack msg))
-
-    -- | Return parent directories for a path.
-    takeDirectories :: FilePath -- ^ Path to split.
-                    -> [FilePath] -- ^ Parent directories.
-    takeDirectories path = [takeDirectory path]
 
     isExpStmt :: Stmt Ann -> Bool
     isExpStmt ExpStmt {} = True
