@@ -1274,6 +1274,18 @@ main = do
         PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
         _ -> return ()
 
+    -- | Evaluate a file statement, omitting expression statements in build mode.
+    evalFileStmt :: Bool -> FilePath -> EvalState -> Stmt Ann -> AppM EvalState
+    evalFileStmt buildOnly currentPath evalSt stmt =
+      case stmt of
+        ExpStmt _ | buildOnly -> return evalSt
+        _ ->
+          liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
+            Left evalErr -> do
+              msg <- renderMsg (MsgEvalError evalErr)
+              liftIO (die (T.unpack msg))
+            Right (_, evalSt') -> return evalSt'
+
     codegenFilesTagged :: ParserState
                        -> TCState
                        -> [FilePath]
@@ -1509,22 +1521,8 @@ main = do
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') -> do
               when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
-              if buildOnly
-                then
-                  case stmt' of
-                    ExpStmt _ -> return (pst, tcSt', evalSt, loaded)
-                    _ ->
-                      liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                        Left evalErr -> do
-                          msg <- renderMsg (MsgEvalError evalErr)
-                          liftIO (die (T.unpack msg))
-                        Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
-                else
-                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                    Left evalErr -> do
-                      msg <- renderMsg (MsgEvalError evalErr)
-                      liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded)
+              evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
+              return (pst, tcSt', evalSt', loaded)
 
     -- | Run a pre-typechecked statement in the context of a file.
     --
@@ -1560,22 +1558,8 @@ main = do
               return (pst', tcSt', evalSt', loaded')
         _ -> do
           when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt)
-          if buildOnly
-            then
-              case stmt of
-                ExpStmt _ -> return (pst, tcSt, evalSt, loaded)
-                _ ->
-                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
-                    Left evalErr -> do
-                      msg <- renderMsg (MsgEvalError evalErr)
-                      liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt, evalSt', loaded)
-            else
-              liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
-                Left evalErr -> do
-                  msg <- renderMsg (MsgEvalError evalErr)
-                  liftIO (die (T.unpack msg))
-                Right (_, evalSt') -> return (pst, tcSt, evalSt', loaded)
+          evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt
+          return (pst, tcSt, evalSt', loaded)
 
     -- | Run a single statement while collecting type-checked statements for caching.
     --
@@ -1616,22 +1600,8 @@ main = do
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') -> do
               when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
-              if buildOnly
-                then
-                  case stmt' of
-                    ExpStmt _ -> return (pst, tcSt', evalSt, loaded, stmt' : typedAccRev)
-                    _ ->
-                      liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                        Left evalErr -> do
-                          msg <- renderMsg (MsgEvalError evalErr)
-                          liftIO (die (T.unpack msg))
-                        Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
-                else
-                  liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt') evalSt) >>= \case
-                    Left evalErr -> do
-                      msg <- renderMsg (MsgEvalError evalErr)
-                      liftIO (die (T.unpack msg))
-                    Right (_, evalSt') -> return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
+              evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
+              return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
 
     -- | Check whether an identifier refers to the write primitive.
     isWritePrim :: Identifier -- ^ Identifier to inspect.
