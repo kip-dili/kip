@@ -135,6 +135,35 @@ isStatementInput input =
     '.' : _ -> True
     _ -> False
 
+-- | Parsed REPL input, separating command syntax from command execution.
+data ReplCommand
+  = ReplNoop
+  | ReplQuit
+  | ReplShowModules
+  | ReplShowFunctions
+  | ReplShowTypes
+  | ReplMorphUp String
+  | ReplMorphDown String
+  | ReplTypeOf String
+  | ReplParse String
+  | ReplSteps String
+  | ReplSource String
+  deriving (Eq, Show)
+
+parseReplCommand :: String -> ReplCommand
+parseReplCommand input
+  | null input = ReplNoop
+  | input == ":çık" || input == ":quit" = ReplQuit
+  | input == ":modules" = ReplShowModules
+  | input == ":functions" = ReplShowFunctions
+  | input == ":types" = ReplShowTypes
+  | Just word <- stripPrefix ":name " input <|> stripPrefix ":up " input = ReplMorphUp word
+  | Just word <- stripPrefix ":down " input = ReplMorphDown word
+  | Just expr <- stripPrefix ":t " input = ReplTypeOf expr
+  | Just expr <- stripPrefix ":parse " input = ReplParse expr
+  | Just expr <- stripPrefix ":steps " input = ReplSteps expr
+  | otherwise = ReplSource input
+
 -- | Parsed CLI options.
 data CliOptions =
   CliOptions
@@ -1162,25 +1191,25 @@ main = do
             (return (Just ""))
             (getInputLine (T.unpack (applyColor (rcUseColor ctx) blue "Kip> ")))
       case minput of
-          Nothing -> return ()
-          Just "" -> loop rs
-          Just ":çık" -> return ()
-          Just ":quit" -> return ()
-          Just input ->
-            handleInterrupt
-              (emitMsgTCtx MsgCtrlC >> loop rs)
-              (handleInput rs input)
+        Nothing -> return ()
+        Just input ->
+          handleInterrupt
+            (emitMsgTCtx MsgCtrlC >> loop rs)
+            (handleInput rs input)
 
     -- | Handle a single REPL input line.
     handleInput :: ReplState -- ^ Current REPL state.
                 -> String -- ^ Input line.
                 -> ReplM () -- ^ No result.
-    handleInput rs input
-      | input == ":modules" = do
+    handleInput rs input =
+      case parseReplCommand input of
+        ReplNoop -> loop rs
+        ReplQuit -> return ()
+        ReplShowModules -> do
             forM_ (Set.toAscList (replLoaded rs)) $ \path ->
               lift (outputStrLn path)
             loop rs
-      | input == ":functions" = do
+        ReplShowFunctions -> do
           rs <- ensurePreludeLoaded rs
           ctx <- ask
           (cache, fsm) <- runApp requireCacheFsm
@@ -1198,21 +1227,21 @@ main = do
           forM_ (sort rendered) $ \line ->
             lift (outputStrLn (T.unpack line))
           loop rs
-      | input == ":types" = do
+        ReplShowTypes -> do
           rs <- ensurePreludeLoaded rs
           let names = nub [name | ((_, name), _arity) <- replTyCons rs]
           forM_ (sort names) $ \name ->
             lift (outputStrLn (T.unpack name))
           loop rs
-      | Just word <- stripPrefix ":name " input <|> stripPrefix ":up " input = do
+        ReplMorphUp word -> do
           fsm <- runApp requireFsm
           liftIO (ups fsm (T.pack word)) >>= \xs -> lift (mapM_ (outputStrLn . T.unpack) xs)
           loop rs
-      | Just word <- stripPrefix ":down " input = do
+        ReplMorphDown word -> do
           fsm <- runApp requireFsm
           liftIO (downs fsm (T.pack word)) >>= \xs -> lift (mapM_ (outputStrLn . T.unpack) xs)
           loop rs
-      | Just expr <- stripPrefix ":t " input = do
+        ReplTypeOf expr -> do
           rs <- ensurePreludeLoaded rs
           ctx <- ask
           let pst = replParserFor Nothing rs
@@ -1252,7 +1281,7 @@ main = do
                         lift (outputStrLn (T.unpack line))
                       loop rs
                 _ -> inferExprType rs ctx paramTyCons parsed expr
-      | Just expr <- stripPrefix ":parse " input = do
+        ReplParse expr -> do
           rs <- ensurePreludeLoaded rs
           let pst = replParserFor Nothing rs
           if isStatementInput expr
@@ -1273,7 +1302,7 @@ main = do
                   unless (T.null (T.strip remaining)) $
                     lift (outputStrLn ("Remaining: " ++ T.unpack remaining))
           loop rs
-      | Just expr <- stripPrefix ":steps " input = do
+        ReplSteps expr -> do
           rs <- ensurePreludeLoaded rs
           (cache, fsm) <- runApp requireCacheFsm
           let pst = replParserFor Nothing rs
@@ -1315,7 +1344,7 @@ main = do
                               formatStepsStreaming (rcUseColor ctx) rInputM rOutputM result steps (lift . outputStrLn)
                             else emitMsgTCtx (MsgEvalError Eval.RuntimeTypeErrorNonValue)
                           loop rs
-      | otherwise = do
+        ReplSource input -> do
           rs <- ensurePreludeLoaded rs
           let pst = replParserFor Nothing rs
           -- If input ends with a period, parse as statement; otherwise parse as expression
