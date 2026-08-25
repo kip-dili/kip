@@ -1650,7 +1650,7 @@ analyzePatForArgs pat args =
     (PStrLit _ _, _) -> emptyResult pat
     (PCharLit _ _, _) -> emptyResult pat
     (PListLit pats, (_, scrutTy):_) -> do
-      let elemTy = extractListElemTypeMap scrutTy
+      let elemTy = extractListElemType scrutTy
       results <- mapM (\p -> analyzePatForArgs p [dummyArg elemTy]) pats
       let (pats', bindings, spans) = combineResults results
       return (PListLit pats', bindings, spans)
@@ -1788,24 +1788,15 @@ inferPatTypes pat args = do
 stripTyCaseForMatch :: Ty Ann -> Ty Ann
 stripTyCaseForMatch = setTyCases Nom
 
--- | Check whether a set of patterns exhausts a scrutinee type.
-
 -- | Extract the element type from a list type.
-extractListElemType :: [(Identifier, Int)] -- ^ Type constructor arities.
-                    -> Ty Ann -- ^ List type.
+extractListElemType :: Ty Ann -- ^ List type.
                     -> Ty Ann -- ^ Element type.
-extractListElemType tcTyCons ty =
+extractListElemType ty =
   case ty of
     TyApp _ _ (elemTy:_) -> elemTy
     _ -> TyVar (mkAnn Nom NoSpan) ([], T.pack "a")
 
--- | Extract the element type from a list type (Map version).
-extractListElemTypeMap :: Ty Ann -- ^ List type.
-                       -> Ty Ann -- ^ Element type.
-extractListElemTypeMap ty =
-  case ty of
-    TyApp _ _ (elemTy:_) -> elemTy
-    _ -> TyVar (mkAnn Nom NoSpan) ([], T.pack "a")
+-- | Check whether a set of patterns exhausts a scrutinee type.
 checkExhaustivePatterns :: Ty Ann -- ^ Scrutinee type.
                         -> [Clause Ann] -- ^ Clauses to inspect.
                         -> Ann -- ^ Annotation for span reporting.
@@ -1855,14 +1846,6 @@ ctorsForType ty =
         if null ctors
           then Nothing
           else Just ctors
-
--- | Check if a pattern matrix exhausts all cases for the given types.
-isExhaustive :: [Ty Ann] -- ^ Column types.
-             -> [[Pat Ann]] -- ^ Pattern matrix.
-             -> TCM Bool -- ^ True when exhaustive.
-isExhaustive tys matrix = do
-  useful <- isUseful tys matrix (replicate (length tys) (PWildcard (mkAnn Nom NoSpan)))
-  return (not useful)
 
 -- | Compute missing patterns for a single scrutinee type.
 missingPatternsForType :: Ty Ann -- ^ Scrutinee type.
