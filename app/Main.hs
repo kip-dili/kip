@@ -54,6 +54,7 @@ import Kip.Runner
   , breakOn
   , collectNonInfinitiveRefs
   , effectBoundaryHint
+  , foldM'
   , locateDataFile
   , mergeTCState
   , mkEvalState
@@ -1701,18 +1702,3 @@ main = do
                 runFile False False False moduleDirs (pst', tcSt, evalSt, Set.empty) path
               liftIO (saveCachedPrelude snapshotPath pstLoaded tcLoaded evalLoaded loaded')
               return state'
-
-    -- | Strict monadic left fold to avoid building thunks on large inputs.
-    foldM' :: forall m b a.
-              Monad m
-           => (b -> a -> m b) -- ^ Step function.
-           -> b -- ^ Initial accumulator.
-           -> [a] -- ^ Input list.
-           -> m b -- ^ Final accumulator.
-    foldM' f = go
-      where
-        go :: b -> [a] -> m b
-        go acc [] = return acc
-        go acc (y:ys) = do
-          acc' <- f acc y
-          acc' `seq` go acc' ys
