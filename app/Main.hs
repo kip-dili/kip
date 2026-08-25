@@ -1252,6 +1252,28 @@ main = do
               emitMsgTCtx (MsgPrimTypeAdded name)
             _ -> return ()
           return (Just evalSt')
+
+    -- | Report a definition encountered while processing a source file.
+    emitStmtStatus ::
+      [Identifier] ->
+      [(Identifier, [Identifier])] ->
+      [Identifier] ->
+      Stmt Ann ->
+      AppM ()
+    emitStmtStatus paramTyCons tyMods primRefs stmt =
+      case stmt of
+        Defn name _ _ -> emitMsgIOCtx (MsgDefnAdded name)
+        Function name args retTy _ isInfinitive ->
+          if isExplicitRetTy retTy
+            then emitMsgIOCtx (MsgFuncLoaded name args isInfinitive paramTyCons tyMods)
+            else emitMsgIOCtx (MsgFuncAdded name args isInfinitive paramTyCons tyMods)
+        PrimFunc name args _ isInfinitive ->
+          when (name `elem` primRefs || isWritePrim name) $
+            emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
+        NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
+        PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
+        _ -> return ()
+
     codegenFilesTagged :: ParserState
                        -> TCState
                        -> [FilePath]
@@ -1486,19 +1508,7 @@ main = do
               msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') -> do
-              when showDefn $
-                case stmt' of
-                  Defn name _ _ -> emitMsgIOCtx (MsgDefnAdded name)
-                  Function name args retTy _ isInfinitive ->
-                    if isExplicitRetTy retTy
-                      then emitMsgIOCtx (MsgFuncLoaded name args isInfinitive paramTyCons tyMods)
-                      else emitMsgIOCtx (MsgFuncAdded name args isInfinitive paramTyCons tyMods)
-                  PrimFunc name args _ isInfinitive -> do
-                    when (name `elem` primRefs || isWritePrim name) $
-                      emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
-                  NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
-                  PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
-                  _ -> return ()
+              when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
               if buildOnly
                 then
                   case stmt' of
@@ -1549,19 +1559,7 @@ main = do
                 emitMsgIOCtx (MsgLoaded name)
               return (pst', tcSt', evalSt', loaded')
         _ -> do
-          when showDefn $
-            case stmt of
-              Defn name _ _ -> emitMsgIOCtx (MsgDefnAdded name)
-              Function name args retTy _ isInfinitive ->
-                if isExplicitRetTy retTy
-                  then emitMsgIOCtx (MsgFuncLoaded name args isInfinitive paramTyCons tyMods)
-                  else emitMsgIOCtx (MsgFuncAdded name args isInfinitive paramTyCons tyMods)
-              PrimFunc name args _ isInfinitive -> do
-                when (name `elem` primRefs || isWritePrim name) $
-                  emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
-              NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
-              PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
-              _ -> return ()
+          when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt)
           if buildOnly
             then
               case stmt of
@@ -1617,19 +1615,7 @@ main = do
               msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') -> do
-              when showDefn $
-                case stmt' of
-                  Defn name _ _ -> emitMsgIOCtx (MsgDefnAdded name)
-                  Function name args retTy _ isInfinitive ->
-                    if isExplicitRetTy retTy
-                      then emitMsgIOCtx (MsgFuncLoaded name args isInfinitive paramTyCons tyMods)
-                      else emitMsgIOCtx (MsgFuncAdded name args isInfinitive paramTyCons tyMods)
-                  PrimFunc name args _ isInfinitive -> do
-                    when (name `elem` primRefs || isWritePrim name) $
-                      emitMsgIOCtx (MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods)
-                  NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
-                  PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
-                  _ -> return ()
+              when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
               if buildOnly
                 then
                   case stmt' of
