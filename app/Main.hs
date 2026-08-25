@@ -1730,7 +1730,7 @@ main = do
                           -- should be rare and only used when metadata calls fail.
                           Nothing -> do
                             digest <- hash <$> BS.readFile p
-                            return (p, digest, 0, 0)) depPaths
+                            return (FileFingerprint p digest 0 0)) depPaths
                       morphDelta <- liftIO (finishMorphTracking morphToken)
                       mMeta <- liftIO (buildCacheMetadata absPath input depHashes)
                       case mMeta of

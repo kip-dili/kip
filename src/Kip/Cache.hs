@@ -71,6 +71,23 @@ cacheMemo = unsafePerformIO $
     <*> newIORef Set.empty
     <*> newIORef Set.empty
 
+-- | Stable identity and filesystem metadata for one source file.
+data FileFingerprint = FileFingerprint
+  { fingerprintPath :: !FilePath
+  , fingerprintDigest :: !ByteString
+  , fingerprintSize :: !Integer
+  , fingerprintMTime :: !Integer
+  }
+
+-- Keep the existing tuple-compatible prelude-cache representation.
+instance Binary FileFingerprint where
+  put FileFingerprint{..} = do
+    put fingerprintPath
+    put fingerprintDigest
+    put fingerprintSize
+    put fingerprintMTime
+  get = FileFingerprint <$> get <*> get <*> get <*> get
+
 -- | Metadata stored alongside cached modules for validation.
 data CacheMetadata = CacheMetadata
   { compilerHash :: !ByteString          -- ^ SHA256 of the compiler executable.
@@ -78,14 +95,14 @@ data CacheMetadata = CacheMetadata
   , sourceSize   :: !Integer             -- ^ Source file size in bytes.
   , sourceMTime  :: !Integer             -- ^ Source file mtime in microseconds.
   , dependencyRootHash :: !ByteString    -- ^ Merkle root of direct dependency fingerprints.
-  , dependencies :: ![(FilePath, ByteString, Integer, Integer)]  -- ^ (path, hash, size, mtime) for deps.
+  , dependencies :: ![FileFingerprint]
   } deriving (Generic)
 
 -- | Build cache metadata for one source and its direct dependencies.
 buildCacheMetadata ::
   FilePath ->
   T.Text ->
-  [(FilePath, ByteString, Integer, Integer)] ->
+  [FileFingerprint] ->
   IO (Maybe CacheMetadata)
 buildCacheMetadata sourcePath sourceText dependencyFingerprints = do
   mCompilerHash <- getCompilerHash
@@ -118,11 +135,11 @@ instance Binary CacheMetadata where
     putWord32be (fromIntegral (length dependencies))
     mapM_ putDependency dependencies
     where
-      putDependency (path, digest, size, mtime) = do
-        put path
-        putHash digest
-        putWord64be (fromIntegral size)
-        putWord64be (fromIntegral mtime)
+      putDependency fingerprint = do
+        put (fingerprintPath fingerprint)
+        putHash (fingerprintDigest fingerprint)
+        putWord64be (fromIntegral (fingerprintSize fingerprint))
+        putWord64be (fromIntegral (fingerprintMTime fingerprint))
 
   get = do
     compilerHash <- getHash
@@ -139,7 +156,7 @@ instance Binary CacheMetadata where
         digest <- getHash
         size <- fromIntegral <$> getWord64be
         mtime <- fromIntegral <$> getWord64be
-        return (path, digest, size, mtime)
+        return (FileFingerprint path digest size mtime)
 
 putHash :: ByteString -> Put
 putHash digest = do
@@ -156,12 +173,12 @@ cacheFormatVersion :: Word16
 cacheFormatVersion = 3
 
 -- | Stable Merkle root for a module's direct dependency leaves.
-dependencyMerkleRoot :: [(FilePath, ByteString, Integer, Integer)] -> ByteString
+dependencyMerkleRoot :: [FileFingerprint] -> ByteString
 dependencyMerkleRoot deps =
   hashlazy
     (encode
-      [ (path, digest)
-      | (path, digest, _, _) <- deps
+      [ (fingerprintPath fingerprint, fingerprintDigest fingerprint)
+      | fingerprint <- deps
       ])
 
 putCacheHeader :: CacheMetadata -> Put
@@ -238,7 +255,7 @@ decodeSection bytes =
 -- loading @lib/giriş.kip@ and transitive dependencies.
 data CachedPrelude = CachedPrelude
   { preludeCompilerHash :: !ByteString
-  , preludeFiles :: ![(FilePath, ByteString, Integer, Integer)] -- ^ (path, hash, size, mtime)
+  , preludeFiles :: ![FileFingerprint]
   , preludeLoaded :: ![FilePath]
   , preludeParser :: !CachedParserState
   , preludeTC :: !CachedTCState
@@ -822,7 +839,7 @@ isCacheValidMeta path meta = do
         then return False
         else do
           sourcePath <- canonicalizePathCached sourcePathRaw
-          registerDependencyEdges sourcePath (map (\(p, _, _, _) -> p) (dependencies meta))
+          registerDependencyEdges sourcePath (map fingerprintPath (dependencies meta))
           dirty <- readIORef (memoDirtySources cacheMemo)
           if Set.member sourcePath dirty
             then return False
@@ -841,9 +858,12 @@ isCacheValidMeta path meta = do
           if rootValidated
             then return True
             else do
-              depsValid <- mapM (\(depPathRaw, depHash, depSize, depMTime) -> do
-                depPath <- canonicalizePathCached depPathRaw
-                verifyPath depPath depHash depSize depMTime) (dependencies meta)
+              depsValid <- mapM (\fingerprint -> do
+                depPath <- canonicalizePathCached (fingerprintPath fingerprint)
+                verifyPath depPath
+                  (fingerprintDigest fingerprint)
+                  (fingerprintSize fingerprint)
+                  (fingerprintMTime fingerprint)) (dependencies meta)
               let allValid = and depsValid
               when allValid
                 (modifyIORef' (memoValidatedRoots cacheMemo) (Set.insert (dependencyRootHash meta)))
@@ -981,18 +1001,19 @@ isCachedPreludeValid snap = do
           allOk <- mapM verify (preludeFiles snap)
           return (and allOk)
   where
-    verify (pathRaw, expectedHash, expectedSize, expectedMTime) = do
-      path <- canonicalizePathCached pathRaw
+    verify fingerprint = do
+      path <- canonicalizePathCached (fingerprintPath fingerprint)
       mMeta <- getFileMeta path
       case mMeta of
         Just (size, mtime)
-          | size == expectedSize && mtime == expectedMTime -> return True
+          | size == fingerprintSize fingerprint
+          , mtime == fingerprintMTime fingerprint -> return True
         _ -> do
           mDigest <- hashFile path
-          return (mDigest == Just expectedHash)
+          return (mDigest == Just (fingerprintDigest fingerprint))
 
--- | Compute stable fingerprint tuple for one source file.
-fileFingerprint :: FilePath -> IO (Maybe (FilePath, ByteString, Integer, Integer))
+-- | Compute a stable fingerprint for one source file.
+fileFingerprint :: FilePath -> IO (Maybe FileFingerprint)
 fileFingerprint pathRaw = do
   path <- canonicalizePathCached pathRaw
   mMeta <- getFileMeta path
@@ -1002,7 +1023,7 @@ fileFingerprint pathRaw = do
       mDigest <- hashFile path
       case mDigest of
         Nothing -> return Nothing
-        Just digest -> return (Just (path, digest, size, mtime))
+        Just digest -> return (Just (FileFingerprint path digest size mtime))
 
 -- | Collect the @(source path, 'PrimFunc' statement)@ pairs needed to
 -- rebuild 'evalPrimFuncs' host callbacks for a set of loaded modules.

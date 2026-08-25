@@ -925,7 +925,7 @@ runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path 
                       Just fp -> return fp
                       Nothing -> do
                         digest <- hash <$> BS.readFile p
-                        return (p, digest, 0, 0)) depPaths
+                        return (FileFingerprint p digest 0 0)) depPaths
                   morphDelta <- liftIO (finishMorphTracking morphToken)
                   mMeta <- liftIO (buildCacheMetadata absPath input depHashes)
                   case mMeta of
