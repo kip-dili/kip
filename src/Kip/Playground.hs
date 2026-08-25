@@ -91,6 +91,10 @@ data PlaygroundBootstrapError
   = PlaygroundTrmorphMissing
   | PlaygroundLibMissing
 
+type CodegenState = ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
+
+type CodegenProgressHooks = Maybe (FilePath -> IO (), FilePath -> IO ())
+
 -- | Render bootstrap failures for the selected language.
 renderPlaygroundBootstrapError :: Lang -> PlaygroundBootstrapError -> Text
 renderPlaygroundBootstrapError lang err =
@@ -241,7 +245,7 @@ emitJsFilesWithDeps ::
   ParserState ->
   TCState ->
   [FilePath] ->
-  Maybe (FilePath -> IO (), FilePath -> IO ()) ->
+  CodegenProgressHooks ->
   RenderM Text
 emitJsFilesWithDeps moduleDirs basePst baseTC files progressHooks = do
   preludePath <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
@@ -263,10 +267,10 @@ a single JS program.
 -}
 emitJsFileWithDeps ::
   [FilePath] ->
-  Maybe (FilePath -> IO (), FilePath -> IO ()) ->
-  ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath) ->
+  CodegenProgressHooks ->
+  CodegenState ->
   FilePath ->
-  RenderM ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
+  RenderM CodegenState
 emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
   exists <- liftIO (doesFileExist path)
   unless exists $ do
@@ -316,10 +320,10 @@ isLoadStmt _ = False
 -- | Load one dependency module for JS code generation.
 emitJsLoad ::
   [FilePath] ->
-  Maybe (FilePath -> IO (), FilePath -> IO ()) ->
-  ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath) ->
+  CodegenProgressHooks ->
+  CodegenState ->
   ([Text], Identifier) ->
-  RenderM ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
+  RenderM CodegenState
 emitJsLoad moduleDirs progressHooks (acc, pst, tcSt, loaded) (dirPath, name) = do
   path <- resolveModulePath moduleDirs dirPath name
   absPath <- liftIO (canonicalizePathCached path)
