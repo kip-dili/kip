@@ -234,7 +234,7 @@ reorderByCasesNomFallback expected actual xs
   | length expected /= length actual || length actual /= length xs = Nothing
   | otherwise = map snd <$> go (zip actual xs) expected
   where
-    go rems [] = Just []
+    go _ [] = Just []
     go rems (c:cs) =
       case pick c rems of
         Nothing -> Nothing

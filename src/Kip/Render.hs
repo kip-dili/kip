@@ -983,7 +983,7 @@ renderAppPC :: RenderCache -> FSM -> EvalState -> Ann -> Exp Ann -> [Exp Ann] ->
 renderAppPC cache fsm evalSt appAnn fn' args' = do
   let topCase = annCase appAnn
   (argStrs, fnStr) <- case fn' of
-    Var {annExp = fnAnn, varName, varCandidates} -> do
+    Var {varName, varCandidates} -> do
       preserveSurface <- shouldPreserveSurfaceForm cache fsm varName
       fnName <- pickLemmaIdentifier cache fsm varName varCandidates
       surfaceImperative <- hasImperativeAnalysis cache fsm varName

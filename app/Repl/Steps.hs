@@ -206,7 +206,7 @@ replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOu
         (False, True) -> return alt
         _ -> return base
 
-    continueOrFallback state@(cur, curText, stateLastLine) restSteps =
+    continueOrFallback state@(cur, curText, _) restSteps =
       case findHeadFallback cur restSteps of
         Just (idx, oldSub, newSub, cur') -> do
           oldSubText <- renderInput oldSub
@@ -228,7 +228,7 @@ replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOu
       in case candidates of
           x:_ -> Just x
           [] -> Nothing
-    reduceSeqFallback state@(cur, curText, stateLastLine) restSteps =
+    reduceSeqFallback state@(cur, curText, _) restSteps =
       case reduceSeqFirst cur of
         Nothing -> reduceBooleanFallback state restSteps
         Just (oldSub, newSub, cur') -> do
@@ -240,7 +240,7 @@ replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOu
               emitted = pointerLines ++ ["", arrow ++ highlightedCur]
           mapM_ emit emitted
           replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOutput (cur', curText', arrow ++ highlightedCur) restSteps emit
-    reduceBooleanFallback state@(cur, curText, stateLastLine) restSteps =
+    reduceBooleanFallback state@(cur, curText, _) restSteps =
       case reduceBooleanMatchFirst cur of
         Nothing -> return state
         Just (oldSub, newSub, cur') -> do
@@ -294,7 +294,7 @@ substituteFirstByHead from to = go False
                 Nothing -> Nothing
             _ -> Nothing
 
-    goArgs ann f revPref [] = Nothing
+    goArgs _ _ _ [] = Nothing
     goArgs ann f revPref (x:xs) =
       case go True x of
         Just (oldSub, newSub, x') ->
@@ -302,7 +302,7 @@ substituteFirstByHead from to = go False
           in Just (oldSub, newSub, App ann f (pref ++ (x' : xs)))
         Nothing -> goArgs ann f (x : revPref) xs
 
-    goClauses ann scr revPref [] = Nothing
+    goClauses _ _ _ [] = Nothing
     goClauses ann scr revPref (Clause p b:rest) =
       case go True b of
         Just (oldSub, newSub, b') ->
@@ -482,7 +482,7 @@ substituteBindVar :: Identifier -> Exp Ann -> Exp Ann -> Exp Ann
 substituteBindVar name value = go
   where
     go expr = case expr of
-      Var ann vName candidates
+      Var _ vName candidates
         | vName == name || any (\(c, _) -> c == name) candidates ->
             copyCase expr value
         | otherwise -> expr
@@ -506,7 +506,7 @@ substituteBindVar name value = go
 reduceSeqFirst :: Exp Ann -> Maybe (Exp Ann, Exp Ann, Exp Ann)
 reduceSeqFirst expr =
   case expr of
-    Seq ann (Bind _ bName _ bExp) second
+    Seq _ (Bind _ bName _ bExp) second
       | isTraceValue bExp ->
           let result = copyCase expr (substituteBindVar bName bExp second)
           in Just (expr, result, result)

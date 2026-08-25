@@ -1133,7 +1133,7 @@ renderPatMatchCond ctx scrutinee pat =
   case pat of
     PWildcard _ -> ("", [])
     PVar n _ -> ("", ["const " <> toJsIdent n <> " = " <> scrutinee <> ";"])
-    PCtor (ctor, _) pats ->
+    PCtor _ pats ->
       let cond = renderPatCond ctx scrutinee pat
           (binds, _) = renderPatternBindings scrutinee pats 0
       in (cond, binds)

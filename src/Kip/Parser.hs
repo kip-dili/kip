@@ -1257,7 +1257,7 @@ normalizePossessive (mods, word) = do
 -- | Normalize type head names when they use bare possessive suffixes.
 normalizeTypeHead :: Identifier -- ^ Surface identifier.
                   -> KipParser Identifier -- ^ Normalized identifier.
-normalizeTypeHead ident@(mods, word) =
+normalizeTypeHead ident@(mods, _) =
   if null mods
     then normalizePossessive ident
     else return ident
@@ -1605,7 +1605,7 @@ parseExpWithCtx' useCtx allowMatch =
               emptyNom = mkCtorVar (T.pack "boş") Nom
               emptyDat = setExpCasePrefer Dat emptyNom
               ekiVar = mkCtorVar (T.pack "eki") P3s
-              cons elemExp (tailNom, tailDat) =
+              cons elemExp (_, tailDat) =
                 let elemGen = setExpCasePrefer Gen elemExp
                     consNom = App (mkAnn Nom sp) ekiVar [elemGen, tailDat]
                     consDat = setExpCasePrefer Dat consNom
@@ -4132,7 +4132,7 @@ parseExpForDebug st input = do
   (res, parsedSt) <- runStateT (runParserT p "Kip" stripped) tokenizedSt
   let st' = clearLexTokens parsedSt
   case res of
-    Right (e, remaining)
+    Right (e, _)
       | Just ambErr <- ambiguousBareReplError st' stripped e ->
           case runParser (customFailure ambErr) "Kip" stripped of
             Left err -> return (Left err)

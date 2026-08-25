@@ -587,7 +587,7 @@ tcExp1With allowEffect e =
                         let lower = T.toLower txt
                             suffixes = map T.pack ["yi","yı","yu","yü","ni","nı","nu","nü"]
                         in any (`T.isSuffixOf` lower) suffixes
-                      matchExactSig (name, argsSig) =
+                      matchExactSig (_, argsSig) =
                         let expCases = map (annCase . annTy . snd) argsSig
                             argsForSig = fromMaybe allArgs (reorderByCasesNomFallback expCases argCases allArgs)
                             argTysForSig = fromMaybe argTys (reorderByCasesNomFallback expCases argCases argTys)
@@ -745,7 +745,7 @@ tcExp1With allowEffect e =
         Just scrutTy -> checkExhaustivePatterns scrutTy clauses' annExp
         Nothing -> return ()
       return (Match annExp scrutinee' clauses')
-    Let {annExp, varName, body} ->
+    Let {varName, body} ->
       withCtx [varName] (tcExp1With allowEffect body)
     Ascribe {annExp, ascType, ascExp} -> do
       exp' <- tcExp1With allowEffect ascExp
@@ -830,7 +830,7 @@ matchPartialCaseIndices expectedCases = go 0
     uniqueMatchIndex :: Integer -> Case -> UniqueMatch
     uniqueMatchIndex used pc = scan 0 NoMatch expectedCases
       where
-        scan idx acc [] = acc
+        scan _ acc [] = acc
         scan idx acc (ec:rest)
           | ec /= pc = scan (idx + 1) acc rest
           | testBit used idx = scan (idx + 1) acc rest
@@ -1811,7 +1811,6 @@ checkExhaustivePatterns :: Ty Ann -- ^ Scrutinee type.
                         -> Ann -- ^ Annotation for span reporting.
                         -> TCM ()
 checkExhaustivePatterns scrutTy clauses ann = do
-  MkTCState{tcTyCons} <- get
   let pats = map (\(Clause pat _) -> pat) clauses
       hasTopWildcard = any isWildcardPat pats
   if hasTopWildcard

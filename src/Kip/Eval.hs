@@ -471,7 +471,7 @@ evalStepWith subEval localEnv e =
       fn' <-
         case fn of
           Var {varName, varCandidates} -> do
-            st@MkEvalState{evalVals} <- get
+            MkEvalState{evalVals} <- get
             case lookupByCandidatesHM localEnv varCandidates of
               Just _ -> subEval localEnv fn
               Nothing ->
@@ -486,7 +486,7 @@ evalStepWith subEval localEnv e =
       let (fnResolved, preAppliedArgs) = flattenApplied fn'
           allArgs = preAppliedArgs ++ args'
       case fnResolved of
-        Var {varName, varCandidates} -> do
+        Var {varCandidates} -> do
           -- Pull state once for all resolution steps.
           MkEvalState{evalFuncs, evalPrimFuncs, evalSelectors, evalTyCons} <- get
           let fnCandidates = map fst varCandidates
@@ -546,9 +546,9 @@ evalStepWith subEval localEnv e =
       -- Non-tail: evaluate the binding expression, but the bind itself is a value.
       v <- subEval localEnv bindExp
       return (Done (Bind annExp bindName bindNameAnn v))
-    Seq {annExp, first, second} -> do
+    Seq {first, second} -> do
       case first of
-        Bind {bindName, bindNameAnn, bindExp} -> do
+        Bind {bindName, bindExp} -> do
           -- Tail position: continue with the extended environment and second.
           v <- subEval localEnv bindExp
           return (Continue (HM.insert bindName v localEnv) second)
@@ -556,7 +556,7 @@ evalStepWith subEval localEnv e =
           -- Evaluate the first expression, then tail-continue into second.
           _ <- subEval localEnv first
           return (Continue localEnv second)
-    Match {annExp, scrutinee, clauses} -> do
+    Match {scrutinee, clauses} -> do
       -- Non-tail: we need the scrutinee value to select the clause.
       scrutinee' <- subEval localEnv scrutinee
       case findClause scrutinee' clauses of
@@ -565,7 +565,7 @@ evalStepWith subEval localEnv e =
           let env = HM.fromList patBindings `HM.union` localEnv
           -- Tail position: continue with the clause body.
           return (Continue env body)
-    Let {annExp, varName, body} ->
+    Let {body} ->
       -- Tail position: the body is the result of the let.
       return (Continue localEnv body)
     Ascribe {ascExp} ->
@@ -602,7 +602,7 @@ applyFunctionStep fn localEnv (args, clauses) values = do
       argBindings = zip argNames values
   case findClause values clauses of
     Nothing -> return (Done (App (annExp fn) fn values))
-    Just (Clause pat body, patBindings) -> do
+    Just (Clause _ body, patBindings) -> do
       let env = HM.fromList patBindings `HM.union` HM.fromList argBindings `HM.union` localEnv
       return (Continue env body)
   where
@@ -995,7 +995,7 @@ reorderByCasesForEval expected actual xs =
     reorderInsFromGen expCases actCases vals
       | length expCases /= length actCases || length actCases /= length vals = Nothing
       | otherwise = map snd <$> go (zip actCases vals) expCases
-    go rems [] = Just []
+    go _ [] = Just []
     go rems (c:cs) =
       case pick c rems of
         Nothing -> Nothing

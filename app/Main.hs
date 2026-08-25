@@ -497,7 +497,6 @@ renderCompilerMsgBasic msg = do
 
 instance Render CompilerMsg where
   render msg = do
-    ctx <- ask
     mBasic <- renderCompilerMsgBasic msg
     case mBasic of
       Just rendered -> return rendered
@@ -912,7 +911,7 @@ main = do
                       hasEffectfulCandidate = any isEffectfulName candidateNames
                       hasAmbiguousEffectCall = hasEffectfulCandidate && not isInfinitive && length sigs > 1
                   if null sigs
-                    then inferExprType rs ctx paramTyCons parsed expr
+                    then inferExprType rs paramTyCons parsed expr
                     else if hasAmbiguousEffectCall
                       then do
                         emitMsgTCtx (MsgTCError (Ambiguity (annSpan (annExp parsed))) (Just (T.pack expr)) paramTyCons (replTyMods rs))
@@ -926,7 +925,7 @@ main = do
                         line <- liftIO (renderReplSig ctx cache fsm paramTyCons (replTyMods rs) isInfinitive name args mRet)
                         lift (outputStrLn (T.unpack line))
                       loop rs
-                _ -> inferExprType rs ctx paramTyCons parsed expr
+                _ -> inferExprType rs paramTyCons parsed expr
         ReplParse expr -> do
           rs <- ensurePreludeLoaded rs
           let pst = replParserFor Nothing rs
@@ -950,7 +949,7 @@ main = do
           loop rs
         ReplSteps expr -> do
           rs <- ensurePreludeLoaded rs
-          (cache, fsm) <- runApp requireCacheFsm
+          runApp requireCacheFsm
           let pst = replParserFor Nothing rs
           liftIO (parseExpFromRepl pst (T.pack expr)) >>= \case
             Left err -> do
@@ -1066,12 +1065,11 @@ main = do
       where
         -- | Infer and print a type for a REPL expression.
         inferExprType :: ReplState -- ^ Current REPL state.
-                      -> RenderCtx -- ^ Render context.
                       -> [Identifier] -- ^ Type parameters for rendering.
                       -> Exp Ann -- ^ Parsed expression.
                       -> String -- ^ Original input string.
                       -> ReplM () -- ^ No result.
-        inferExprType currentRs ctx paramTyCons parsed expr =
+        inferExprType currentRs paramTyCons parsed expr =
           liftIO (runTCM (tcExp1 parsed >>= inferType) (replTCState currentRs)) >>= \case
             Left tcErr -> do
               emitMsgTCtx (MsgTCError tcErr (Just (T.pack expr)) paramTyCons (replTyMods currentRs))

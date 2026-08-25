@@ -971,7 +971,7 @@ primCharToInt fname args =
     _ -> pure (fallbackApp (["tam", "sayı"], fname) args)
 
 primIntToChar :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primIntToChar fname args =
+primIntToChar _ args =
   case args of
     [IntLit ann n]
       | n >= 0 && n <= 0x10FFFF ->
