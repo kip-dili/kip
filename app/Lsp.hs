@@ -519,15 +519,9 @@ data SpanIndex = SpanIndex
   , siEntries :: [(SpanKey, SpanInfo)]
   }
 
--- | Positional index backed by a hash map plus an entry list.
---
--- We use a hash map for exact lookups (O(1) average) and keep the original
--- entry list for containment queries (smallest enclosing span).
-data PosIndex a = PosIndex
-  { -- | Hash map for exact span lookups.
-    piByKey :: HM.HashMap Text a
-    -- | Entry list used for containment-based lookups.
-  , piEntries :: [(Span, a)]
+-- | Entries used for smallest-enclosing-span lookups.
+newtype PosIndex a = PosIndex
+  { piEntries :: [(Span, a)]
   }
 
 -- | Map from expression span to the expression node.
@@ -590,13 +584,8 @@ spanKeyTextForSpanKey key =
     RangeKey range -> "R:" <> rangeKeyText range
 
 -- | Build a positional index from a list of span entries.
---
--- The hash map is used for exact span lookups; the list is used for
--- position-based queries that require span containment checks.
 posIndexFromEntries :: [(Span, a)] -> PosIndex a
-posIndexFromEntries entries =
-  let byKey = HM.fromList [ (spanKeyText sp, value) | (sp, value) <- entries ]
-  in PosIndex byKey entries
+posIndexFromEntries = PosIndex
 
 buildSpanIndex :: Map.Map Span Identifier -> Map.Map Span (Identifier, [Ty Ann]) -> Map.Map Span (Ty Ann) -> [BinderInfo] -> SpanIndex
 buildSpanIndex resolved resolvedSigs resolvedTypes binders =
