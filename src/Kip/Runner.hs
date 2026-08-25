@@ -43,6 +43,7 @@ module Kip.Runner
   , resolveModulePath
   , resolveBuildTargets
   , listKipFilesRecursive
+  , listKipFilesRecursiveSkipping
   , collectNonInfinitiveRefs
   , mergeTCState
   , locateDataFile
@@ -1147,14 +1148,24 @@ resolveBuildTargets paths = do
 
 -- | Recursively list .kip files in a directory tree.
 listKipFilesRecursive :: FilePath -> IO [FilePath]
-listKipFilesRecursive dir = do
-  entries <- listDirectory dir
-  fmap concat $ forM entries $ \entry -> do
-    let path = dir </> entry
-    isDir <- doesDirectoryExist path
-    if isDir
-      then listKipFilesRecursive path
-      else return [path | takeExtension path == ".kip"]
+listKipFilesRecursive = listKipFilesRecursiveSkipping Set.empty
+
+-- | Recursively list @.kip@ files while ignoring named directories.
+listKipFilesRecursiveSkipping :: Set FilePath -> FilePath -> IO [FilePath]
+listKipFilesRecursiveSkipping skipped root = do
+  isDir <- doesDirectoryExist root
+  if not isDir
+    then return []
+    else go root
+  where
+    go dir = do
+      entries <- listDirectory dir
+      fmap concat $ forM entries $ \entry -> do
+        let path = dir </> entry
+        childIsDir <- doesDirectoryExist path
+        if childIsDir
+          then if Set.member entry skipped then return [] else go path
+          else return [path | takeExtension path == ".kip"]
 
 -- | Remove duplicates while preserving first occurrence order.
 --

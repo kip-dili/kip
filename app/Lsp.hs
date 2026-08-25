@@ -32,7 +32,7 @@ When reading the code, the main flow is:
 module Main (main) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (void, when, forM)
+import Control.Monad (void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (runReaderT)
 import Data.List (foldl', nub, isPrefixOf, sortOn)
@@ -47,9 +47,9 @@ import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Data.Row.Records ((.!))
-import System.Directory (doesFileExist, listDirectory, doesDirectoryExist)
+import System.Directory (doesFileExist)
 import System.Environment (getExecutablePath)
-import System.FilePath (takeDirectory, takeExtension, (</>), normalise, addTrailingPathSeparator)
+import System.FilePath (takeDirectory, (</>), normalise, addTrailingPathSeparator)
 import System.IO (hPutStrLn, stderr)
 import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
@@ -72,7 +72,7 @@ import Kip.Eval (EvalState)
 import Kip.Parser
 import Kip.Render
 import qualified Kip.Render as Render
-import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeStateWithMode, locateDataFile)
+import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeStateWithMode, locateDataFile, listKipFilesRecursiveSkipping)
 import Kip.TypeCheck
 import Language.Foma
 
@@ -2879,7 +2879,7 @@ ensureDefinitionIndex st uri currentDefs
 buildDefinitionIndex :: LspState -> Uri -> Map.Map Identifier Location -> IO (Map.Map Identifier Location)
 buildDefinitionIndex st uri currentDefs = do
   (roots, mRoot) <- resolveIndexRoots st uri
-  files <- concat <$> mapM listKipFilesRecursive roots
+  files <- concat <$> mapM (listKipFilesRecursiveSkipping workspaceScanIgnoredDirs) roots
   index <- foldl' (\ioAcc path -> ioAcc >>= \acc -> indexFile mRoot acc path) (return Map.empty) files
   return (Map.union index currentDefs)
   where
@@ -2919,28 +2919,10 @@ findProjectRoot path = do
             then return Nothing
             else go parent
 
--- | Recursively list all `.kip` files under a root, skipping common build dirs.
-listKipFilesRecursive :: FilePath -> IO [FilePath]
-listKipFilesRecursive root = do
-  isDir <- doesDirectoryExist root
-  if not isDir
-    then return []
-    else go root
-  where
-    skipDirs = Set.fromList [".git", ".stack-work", "dist-newstyle", "node_modules", "vendor", "playground", "dist", ".tmp"]
-    go dir = do
-      entries <- listDirectory dir
-      fmap concat $
-        forM entries $ \entry -> do
-          let path = dir </> entry
-          isDir <- doesDirectoryExist path
-          if isDir
-            then if Set.member entry skipDirs
-              then return []
-              else go path
-            else if takeExtension path == ".kip"
-              then return [path]
-              else return []
+-- | Directories excluded from workspace definition scans.
+workspaceScanIgnoredDirs :: Set.Set FilePath
+workspaceScanIgnoredDirs =
+  Set.fromList [".git", ".stack-work", "dist-newstyle", "node_modules", "vendor", "playground", "dist", ".tmp"]
 
 -- | Load definition locations for a file, using cache when possible.
 loadDefsForFile :: LspState -> FilePath -> IO (Map.Map Identifier Location)
