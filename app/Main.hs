@@ -128,6 +128,13 @@ data CliMode
   | ModeCodegen Text
   deriving (Eq, Show)
 
+-- | Decide whether REPL input should be parsed as a statement.
+isStatementInput :: String -> Bool
+isStatementInput input =
+  case dropWhile (== ' ') (reverse input) of
+    '.' : _ -> True
+    _ -> False
+
 -- | Parsed CLI options.
 data CliOptions =
   CliOptions
@@ -1248,9 +1255,7 @@ main = do
       | Just expr <- stripPrefix ":parse " input = do
           rs <- ensurePreludeLoaded rs
           let pst = replParserFor Nothing rs
-          -- Decide statement vs expression based on trailing period
-          let isStmt = case dropWhile (== ' ') (reverse expr) of '.':_ -> True; _ -> False
-          if isStmt
+          if isStatementInput expr
             then do
               result <- liftIO (parseForDebug pst (T.pack expr))
               case result of
@@ -1314,9 +1319,7 @@ main = do
           rs <- ensurePreludeLoaded rs
           let pst = replParserFor Nothing rs
           -- If input ends with a period, parse as statement; otherwise parse as expression
-          if case dropWhile (== ' ') (reverse input) of
-               '.':_ -> True
-               _ -> False
+          if isStatementInput input
             then do
               liftIO (parseFromRepl pst (T.pack input)) >>= \case
                 Left err -> do
