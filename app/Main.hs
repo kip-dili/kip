@@ -1197,11 +1197,7 @@ main = do
           forM_ (sort names) $ \name ->
             lift (outputStrLn (T.unpack name))
           loop rs
-      | Just word <- stripPrefix ":name " input = do
-          fsm <- runApp requireFsm
-          liftIO (ups fsm (T.pack word)) >>= \xs -> lift (mapM_ (outputStrLn . T.unpack) xs)
-          loop rs
-      | Just word <- stripPrefix ":up " input = do
+      | Just word <- stripPrefix ":name " input <|> stripPrefix ":up " input = do
           fsm <- runApp requireFsm
           liftIO (ups fsm (T.pack word)) >>= \xs -> lift (mapM_ (outputStrLn . T.unpack) xs)
           loop rs
