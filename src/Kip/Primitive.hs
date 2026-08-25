@@ -108,10 +108,6 @@ isCharTy _ = False
 isSetIdent :: Identifier -> Bool
 isSetIdent (mods, name) = null mods && name == T.pack "küme"
 
--- | Check for the list type identifier.
-isListIdent :: Identifier -> Bool
-isListIdent (mods, name) = null mods && name == T.pack "liste"
-
 -- | Check for the map/dictionary type identifier.
 isMapIdent :: Identifier -> Bool
 isMapIdent (mods, name) = null mods && name == T.pack "sözlük"
@@ -158,16 +154,6 @@ setElemTy ty =
 -- | Check whether a type is @öğe küme'si@.
 isSetTy :: Ty Ann -> Bool
 isSetTy = isJust . setElemTy
-
--- | Extract list element type from @öğe listesi@.
-listElemTy :: Ty Ann -> Maybe (Ty Ann)
-listElemTy ty =
-  case normalizePrimTy ty of
-    TyApp _ ctor [elemTy]
-      | TyInd _ ident <- normalizePrimTy ctor
-      , isListIdent ident ->
-          Just elemTy
-    _ -> Nothing
 
 -- | Extract key and value types from @anahtar'dan değer'e sözlük@.
 mapKeyValTy :: Ty Ann -> Maybe (Ty Ann, Ty Ann)
@@ -1171,15 +1157,6 @@ primSetToList ident args =
                 , Just elemVal <- [Map.lookup key (setElems setRepr)]
                 ]
           in pure (foldr listConsExp listNilExp values)
-        Nothing -> pure (fallbackApp ident args)
-    _ -> pure (fallbackApp ident args)
-
-primListToSet :: Monad m => Identifier -> [Exp Ann] -> m (Exp Ann)
-primListToSet ident args =
-  case args of
-    [listVal] ->
-      case expToList listVal of
-        Just values -> pure (setExpFromSetRepr (setReprFromElems values))
         Nothing -> pure (fallbackApp ident args)
     _ -> pure (fallbackApp ident args)
 
