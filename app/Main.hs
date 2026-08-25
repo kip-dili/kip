@@ -397,6 +397,31 @@ runSharedDiagnostic diagnostic = do
   liftIO
     (runReaderT diagnostic
       (Runner.RenderCtx (rcLang ctx) cache fsm))
+
+-- | Render a function signature followed by a localized status suffix.
+renderFunctionStatus ::
+  Text -> Text -> Identifier -> [Arg Ann] -> Bool -> [Identifier] ->
+  [(Identifier, [Identifier])] -> RenderM Text
+renderFunctionStatus suffixTr suffixEn name args isInfinitive paramTyCons tyMods = do
+  ctx <- ask
+  (cache, fsm) <- requireCacheFsm
+  (sigArgs, sigName) <-
+    liftIO (renderFunctionSignatureParts cache fsm paramTyCons tyMods isInfinitive name args)
+  let argStrs =
+        [ T.concat
+            [ "("
+            , T.pack argName
+            , if null argName then "" else " "
+            , colorizeTyParts (rcUseColor ctx) tyParts
+            , ")"
+            ]
+        | (argName, tyParts) <- sigArgs
+        ]
+      base = T.intercalate " " (argStrs ++ [renderNameBold (rcUseColor ctx) (T.pack sigName)])
+      suffix = case rcLang ctx of
+        LangTr -> suffixTr
+        LangEn -> suffixEn
+  return (renderDefnLine (rcUseColor ctx) (base <> suffix))
 -- | Require the render cache and FSM from the context.
 requireCacheFsm :: RenderM (RenderCache, FSM) -- ^ Render cache and FSM.
 requireCacheFsm = do
@@ -522,63 +547,12 @@ instance Render CompilerMsg where
         case msg of
           MsgTCError tcErr mSource paramTyCons tyMods ->
             render (RenderTCError tcErr mSource paramTyCons tyMods)
-          MsgFuncAdded name args isInfinitive paramTyCons tyMods -> do
-            (cache, fsm) <- requireCacheFsm
-            (sigArgs, sigName) <- liftIO (renderFunctionSignatureParts cache fsm paramTyCons tyMods isInfinitive name args)
-            let argStrs =
-                  [ T.concat
-                      [ "("
-                      , T.pack argName
-                      , if null argName then "" else " "
-                      , colorizeTyParts (rcUseColor ctx) tyParts
-                      , ")"
-                      ]
-                  | (argName, tyParts) <- sigArgs
-                  ]
-                base = T.intercalate " " (argStrs ++ [renderNameBold (rcUseColor ctx) (T.pack sigName)])
-                suffix =
-                  case rcLang ctx of
-                    LangTr -> " tanımlandı."
-                    LangEn -> " defined."
-            return (renderDefnLine (rcUseColor ctx) (base <> suffix))
-          MsgFuncLoaded name args isInfinitive paramTyCons tyMods -> do
-            (cache, fsm) <- requireCacheFsm
-            (sigArgs, sigName) <- liftIO (renderFunctionSignatureParts cache fsm paramTyCons tyMods isInfinitive name args)
-            let argStrs =
-                  [ T.concat
-                      [ "("
-                      , T.pack argName
-                      , if null argName then "" else " "
-                      , colorizeTyParts (rcUseColor ctx) tyParts
-                      , ")"
-                      ]
-                  | (argName, tyParts) <- sigArgs
-                  ]
-                base = T.intercalate " " (argStrs ++ [renderNameBold (rcUseColor ctx) (T.pack sigName)])
-                suffix =
-                  case rcLang ctx of
-                    LangTr -> " yüklendi."
-                    LangEn -> " loaded."
-            return (renderDefnLine (rcUseColor ctx) (base <> suffix))
-          MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods -> do
-            (cache, fsm) <- requireCacheFsm
-            (sigArgs, sigName) <- liftIO (renderFunctionSignatureParts cache fsm paramTyCons tyMods isInfinitive name args)
-            let argStrs =
-                  [ T.concat
-                      [ "("
-                      , T.pack argName
-                      , if null argName then "" else " "
-                      , colorizeTyParts (rcUseColor ctx) tyParts
-                      , ")"
-                      ]
-                  | (argName, tyParts) <- sigArgs
-                  ]
-                base = T.intercalate " " (argStrs ++ [renderNameBold (rcUseColor ctx) (T.pack sigName)])
-                suffix =
-                  case rcLang ctx of
-                    LangTr -> " tanımlandı."
-                    LangEn -> " defined."
-            return (renderDefnLine (rcUseColor ctx) (base <> suffix))
+          MsgFuncAdded name args isInfinitive paramTyCons tyMods ->
+            renderFunctionStatus " tanımlandı." " defined." name args isInfinitive paramTyCons tyMods
+          MsgFuncLoaded name args isInfinitive paramTyCons tyMods ->
+            renderFunctionStatus " yüklendi." " loaded." name args isInfinitive paramTyCons tyMods
+          MsgPrimFuncAdded name args isInfinitive paramTyCons tyMods ->
+            renderFunctionStatus " tanımlandı." " defined." name args isInfinitive paramTyCons tyMods
           _ -> return ""
 
 -- | Render instance for parse errors.
