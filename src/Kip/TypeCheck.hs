@@ -1650,8 +1650,7 @@ analyzePatForArgs pat args =
     (PStrLit _ _, _) -> emptyResult pat
     (PCharLit _ _, _) -> emptyResult pat
     (PListLit pats, (_, scrutTy):_) -> do
-      MkTCState{tcTyCons} <- get
-      let elemTy = extractListElemTypeMap tcTyCons scrutTy
+      let elemTy = extractListElemTypeMap scrutTy
       results <- mapM (\p -> analyzePatForArgs p [dummyArg elemTy]) pats
       let (pats', bindings, spans) = combineResults results
       return (PListLit pats', bindings, spans)
@@ -1801,10 +1800,9 @@ extractListElemType tcTyCons ty =
     _ -> TyVar (mkAnn Nom NoSpan) ([], T.pack "a")
 
 -- | Extract the element type from a list type (Map version).
-extractListElemTypeMap :: Map.Map Identifier Int -- ^ Type constructor arities.
-                       -> Ty Ann -- ^ List type.
+extractListElemTypeMap :: Ty Ann -- ^ List type.
                        -> Ty Ann -- ^ Element type.
-extractListElemTypeMap tcTyCons ty =
+extractListElemTypeMap ty =
   case ty of
     TyApp _ _ (elemTy:_) -> elemTy
     _ -> TyVar (mkAnn Nom NoSpan) ([], T.pack "a")

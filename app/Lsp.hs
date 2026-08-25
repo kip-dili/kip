@@ -189,10 +189,7 @@ data DocState = DocState
 -- | LSP server configuration wrapper.
 --
 -- The LSP library requires a config value; we store the mutable 'LspState' in it.
-newtype Config = Config
-  { -- | Mutable LSP server state.
-    cfgVar :: MVar LspState
-  }
+newtype Config = Config (MVar LspState)
 
 -- | Entry point for the LSP server.
 --
@@ -1732,7 +1729,7 @@ analyzeDocument st uri text = do
           declRes <- runTCM (registerForwardDecls stmts) baseTC
           case declRes of
             Left tcErr -> do
-              diag <- tcErrorToDiagnostic st text tcErr
+              diag <- tcErrorToDiagnostic st tcErr
               doc <- newDocState text pst' baseTC stmts [diag]
                 defSpans Map.empty Map.empty Map.empty binderSpans
               return (doc, [diag])
@@ -1749,7 +1746,7 @@ analyzeDocument st uri text = do
                   case res of
                     Left _ -> return tcStWithDecls
                     Right (_, tcStDefs) -> return tcStDefs
-              (tcStFinal, diags) <- typecheckStmts st text tcStWithDefs stmts
+              (tcStFinal, diags) <- typecheckStmts st tcStWithDefs stmts
               -- Compute docSpans once and reuse for both resolved maps
               let !docSpans = docSpanSet stmts
                   !resolved = Map.fromList (filterResolved docSpans (tcResolvedNames tcStFinal))
@@ -1844,8 +1841,8 @@ loadCachedDoc st uri text =
 -- We clear the infinitive table between statements so effect restrictions
 -- never abort the LSP pass. This yields a best-effort typed state for editor
 -- features even in ill-formed code.
-typecheckStmts :: LspState -> Text -> TCState -> [Stmt Ann] -> IO (TCState, [Diagnostic])
-typecheckStmts st source tcSt stmts = do
+typecheckStmts :: LspState -> TCState -> [Stmt Ann] -> IO (TCState, [Diagnostic])
+typecheckStmts st tcSt stmts = do
   -- NOTE: The LSP server should stay useful even when a file violates
   -- effect restrictions (e.g. calling an infinitive function from a pure
   -- context). For editor features like "go to definition" we prefer
@@ -1866,7 +1863,7 @@ typecheckStmts st source tcSt stmts = do
               res <- runTCM (tcStmt stt) currentLsp
               case res of
                 Left tcErr -> do
-                  diag <- tcErrorToDiagnostic st source tcErr
+                  diag <- tcErrorToDiagnostic st tcErr
                   return (Left [diag])
                 Right (_, next) ->
                   -- Clear again after the statement so later statements
@@ -1923,8 +1920,8 @@ parseErrorToDiagnostic source bundle =
   in Diagnostic range (Just DiagnosticSeverity_Error) Nothing Nothing (Just "kip") msg Nothing Nothing Nothing
 
 -- | Render a typechecker error into a diagnostic using the LSP render context.
-tcErrorToDiagnostic :: LspState -> Text -> TCError -> IO Diagnostic
-tcErrorToDiagnostic st source tcErr = do
+tcErrorToDiagnostic :: LspState -> TCError -> IO Diagnostic
+tcErrorToDiagnostic st tcErr = do
   let ctx = RenderCtx LangEn (lsCache st) (lsFsm st)
   msg <- runReaderT (renderTCError [] [] tcErr) ctx
   let range = case tcErrSpan tcErr of
