@@ -33,7 +33,7 @@ import Data.Maybe (fromMaybe, isJust, maybeToList, mapMaybe)
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
-import Text.Megaparsec (ParseErrorBundle, errorBundlePretty)
+import Text.Megaparsec (ParseErrorBundle)
 import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
 
 import Language.Foma
@@ -51,21 +51,15 @@ import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveStep
 import Kip.Runner
   ( Lang(..)
   , CompilerState
-  , ParserErrorEn(..)
-  , ParserErrorTr(..)
   , breakOn
   , collectNonInfinitiveRefs
   , effectBoundaryHint
-  , findAmbiguousBareApplicationError
-  , findPatternBinderRepeatedError
-  , findUnrecognizedWordError
   , locateDataFile
-  , mapParseErrorBundle
   , mergeTCState
   , mkEvalState
   , parseLang
   , renderEvalError
-  , renderLocatedSpanSnippet
+  , renderParseError
   , renderSpan
   , renderSpanSnippet
   , replace
@@ -74,7 +68,6 @@ import Kip.Runner
   , sameSpanPath
   , tcErrRelatedSpan
   , tcErrSpan
-  , turkifyParseError
   , uniquePreserve
   )
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts, runtimeExportNames)
@@ -814,55 +807,6 @@ instance Render RenderTCError where
     case rteSource of
       Nothing -> renderTCError rteParamTyCons rteTyMods rteErr
       Just source -> renderTCErrorWithSource rteParamTyCons rteTyMods source rteErr
-
--- | Render a parse error bundle in the requested language.
-renderParseError :: Lang -- ^ Language selection.
-                 -> ParseErrorBundle Text ParserError -- ^ Parse error bundle.
-                 -> Text -- ^ Rendered error text.
-renderParseError lang err =
-  case findPatternBinderRepeatedError err of
-    Just (ident, sp, source) ->
-      let header =
-            case lang of
-              LangTr -> "Sözdizim hatası:\n"
-              LangEn -> "Syntax error:\n"
-          msg =
-            case lang of
-              LangTr -> renderParserErrorTr (ErrPatternBinderRepeated ident sp)
-              LangEn -> renderParserErrorEn (ErrPatternBinderRepeated ident sp)
-      in header <> renderSpanSnippet source sp <> "\n" <> msg
-    Nothing ->
-      case findUnrecognizedWordError err of
-        Just (wordTxt, sp, suggestions, source) ->
-          let header =
-                case lang of
-                  LangTr -> "Sözdizim hatası:\n"
-                  LangEn -> "Syntax error:\n"
-              msg =
-                case lang of
-                  LangTr -> renderParserErrorTr (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
-                  LangEn -> renderParserErrorEn (ErrUnrecognizedTurkishWord wordTxt sp suggestions)
-          in header <> renderSpanSnippet source sp <> "\n" <> msg
-        Nothing ->
-          case findAmbiguousBareApplicationError err of
-            Just (ambErr, sp, source) ->
-              let header =
-                    case lang of
-                      LangTr -> "Sözdizim hatası:\n"
-                      LangEn -> "Syntax error:\n"
-                  msg =
-                    case lang of
-                      LangTr -> renderParserErrorTr ambErr
-                      LangEn -> renderParserErrorEn ambErr
-              in header <> renderLocatedSpanSnippet "Kip" source sp <> "\n" <> msg
-            Nothing ->
-              case lang of
-                LangTr ->
-                  let trBundle = mapParseErrorBundle ParserErrorTr err
-                  in "Sözdizim hatası:\n" <> T.pack (turkifyParseError (errorBundlePretty trBundle))
-                LangEn ->
-                  let enBundle = mapParseErrorBundle ParserErrorEn err
-                  in "Syntax error:\n" <> T.pack (errorBundlePretty enBundle)
 
 -- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
 -- GC worker threads, returning committed memory to the OS) when possible.
