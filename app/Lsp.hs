@@ -543,6 +543,16 @@ type MatchClauseIndex = PosIndex (Exp Ann, Pat Ann)
 -- | Map from clause scope span to the enclosing function clause (args + pattern).
 type FuncClauseIndex = PosIndex ([Arg Ann], Pat Ann)
 
+-- | Positional lookup indices built together from one AST traversal.
+data DocIndices = DocIndices
+  { indexedExpressions :: !ExpIndex
+  , indexedVariables :: !VarIndex
+  , indexedPatternVariables :: !PatVarIndex
+  , indexedConstructors :: !CtorIndex
+  , indexedMatchClauses :: !MatchClauseIndex
+  , indexedFunctionClauses :: !FuncClauseIndex
+  }
+
 data DocIndexLists = DocIndexLists
   { -- | Collected expression entries.
     expEntries :: [(Span, Exp Ann)]
@@ -675,16 +685,17 @@ lookupByPosition pos idx =
 --
 -- These indices back the most frequent queries (hover/definition) and
 -- allow near-O(log n) lookups instead of repeated tree walks.
-buildDocIndices :: [Stmt Ann] -> (ExpIndex, VarIndex, PatVarIndex, CtorIndex, MatchClauseIndex, FuncClauseIndex)
+buildDocIndices :: [Stmt Ann] -> DocIndices
 buildDocIndices stmts =
   let lists = foldl' collectStmt emptyDocIndexLists stmts
-  in ( posIndexFromEntries (expEntries lists)
-     , posIndexFromEntries (varEntries lists)
-     , posIndexFromEntries (patVarEntries lists)
-     , posIndexFromEntries (ctorEntries lists)
-     , posIndexFromEntries (matchClauseEntries lists)
-     , posIndexFromEntries (funcClauseEntries lists)
-     )
+  in DocIndices
+       { indexedExpressions = posIndexFromEntries (expEntries lists)
+       , indexedVariables = posIndexFromEntries (varEntries lists)
+       , indexedPatternVariables = posIndexFromEntries (patVarEntries lists)
+       , indexedConstructors = posIndexFromEntries (ctorEntries lists)
+       , indexedMatchClauses = posIndexFromEntries (matchClauseEntries lists)
+       , indexedFunctionClauses = posIndexFromEntries (funcClauseEntries lists)
+       }
   where
     addSpanEntry sp val xs =
       case sp of
@@ -1806,8 +1817,7 @@ newDocState text parserState tcState stmts diagnostics defSpans resolved resolve
   let !docLines = V.fromList (T.lines text)
       !docLineStarts = buildLineStarts text
       !spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
-      (!expIndex, !varIndex, !patVarIndex, !ctorIndex, !matchClauseIndex, !funcClauseIndex) =
-        buildDocIndices stmts
+      !indices = buildDocIndices stmts
   tyRenderCache <- HT.new
   tokenCache <- HT.new
   return
@@ -1825,12 +1835,12 @@ newDocState text parserState tcState stmts diagnostics defSpans resolved resolve
       , dsResolvedTypes = resolvedTypes
       , dsBinderSpans = binderSpans
       , dsSpanIndex = spanIndex
-      , dsExpIndex = expIndex
-      , dsVarIndex = varIndex
-      , dsPatVarIndex = patVarIndex
-      , dsCtorIndex = ctorIndex
-      , dsMatchClauseIndex = matchClauseIndex
-      , dsFuncClauseIndex = funcClauseIndex
+      , dsExpIndex = indexedExpressions indices
+      , dsVarIndex = indexedVariables indices
+      , dsPatVarIndex = indexedPatternVariables indices
+      , dsCtorIndex = indexedConstructors indices
+      , dsMatchClauseIndex = indexedMatchClauses indices
+      , dsFuncClauseIndex = indexedFunctionClauses indices
       , dsTyRenderCache = tyRenderCache
       , dsTokenCache = tokenCache
       }
