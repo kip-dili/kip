@@ -35,6 +35,7 @@ source-repository head
 
 common kip-component
   default-language: Haskell2010
+  ghc-options: -Werror=unused-imports -Werror=unused-local-binds -Werror=unused-matches -Werror=unused-packages -Werror=unused-top-binds
   if os(darwin)
     ghc-options: -optP-Wno-nonportable-include-path -optc-Wno-nonportable-include-path -optl-Wl,-w -optl-Wl,-dead_strip
 
