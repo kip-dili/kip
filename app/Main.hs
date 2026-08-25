@@ -70,6 +70,7 @@ import Kip.Runner
   , tcErrSpan
   , uniquePreserve
   )
+import qualified Kip.Runner as Runner
 import Kip.Codegen.JS (codegenProgram, codegenRuntime, codegenStmtsInProgram, definedJsNames, definedJsNamesInProgram, pruneProgramTaggedStmts, runtimeExportNames)
 import Data.Word
 
@@ -377,240 +378,25 @@ isExplicitRetTy :: Ty Ann -- ^ Return type annotation.
 isExplicitRetTy ty =
   annSpan (annTy ty) /= NoSpan
 
--- | Render a type checker error without source context.
-renderTCError :: [Identifier] -- ^ Type parameters for rendering.
-              -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-              -> TCError -- ^ Type checker error.
-              -> RenderM Text -- ^ Rendered error text.
-renderTCError paramTyCons tyMods tcErr = do
-  ctx <- ask
-  case rcLang ctx of
-    LangTr ->
-      case tcErr of
-        TC.Unknown ->
-          return "Tip hatası: bilinmeyen hata."
-        NoType sp ->
-          return ("Tip hatası: uygun bir tip bulunamadı (beklenen ve bulunan tipler uyuşmuyor olabilir)." <> renderSpan (rcLang ctx) sp)
-        EffectfulExprInPureCtx _ sp ->
-          return (effectBoundaryHint LangTr <> renderSpan (rcLang ctx) sp)
-        Ambiguity sp ->
-          return ("Tip hatası: ifade belirsiz." <> renderSpan (rcLang ctx) sp)
-        UnknownName name sp ->
-          return ("Tip hatası: " <> T.pack (prettyIdent name) <> " tanınmıyor." <> renderSpan (rcLang ctx) sp)
-        NoMatchingOverload name argTys sigs sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          nameStr <- liftIO (renderIdentWithCase cache fsm name Gen)
-          sigStrs <- liftIO (mapM (renderSigText cache fsm paramTyCons tyMods) sigs)
-          let baseName = T.pack (prettyIdent name)
-              nameStr' =
-                if T.isSuffixOf "ne" baseName && T.isSuffixOf "nin" (T.pack nameStr)
-                  then T.dropEnd 3 (T.pack nameStr) <> "'n"
-                  else T.pack nameStr
-              header =
-                "Tip hatası: " <> nameStr' <> " için uygun bir tanım bulunamadı." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argüman tipleri: " <> T.intercalate ", " argStrs
-              sigLines =
-                case sigStrs of
-                  [] -> []
-                  _ -> (nameStr' <> " için verili tanımlar:") : map ("- " <>) sigStrs
-          return (T.intercalate "\n" (header : argsLine : sigLines))
-        NoMatchingCtor name argTys tys sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          nameStr <- liftIO (renderIdentWithCase cache fsm name Nom)
-          expStrs <- liftIO (mapM (renderTyText cache fsm paramTyCons tyMods) tys)
-          let header =
-                "Tip hatası: " <> T.pack nameStr <> " için uygun bir örnek bulunamadı." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argüman tipleri: " <> T.intercalate ", " argStrs
-              expLine = "Beklenen tipler: " <> T.intercalate ", " expStrs
-          return (T.intercalate "\n" [header, argsLine, expLine])
-        PatternTypeMismatch ctor expectedTy actualTy availableCtors _ -> do
-          (cache, fsm) <- requireCacheFsm
-          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
-          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
-          availableStrs <- liftIO (mapM (\ident -> renderIdentWithCase cache fsm ident Nom) availableCtors)
-          let availableLine =
-                [ "Örüntülerin tipi " <> actStr <> " olmalı; bu yüzden yalnızca "
-                    <> T.intercalate ", " (map T.pack availableStrs)
-                    <> " yapkılarını kullanabilirsiniz."
-                | not (null availableStrs)
-                ]
-          let header =
-                if ctor == ([], T.pack "ascribe")
-                  then "Tip ataması uyuşmuyor: beklenen tip " <> expStr <> ", bulunan tip " <> actStr
-                  else T.pack (prettyIdent ctor) <> " yapkısı " <> expStr <> " tipindendir, ancak burada " <> actStr <> " bekleniyor"
-          return (T.intercalate "\n" (header : availableLine))
-        ArgTypeMismatch expectedTy actualTy _ -> do
-          (cache, fsm) <- requireCacheFsm
-          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
-          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
-          return ("Argüman tipi uyuşmuyor: beklenen tip " <> expStr <> ", bulunan tip " <> actStr)
-        NonExhaustivePattern _ pats sp -> do
-          missing <- renderMissingPatterns LangTr pats
-          let header = "Tip hatası: örüntü eksik." <> renderSpan (rcLang ctx) sp
-          return (T.intercalate "\n" [header, missing])
-        UnimplementedPrimitive name _ sp ->
-          return ("Tip hatası: " <> T.pack (prettyIdent name) <> " için yerleşik fonksiyon uygulanmamış." <> renderSpan (rcLang ctx) sp)
-        InvalidReturnCase cas sp ->
-          let caseTr = case cas of
-                Acc  -> "belirtme"
-                Dat  -> "yönelme"
-                Loc  -> "bulunma"
-                Abl  -> "ayrılma"
-                Gen  -> "tamlayan"
-                Ins  -> "vasıta"
-                Cond -> "şart"
-                _    -> T.pack (show cas)
-          in return ("Tip hatası: dönüş tipi yalın ya da iyelik halinde olmalı. " <> caseTr <> " hali geçersiz." <> renderSpan (rcLang ctx) sp)
-    LangEn ->
-      case tcErr of
-        TC.Unknown ->
-          return "Type error: unknown error."
-        NoType sp ->
-          return ("Type error: no suitable type found (expected and actual types may not match)." <> renderSpan (rcLang ctx) sp)
-        EffectfulExprInPureCtx _ sp ->
-          return (effectBoundaryHint LangEn <> renderSpan (rcLang ctx) sp)
-        Ambiguity sp ->
-          return ("Type error: expression is ambiguous." <> renderSpan (rcLang ctx) sp)
-        UnknownName name sp ->
-          return ("Type error: " <> T.pack (prettyIdent name) <> " is not recognized." <> renderSpan (rcLang ctx) sp)
-        NoMatchingOverload name argTys sigs sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          sigStrs <- liftIO (mapM (renderSigText cache fsm paramTyCons tyMods) sigs)
-          let header =
-                "Type error: no matching definition for " <> T.pack (prettyIdent name) <> "." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argument types: " <> T.intercalate ", " argStrs
-              sigLines =
-                case sigStrs of
-                  [] -> []
-                  _ -> ("Available definitions for " <> T.pack (prettyIdent name) <> ":") : map ("- " <>) sigStrs
-          return (T.intercalate "\n" (header : argsLine : sigLines))
-        NoMatchingCtor name argTys tys sp -> do
-          argStrs <- mapM (renderTyOpt paramTyCons tyMods) argTys
-          (cache, fsm) <- requireCacheFsm
-          nameStr <- liftIO (renderIdentWithCase cache fsm name Nom)
-          expStrs <- liftIO (mapM (renderTyText cache fsm paramTyCons tyMods) tys)
-          let header =
-                "Type error: no matching constructor for " <> T.pack nameStr <> "." <> renderSpan (rcLang ctx) sp
-              argsLine = "Argument types: " <> T.intercalate ", " argStrs
-              expLine = "Expected types: " <> T.intercalate ", " expStrs
-          return (T.intercalate "\n" [header, argsLine, expLine])
-        PatternTypeMismatch ctor expectedTy actualTy availableCtors _ -> do
-          (cache, fsm) <- requireCacheFsm
-          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
-          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
-          availableStrs <- liftIO (mapM (\ident -> renderIdentWithCase cache fsm ident Nom) availableCtors)
-          let availableLine =
-                [ "Since the patterns are expected to have type " <> actStr
-                    <> ", you can only use the "
-                    <> T.intercalate ", " (map T.pack availableStrs)
-                    <> " constructors."
-                | not (null availableStrs)
-                ]
-          let header =
-                if ctor == ([], T.pack "ascribe")
-                  then "Type ascription mismatch: expected " <> expStr <> ", found " <> actStr
-                  else T.pack (prettyIdent ctor) <> " constructor has type " <> expStr <> ", but " <> actStr <> " is expected here"
-          return (T.intercalate "\n" (header : availableLine))
-        ArgTypeMismatch expectedTy actualTy _ -> do
-          (cache, fsm) <- requireCacheFsm
-          expStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods expectedTy)
-          actStr <- liftIO (renderTyNomText cache fsm paramTyCons tyMods actualTy)
-          return ("Argument type mismatch: expected " <> expStr <> ", found " <> actStr)
-        NonExhaustivePattern _ pats sp -> do
-          missing <- renderMissingPatterns LangEn pats
-          let header = "Type error: non-exhaustive pattern match." <> renderSpan (rcLang ctx) sp
-          return (T.intercalate "\n" [header, missing])
-        UnimplementedPrimitive name _ sp ->
-          return ("Type error: unimplemented primitive function for " <> T.pack (prettyIdent name) <> "." <> renderSpan (rcLang ctx) sp)
-        InvalidReturnCase cas sp ->
-          let caseEn = case cas of
-                Acc  -> "accusative"
-                Dat  -> "dative"
-                Loc  -> "locative"
-                Abl  -> "ablative"
-                Gen  -> "genitive"
-                Ins  -> "instrumental"
-                Cond -> "conditional"
-                _    -> T.pack (show cas)
-          in return ("Type error: return type must be nominative or possessive. Found " <> caseEn <> "." <> renderSpan (rcLang ctx) sp)
+-- | Render a type checker error through the shared diagnostic renderer.
+renderTCError :: [Identifier] -> [(Identifier, [Identifier])] -> TCError -> RenderM Text
+renderTCError paramTyCons tyMods tcErr =
+  runSharedDiagnostic (Runner.renderTCError paramTyCons tyMods tcErr)
 
 -- | Render a type checker error with a source snippet.
-renderTCErrorWithSource :: [Identifier] -- ^ Type parameters for rendering.
-                        -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-                        -> Text -- ^ Source input.
-                        -> TCError -- ^ Type checker error.
-                        -> RenderM Text -- ^ Rendered error text.
-renderTCErrorWithSource paramTyCons tyMods source tcErr = do
+renderTCErrorWithSource ::
+  [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
+renderTCErrorWithSource paramTyCons tyMods source tcErr =
+  runSharedDiagnostic (Runner.renderTCErrorWithSource paramTyCons tyMods source tcErr)
+
+-- | Supply the CLI's concrete morphology resources to a shared diagnostic.
+runSharedDiagnostic :: Runner.RenderM Text -> RenderM Text
+runSharedDiagnostic diagnostic = do
   ctx <- ask
-  msg <- renderTCError paramTyCons tyMods tcErr
-  let withPrimary =
-        case tcErrSpan tcErr of
-          Nothing -> msg
-          Just sp -> msg <> "\n" <> renderSpanSnippet source sp
-  case tcErrRelatedSpan tcErr of
-    Just relatedSp
-      | Just relatedSp /= tcErrSpan tcErr ->
-          let relatedHeader =
-                case rcLang ctx of
-                  LangTr -> "İlgili konum:"
-                  LangEn -> "Related location:"
-              relatedBody =
-                case tcErrSpan tcErr of
-                  Just primarySp
-                    | sameSpanPath primarySp relatedSp ->
-                        "\n" <> renderSpanSnippet source relatedSp
-                  _ -> renderSpan (rcLang ctx) relatedSp
-          in return (withPrimary <> "\n" <> relatedHeader <> relatedBody)
-    _ -> return withPrimary
-
--- | Render missing patterns for error messages.
-renderMissingPatterns :: Lang -> [Pat Ann] -> RenderM Text
-renderMissingPatterns lang pats = do
-  patTexts <- mapM (renderPatText False) pats
-  let listed = T.intercalate ", " patTexts
-  return $
-    case lang of
-      LangTr -> "Eksik kalan örüntüler şunlar: " <> listed <> "."
-      LangEn -> "The missing patterns are: " <> listed <> "."
-  where
-    renderPatText :: Bool -- ^ Whether this is an argument position.
-                  -> Pat Ann
-                  -> RenderM Text
-    renderPatText isArg pat = do
-      (cache, fsm) <- requireCacheFsm
-      let renderIdent cas ident = T.pack <$> liftIO (renderIdentWithCase cache fsm ident cas)
-      case pat of
-        PWildcard _ -> return "değilse"
-        PVar n ann -> renderIdent (annCase ann) n
-        PCtor (ctor, _) args -> do
-          argTexts <- mapM (renderPatText True) args
-          ctorTxt <- renderIdent (if null args then Nom else P3s) ctor
-          let txt = T.unwords (argTexts ++ [ctorTxt])
-          return $
-            if isArg && not (null args)
-              then "(" <> txt <> ")"
-              else txt
-
--- | Render an optional type for diagnostics.
-renderTyOpt :: [Identifier] -- ^ Type parameters for rendering.
-            -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-            -> Maybe (Ty Ann) -- ^ Optional type.
-            -> RenderM Text -- ^ Rendered type.
-renderTyOpt paramTyCons tyMods mty = do
-  ctx <- ask
-  case mty of
-    Nothing ->
-      return $
-        case rcLang ctx of
-          LangTr -> "bilinmiyor"
-          LangEn -> "unknown"
-    Just ty -> do
-      (cache, fsm) <- requireCacheFsm
-      liftIO (renderTyText cache fsm paramTyCons tyMods ty)
-
+  (cache, fsm) <- requireCacheFsm
+  liftIO
+    (runReaderT diagnostic
+      (Runner.RenderCtx (rcLang ctx) cache fsm))
 -- | Require the render cache and FSM from the context.
 requireCacheFsm :: RenderM (RenderCache, FSM) -- ^ Render cache and FSM.
 requireCacheFsm = do
