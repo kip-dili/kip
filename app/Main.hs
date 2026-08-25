@@ -34,7 +34,6 @@ import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import Text.Megaparsec (ParseErrorBundle, errorBundlePretty)
-import Text.Megaparsec.Error (ShowErrorComponent(..))
 import Text.Megaparsec.Pos (sourceLine, sourceColumn, unPos)
 
 import Language.Foma
@@ -52,6 +51,8 @@ import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveStep
 import Kip.Runner
   ( Lang(..)
   , CompilerState
+  , ParserErrorEn(..)
+  , ParserErrorTr(..)
   , breakOn
   , collectNonInfinitiveRefs
   , effectBoundaryHint
@@ -240,20 +241,6 @@ type ReplM = ReaderT RenderCtx (InputT IO)
 -- | Rendering helper context.
 type RenderM = ReaderT RenderCtx IO
 type TaggedStmt = (FilePath, Stmt Ann)
-
--- | Turkish parse error wrapper for Megaparsec rendering.
-newtype ParserErrorTr = ParserErrorTr ParserError
-  deriving (Eq, Ord, Show)
-
--- | English parse error wrapper for Megaparsec rendering.
-newtype ParserErrorEn = ParserErrorEn ParserError
-  deriving (Eq, Ord, Show)
-
-instance ShowErrorComponent ParserErrorTr where
-  showErrorComponent (ParserErrorTr err) = T.unpack (renderParserErrorTr err)
-
-instance ShowErrorComponent ParserErrorEn where
-  showErrorComponent (ParserErrorEn err) = T.unpack (renderParserErrorEn err)
 
 -- | Compute the width of a header box for a title.
 headerWidth :: Text -- ^ Header title.
