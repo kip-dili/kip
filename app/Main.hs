@@ -641,7 +641,6 @@ main = do
                 [ (p, definedJsNamesInProgram resolvMap allStmts [s | (p', s) <- taggedStmts, p' == p, not (isLoadStmt s)])
                 | p <- modulePaths
                 ]
-              allDefs = concatMap snd moduleDefs
               runtimeDefs = runtimeExportNames
               providerPairs = [(name, p) | (p, names) <- moduleDefs, name <- names]
               (_, providersRev) = foldl' addProvider (Set.empty, []) providerPairs
@@ -1461,33 +1460,6 @@ main = do
                           liftIO (saveCachedModule cachePath cachedModule)
 
                       return (pstFinal, tcSt', evalSt', loaded')
-
-    -- | Run a single statement in the context of a file.
-    runStmt :: Bool -- ^ Whether to show definitions.
-            -> Bool -- ^ Whether to show load messages.
-            -> Bool -- ^ Whether to build-only.
-            -> [FilePath] -- ^ Module search paths.
-            -> FilePath -- ^ Current file path.
-            -> [Identifier] -- ^ Type parameters for rendering.
-            -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-            -> [Identifier] -- ^ Non-infinitive primitive refs.
-            -> Text -- ^ Source input.
-            -> CompilerState -- ^ Current states.
-            -> Stmt Ann -- ^ Statement to run.
-            -> AppM CompilerState -- ^ Updated states.
-    runStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded) stmt =
-      case stmt of
-        Load dirPath name ->
-          runLoadStmt showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
-        _ ->
-          liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
-            Left tcErr -> do
-              msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
-              liftIO (die (T.unpack msg))
-            Right (stmt', tcSt') -> do
-              when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
-              evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
-              return (pst, tcSt', evalSt', loaded)
 
     -- | Run a pre-typechecked statement in the context of a file.
     --
