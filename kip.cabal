@@ -202,6 +202,7 @@ test-suite kip-tests
   type: exitcode-stdio-1.0
   main-is: Main.hs
   other-modules:
+      LspProtocol
       LspTest
   hs-source-dirs:
       tests
