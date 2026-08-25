@@ -190,13 +190,10 @@ isCodegenMode _ = False
 isPlaygroundProgressEnabled :: IO Bool
 isPlaygroundProgressEnabled = do
   mVal <- lookupEnv "KIP_PLAYGROUND_PROGRESS"
-  case fmap (map toLower) mVal of
-    Just "0" -> return False
-    Just "false" -> return False
-    Just "no" -> return False
-    Just "" -> return False
-    Nothing -> return False
-    _ -> return True
+  return $
+    case fmap (map toLower) mVal of
+      Nothing -> False
+      Just val -> val `notElem` ["", "0", "false", "no"]
 
 emitPlaygroundProgress :: Int -> Text -> IO ()
 emitPlaygroundProgress pct label =
