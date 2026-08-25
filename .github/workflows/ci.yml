@@ -14,7 +14,7 @@ jobs:
       STACK_VERSION: "3.11.1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Compute Stack cache key
         id: stack_cache_key
@@ -24,7 +24,7 @@ jobs:
 
       - name: Restore Stack artifacts
         id: stack_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             /tmp/.stack-root
@@ -58,20 +58,17 @@ jobs:
         run: stack --allow-different-user build --test --no-run-tests --only-dependencies
 
       - name: Setup HLint
-        uses: haskell-actions/hlint-setup@v2
+        uses: haskell-actions/hlint-setup@d1aac3f1086496dbd438ba94003ed0d6fb1c1645
 
       - name: Run HLint
-        uses: haskell-actions/hlint-run@v2
-        with:
-          path: '["app","src","tests"]'
-          fail-on: warning
+        run: hlint -j app src tests
 
       - name: Stack test
         run: stack --allow-different-user test
 
       - name: Save Stack artifacts
         if: ${{ steps.stack_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             /tmp/.stack-root
