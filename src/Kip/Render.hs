@@ -441,8 +441,8 @@ renderTy cache fsm paramTyCons tyMods ty =
     TyChar ann ->
       renderIdentWithCase cache fsm ([], T.pack "karakter") (annCase ann)
     Arr ann d i -> do
-      let d' = setTyCase Gen d
-          i' = setTyCase Nom i
+      let d' = setTyCases Gen d
+          i' = setTyCases Nom i
       dStr <- renderTy cache fsm paramTyCons tyMods d'
       iBase <- renderTyPossessive cache fsm paramTyCons tyMods i'
       iStr <-
@@ -484,20 +484,6 @@ renderTyNom cache fsm paramTyCons tyMods ty =
       renderIdentWithCase cache fsm ([], T.pack "karakter") Nom
     Arr {} ->
       return "işlev"
-
--- | Rewrite a type's top-level case annotation recursively.
-setTyCase :: Case -> Ty Ann -> Ty Ann
-setTyCase cas ty =
-  case ty of
-    TyInd ann name -> TyInd (setAnnCase ann cas) name
-    TyVar ann name -> TyVar (setAnnCase ann cas) name
-    TySkolem ann name -> TySkolem (setAnnCase ann cas) name
-    TyInt ann -> TyInt (setAnnCase ann cas)
-    TyFloat ann -> TyFloat (setAnnCase ann cas)
-    TyString ann -> TyString (setAnnCase ann cas)
-    TyChar ann -> TyChar (setAnnCase ann cas)
-    TyApp ann ctor args -> TyApp (setAnnCase ann cas) (setTyCase cas ctor) (map (setTyCase cas) args)
-    Arr ann d i -> Arr (setAnnCase ann cas) (setTyCase cas d) (setTyCase cas i)
 
 -- | Render a type as parts with a flag indicating type variables.
 renderTyParts :: RenderCache -- ^ Render cache.
@@ -546,8 +532,8 @@ renderTyParts cache fsm paramTyCons tyMods ty =
       s <- renderIdentWithCase cache fsm ([], T.pack "karakter") (annCase ann)
       return [(s, False)]
     Arr ann d i -> do
-      let d' = setTyCase Gen d
-          i' = setTyCase Nom i
+      let d' = setTyCases Gen d
+          i' = setTyCases Nom i
       domParts <- renderTyParts cache fsm paramTyCons tyMods d'
       imgBaseParts <- renderTyPartsPossessive cache fsm paramTyCons tyMods i'
       imgParts <-
@@ -647,8 +633,8 @@ renderTyPossessive cache fsm paramTyCons tyMods ty =
     TyChar ann ->
       renderIdentWithCases cache fsm ([], T.pack "karakter") (possessiveCases (annCase ann))
     Arr ann d i -> do
-      let d' = setTyCase Gen d
-          i' = setTyCase Nom i
+      let d' = setTyCases Gen d
+          i' = setTyCases Nom i
       dStr <- renderTy cache fsm paramTyCons tyMods d'
       iBase <- renderTyPossessive cache fsm paramTyCons tyMods i'
       iStr <-
@@ -715,8 +701,8 @@ renderTyPartsPossessive cache fsm paramTyCons tyMods ty =
       s <- renderIdentWithCases cache fsm ([], T.pack "karakter") (possessiveCases (annCase ann))
       return [(s, False)]
     Arr ann d i -> do
-      let d' = setTyCase Gen d
-          i' = setTyCase Nom i
+      let d' = setTyCases Gen d
+          i' = setTyCases Nom i
       domParts <- renderTyParts cache fsm paramTyCons tyMods d'
       imgBaseParts <- renderTyPartsPossessive cache fsm paramTyCons tyMods i'
       imgParts <-

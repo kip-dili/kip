@@ -152,6 +152,22 @@ data Ty a =
   | TyApp    { annTy :: a , tyCtor :: Ty a , tyArgs :: [Ty a] } -- ^ Type application.
   deriving (Show, Eq, Ord, Generic, Functor, Binary)
 
+-- | Set the grammatical case on every annotation in a type tree.
+setTyCases :: Case -> Ty Ann -> Ty Ann
+setTyCases cas ty =
+  case ty of
+    TyString ann -> TyString (setAnnCase ann cas)
+    TyInt ann -> TyInt (setAnnCase ann cas)
+    TyFloat ann -> TyFloat (setAnnCase ann cas)
+    TyChar ann -> TyChar (setAnnCase ann cas)
+    TyInd ann name -> TyInd (setAnnCase ann cas) name
+    TyVar ann name -> TyVar (setAnnCase ann cas) name
+    TySkolem ann name -> TySkolem (setAnnCase ann cas) name
+    Arr ann domain image ->
+      Arr (setAnnCase ann cas) (setTyCases cas domain) (setTyCases cas image)
+    TyApp ann ctor args ->
+      TyApp (setAnnCase ann cas) (setTyCases cas ctor) (map (setTyCases cas) args)
+
 -- | Normalize source-level primitive aliases to canonical type constructors.
 normalizePrimTy :: Ty Ann -> Ty Ann
 normalizePrimTy ty =

@@ -1122,7 +1122,7 @@ main = do
                 Nothing -> emitMsgTCtx MsgTypeInferFailed
                 Just ty -> do
                   (cache, fsm) <- runApp requireCacheFsm
-                  let tyNom = normalizeTyNom ty
+                  let tyNom = setTyCases Nom ty
                   tyParts <- liftIO (renderTyParts cache fsm paramTyCons (replTyMods currentRs) tyNom)
                   emitMsgTCtx (MsgTypeOf tyParts)
               loop currentRs
@@ -1196,7 +1196,7 @@ main = do
       retPart <-
         case mRet of
           Just ty -> do
-            tyParts <- renderTyPartsPossessive cache fsm paramTyCons tyMods (normalizeTyNom ty)
+            tyParts <- renderTyPartsPossessive cache fsm paramTyCons tyMods (setTyCases Nom ty)
             return (Just (colorizeTyParts (rcUseColor ctx) tyParts))
           Nothing -> return Nothing
       let retStr =
@@ -1204,21 +1204,6 @@ main = do
               Just tyStr -> T.concat ["(", T.pack nameStr, " ", tyStr, ")"]
               Nothing -> T.concat ["(", T.pack nameStr, ")"]
       return (T.intercalate " " (argStrs ++ [retStr]))
-
-    -- | Normalize a type to nominative case for display.
-    normalizeTyNom :: Ty Ann -- ^ Type to normalize.
-                   -> Ty Ann -- ^ Nominative type.
-    normalizeTyNom ty =
-      case ty of
-        TyString ann -> TyString (setAnnCase ann Nom)
-        TyInt ann -> TyInt (setAnnCase ann Nom)
-        TyFloat ann -> TyFloat (setAnnCase ann Nom)
-        TyChar ann -> TyChar (setAnnCase ann Nom)
-        TyInd ann name -> TyInd (setAnnCase ann Nom) name
-        TyVar ann name -> TyVar (setAnnCase ann Nom) name
-        TySkolem ann name -> TySkolem (setAnnCase ann Nom) name
-        Arr ann d i -> Arr (setAnnCase ann Nom) (normalizeTyNom d) (normalizeTyNom i)
-        TyApp ann ctor args -> TyApp (setAnnCase ann Nom) (normalizeTyNom ctor) (map normalizeTyNom args)
 
     -- | Evaluate a REPL statement and update the evaluator state.
     evalReplStmt :: [Identifier] -- ^ Type parameters for rendering.
