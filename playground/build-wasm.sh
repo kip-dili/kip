@@ -41,13 +41,9 @@ cp "${BIN_PATH}" "${DIST_DIR}/kip-playground.wasm"
 
 popd >/dev/null
 
-cp "${ROOT_DIR}/playground/index.html" "${DIST_DIR}/index.html"
-cp "${ROOT_DIR}/playground/playground.js" "${DIST_DIR}/playground.js"
-cp "${ROOT_DIR}/playground/kip-syntax.js" "${DIST_DIR}/kip-syntax.js"
-cp "${ROOT_DIR}/playground/style.css" "${DIST_DIR}/style.css"
-cp "${ROOT_DIR}/playground/logo.png" "${DIST_DIR}/logo.png"
-cp "${ROOT_DIR}/playground/kip-worker.js" "${DIST_DIR}/kip-worker.js"
-cp "${ROOT_DIR}/playground/coi-serviceworker.js" "${DIST_DIR}/coi-serviceworker.js"
+for asset in index.html playground.js style.css logo.png kip-worker.js coi-serviceworker.js; do
+  cp "${ROOT_DIR}/playground/${asset}" "${DIST_DIR}/${asset}"
+done
 mkdir -p "${DIST_DIR}/quiz"
 cp "${ROOT_DIR}/playground/quiz/index.html" "${DIST_DIR}/quiz/index.html"
 rm -f "${DIST_DIR}/quiz.html"
