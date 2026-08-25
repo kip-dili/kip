@@ -326,14 +326,6 @@ emitMsgIO ctx msg = do
   rendered <- runReaderT (render msg) ctx
   TIO.putStrLn rendered
 
--- | Emit a message using a concrete render context in InputT.
-emitMsgT :: RenderCtx -- ^ Render context.
-         -> CompilerMsg -- ^ Message to render.
-         -> InputT IO () -- ^ No result.
-emitMsgT ctx msg = do
-  rendered <- liftIO (runReaderT (render msg) ctx)
-  outputStrLn (T.unpack rendered)
-
 -- | Render a compiler message to text.
 renderMsg :: CompilerMsg -- ^ Message to render.
           -> RenderM Text -- ^ Rendered text.
