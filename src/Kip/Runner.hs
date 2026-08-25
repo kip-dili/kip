@@ -956,18 +956,26 @@ evalFileStmt buildOnly currentPath evalSt stmt =
           liftIO (die (T.unpack msg))
         Right (_, evalSt') -> return evalSt'
 
+-- | Load a dependency statement and retain its resolved path for caching.
+runLoadStmt ::
+  Bool -> [FilePath] -> CompilerState -> [Text] -> Identifier ->
+  RenderM (CompilerState, FilePath)
+runLoadStmt buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath name = do
+  path <- resolveModulePath moduleDirs dirPath name
+  absPath <- liftIO (canonicalizePathCached path)
+  state' <-
+    if Set.member absPath loaded
+      then return state
+      else runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
+  return (state', path)
+
 -- | Run a single statement in the context of a file.
 runStmt :: Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> Text -> CompilerState -> Stmt Ann -> RenderM CompilerState
 runStmt buildOnly moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, evalSt, loaded) stmt =
   case stmt of
     Load dirPath name -> do
-      path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePathCached path)
-      if Set.member absPath loaded
-        then return (pst, tcSt, evalSt, loaded)
-        else do
-          (pst', tcSt', evalSt', loaded') <- runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-          return (pst', tcSt', evalSt', loaded')
+      (state', _) <- runLoadStmt buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
+      return state'
     _ ->
       liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
         Left tcErr -> do
@@ -986,13 +994,8 @@ runTypedStmt :: Bool -> [FilePath] -> FilePath -> CompilerState -> Stmt Ann -> R
 runTypedStmt buildOnly moduleDirs currentPath (pst, tcSt, evalSt, loaded) stmt =
   case stmt of
     Load dirPath name -> do
-      path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePathCached path)
-      if Set.member absPath loaded
-        then return (pst, tcSt, evalSt, loaded)
-        else do
-          (pst', tcSt', evalSt', loaded') <- runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-          return (pst', tcSt', evalSt', loaded')
+      (state', _) <- runLoadStmt buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
+      return state'
     _ -> do
       evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt
       return (pst, tcSt, evalSt', loaded)
@@ -1005,13 +1008,9 @@ runStmtCollect :: Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier
 runStmtCollect buildOnly moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, evalSt, loaded, typedAcc, depPathsAcc) stmt =
   case stmt of
     Load dirPath name -> do
-      path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePathCached path)
-      if Set.member absPath loaded
-        then return (pst, tcSt, evalSt, loaded, stmt : typedAcc, path : depPathsAcc)
-        else do
-          (pst', tcSt', evalSt', loaded') <- runFile buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-          return (pst', tcSt', evalSt', loaded', stmt : typedAcc, path : depPathsAcc)
+      ((pst', tcSt', evalSt', loaded'), path) <-
+        runLoadStmt buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
+      return (pst', tcSt', evalSt', loaded', stmt : typedAcc, path : depPathsAcc)
     _ ->
       liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
         Left tcErr -> do
