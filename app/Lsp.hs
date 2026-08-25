@@ -1,9 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
 
 {-|
 Language Server Protocol implementation for Kip.
@@ -46,7 +44,6 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Data.Row.Records ((.!))
 import System.Directory (doesFileExist)
 import System.Environment (getExecutablePath)
 import System.FilePath (takeDirectory, (</>), normalise, addTrailingPathSeparator)
@@ -210,17 +207,11 @@ main = do
   let config = Config initialState
   let serverDef = ServerDefinition
         { defaultConfig = config
-#if MIN_VERSION_lsp_types(2,3,0)
         , configSection = "kip"
         , parseConfig = \cfg _ -> Right cfg
         , onConfigChange = \_ -> return ()
         , doInitialize = \env _ -> pure (Right env)
         , staticHandlers = \_ -> handlers
-#else
-        , onConfigurationChange = \cfg _ -> Right cfg
-        , doInitialize = \env _ -> pure (Right env)
-        , staticHandlers = handlers
-#endif
         , interpretHandler = \env -> Iso (runLspT env) liftIO
         , options = lspOptions
         }
@@ -829,11 +820,7 @@ renderTyNomTextCached doc cache fsm paramTyCons tyMods ty = do
       HT.insert (dsTyRenderCache doc) key t
       return t
 
-#if MIN_VERSION_lsp_types(2,3,0)
 onHover :: TRequestMessage 'Method_TextDocumentHover -> (Either (TResponseError 'Method_TextDocumentHover) (MessageResult 'Method_TextDocumentHover) -> LspM Config ()) -> LspM Config ()
-#else
-onHover :: TRequestMessage 'Method_TextDocumentHover -> (Either ResponseError (MessageResult 'Method_TextDocumentHover) -> LspM Config ()) -> LspM Config ()
-#endif
 -- | Handle hover requests.
 --
 -- The hover pipeline is ordered from “most specific” to “most general”:
@@ -1202,11 +1189,7 @@ onHover req respond = do
         Seq _ first _ -> first
         _ -> exp'
     
-#if MIN_VERSION_lsp_types(2,3,0)
 onDefinition :: TRequestMessage 'Method_TextDocumentDefinition -> (Either (TResponseError 'Method_TextDocumentDefinition) (MessageResult 'Method_TextDocumentDefinition) -> LspM Config ()) -> LspM Config ()
-#else
-onDefinition :: TRequestMessage 'Method_TextDocumentDefinition -> (Either ResponseError (MessageResult 'Method_TextDocumentDefinition) -> LspM Config ()) -> LspM Config ()
-#endif
 -- | Handle go-to-definition requests.
 --
 -- Resolution order:
@@ -1332,11 +1315,7 @@ onDefinition req respond = do
                                 Nothing -> respondEmptyOrTypeFallback
                                 Just loc -> respond (Right (InL (Definition (InR [loc]))))
 
-#if MIN_VERSION_lsp_types(2,3,0)
 onTypeDefinition :: TRequestMessage 'Method_TextDocumentTypeDefinition -> (Either (TResponseError 'Method_TextDocumentTypeDefinition) (MessageResult 'Method_TextDocumentTypeDefinition) -> LspM Config ()) -> LspM Config ()
-#else
-onTypeDefinition :: TRequestMessage 'Method_TextDocumentTypeDefinition -> (Either ResponseError (MessageResult 'Method_TextDocumentTypeDefinition) -> LspM Config ()) -> LspM Config ()
-#endif
 -- | Handle go-to-type-definition requests.
 --
 -- Type resolution strategy:
@@ -1466,11 +1445,7 @@ resolveTypeDefinitionLocations st doc uri keys = do
   let initial = typeDefinitionLocationsByKeys st doc uri keys
   return initial
     
-#if MIN_VERSION_lsp_types(2,3,0)
 onCompletion :: TRequestMessage 'Method_TextDocumentCompletion -> (Either (TResponseError 'Method_TextDocumentCompletion) (MessageResult 'Method_TextDocumentCompletion) -> LspM Config ()) -> LspM Config ()
-#else
-onCompletion :: TRequestMessage 'Method_TextDocumentCompletion -> (Either ResponseError (MessageResult 'Method_TextDocumentCompletion) -> LspM Config ()) -> LspM Config ()
-#endif
 -- | Handle completion requests.
 --
 -- We currently return a simple, static set consisting of:
@@ -1494,11 +1469,7 @@ onCompletion req respond = do
           items = map completionItem candidates
       respond (Right (InL items))
 
-#if MIN_VERSION_lsp_types(2,3,0)
 onFormatting :: TRequestMessage 'Method_TextDocumentFormatting -> (Either (TResponseError 'Method_TextDocumentFormatting) (MessageResult 'Method_TextDocumentFormatting) -> LspM Config ()) -> LspM Config ()
-#else
-onFormatting :: TRequestMessage 'Method_TextDocumentFormatting -> (Either ResponseError (MessageResult 'Method_TextDocumentFormatting) -> LspM Config ()) -> LspM Config ()
-#endif
 -- | Handle formatting requests.
 --
 -- The formatter is intentionally minimal: it trims trailing whitespace and
@@ -1517,11 +1488,7 @@ onFormatting req respond = do
               range = Range (Position 0 0) endPos
           respond (Right (InL [TextEdit range formatted]))
 
-#if MIN_VERSION_lsp_types(2,3,0)
 onDocumentHighlight :: TRequestMessage 'Method_TextDocumentDocumentHighlight -> (Either (TResponseError 'Method_TextDocumentDocumentHighlight) (MessageResult 'Method_TextDocumentDocumentHighlight) -> LspM Config ()) -> LspM Config ()
-#else
-onDocumentHighlight :: TRequestMessage 'Method_TextDocumentDocumentHighlight -> (Either ResponseError (MessageResult 'Method_TextDocumentDocumentHighlight) -> LspM Config ()) -> LspM Config ()
-#endif
 -- | Handle document highlight requests.
 --
 -- Highlights are computed by collecting all morphologically related names
@@ -1563,17 +1530,10 @@ applyContentChanges =
 
 -- | Apply one LSP content change to document text.
 applyContentChange :: Text -> TextDocumentContentChangeEvent -> Text
-#if MIN_VERSION_lsp_types(2,3,0)
 applyContentChange oldText (TextDocumentContentChangeEvent change) =
   case change of
     InL (TextDocumentContentChangePartial range _ t) -> applyRangeEdit oldText range t
     InR (TextDocumentContentChangeWholeDocument t) -> t
-#else
-applyContentChange oldText (TextDocumentContentChangeEvent change) =
-  case change of
-    InL rec -> applyRangeEdit oldText (rec .! #range) (rec .! #text)
-    InR rec -> rec .! #text
-#endif
 
 -- | Apply a ranged text edit to a UTF-16 position-based document.
 applyRangeEdit :: Text -> Range -> Text -> Text

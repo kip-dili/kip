@@ -191,11 +191,10 @@ executable kip-lsp
     , unordered-containers
     , kip
     , lens
-    , lsp
-    , lsp-types
+    , lsp >=2.3
+    , lsp-types >=2.3
     , megaparsec
 
-    , row-types
     , text
     , transformers
     , cryptohash-sha256
