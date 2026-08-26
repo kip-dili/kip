@@ -217,11 +217,9 @@ data RenderTCError =
     , rteTyMods :: [(Identifier, [Identifier])]
     }
 
--- | App-level Reader context.
-type AppM = ReaderT RenderCtx IO
 -- | REPL Reader context stacked on InputT.
 type ReplM = ReaderT RenderCtx (InputT IO)
--- | Rendering helper context.
+-- | Application and rendering context.
 type RenderM = ReaderT RenderCtx IO
 type TaggedStmt = (FilePath, Stmt Ann)
 
@@ -314,14 +312,9 @@ emitMsgIO ctx msg = do
   rendered <- runReaderT (render msg) ctx
   TIO.putStrLn rendered
 
--- | Render a compiler message to text.
-renderMsg :: CompilerMsg -- ^ Message to render.
-          -> RenderM Text -- ^ Rendered text.
-renderMsg = render
-
--- | Emit a message from the AppM context.
+-- | Emit a message from the rendering context.
 emitMsgIOCtx :: CompilerMsg -- ^ Message to render.
-             -> AppM () -- ^ No result.
+             -> RenderM () -- ^ No result.
 emitMsgIOCtx msg = do
   rendered <- render msg
   liftIO (TIO.putStrLn rendered)
@@ -333,8 +326,8 @@ emitMsgTCtx msg = do
   rendered <- runApp (render msg)
   lift (outputStrLn (T.unpack rendered))
 
--- | Run an AppM action inside the REPL context.
-runApp :: AppM a -- ^ App computation.
+-- | Run a rendering action inside the REPL context.
+runApp :: RenderM a -- ^ Application computation.
        -> ReplM a -- ^ Lifted REPL computation.
 runApp action = do
   ctx <- ask
@@ -1201,7 +1194,7 @@ main = do
       [(Identifier, [Identifier])] ->
       [Identifier] ->
       Stmt Ann ->
-      AppM ()
+      RenderM ()
     emitStmtStatus paramTyCons tyMods primRefs stmt =
       case stmt of
         Defn name _ _ -> emitMsgIOCtx (MsgDefnAdded name)
@@ -1217,14 +1210,14 @@ main = do
         _ -> return ()
 
     -- | Evaluate a file statement, omitting expression statements in build mode.
-    evalFileStmt :: Bool -> FilePath -> EvalState -> Stmt Ann -> AppM EvalState
+    evalFileStmt :: Bool -> FilePath -> EvalState -> Stmt Ann -> RenderM EvalState
     evalFileStmt buildOnly currentPath evalSt stmt =
       case stmt of
         ExpStmt _ | buildOnly -> return evalSt
         _ ->
           liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
             Left evalErr -> do
-              msg <- renderMsg (MsgEvalError evalErr)
+              msg <- render (MsgEvalError evalErr)
               liftIO (die (T.unpack msg))
             Right (_, evalSt') -> return evalSt'
 
@@ -1236,7 +1229,7 @@ main = do
       CompilerState ->
       [Text] ->
       Identifier ->
-      AppM CompilerState
+      RenderM CompilerState
     runLoadStmt showLoad buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath name = do
       path <- resolveModulePath moduleDirs dirPath name
       absPath <- liftIO (canonicalizePathCached path)
@@ -1252,7 +1245,7 @@ main = do
                        -> [FilePath]
                        -> Set FilePath
                        -> [FilePath]
-                       -> AppM (TCState, [TaggedStmt])
+                       -> RenderM (TCState, [TaggedStmt])
     codegenFilesTagged basePst baseTC moduleDirs loaded files = do
       (_, finalTC, stmtsRev, _) <- foldM' (collectFileStmts moduleDirs) (basePst, baseTC, [], loaded) files
       return (finalTC, reverse stmtsRev)
@@ -1264,11 +1257,11 @@ main = do
     collectFileStmts :: [FilePath] -- ^ Module search paths.
                      -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                      -> FilePath -- ^ File to process.
-                     -> AppM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
+                     -> RenderM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
     collectFileStmts moduleDirs (pst, tcSt, accStmtsRev, loaded) path = do
       exists <- liftIO (doesFileExist path)
       unless exists $ do
-        msg <- renderMsg (MsgFileNotFound path)
+        msg <- render (MsgFileNotFound path)
         liftIO (die (T.unpack msg))
       absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
@@ -1298,14 +1291,14 @@ main = do
               liftIO (parseFromFile pst input) >>= \case
                 Left err -> do
                   emitMsgIOCtx (MsgParseError err)
-                  msg <- renderMsg MsgRunFailed
+                  msg <- render MsgRunFailed
                   liftIO (die (T.unpack msg))
                 Right (stmts, pst') -> do
                   let paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
                   -- Type-check
                   liftIO (runTCM (registerForwardDecls stmts) tcSt) >>= \case
                     Left tcErr -> do
-                      msg <- renderMsg (MsgTCError tcErr (Just input) paramTyCons (parserTyMods pst'))
+                      msg <- render (MsgTCError tcErr (Just input) paramTyCons (parserTyMods pst'))
                       liftIO (die (T.unpack msg))
                     Right (_, tcStWithDecls) -> do
                       -- Type-check each statement
@@ -1321,7 +1314,7 @@ main = do
                 -> Text -- ^ Source input.
                 -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                 -> Stmt Ann -- ^ Statement to process.
-                -> AppM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
+                -> RenderM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
     collectStmt moduleDirs currentPath paramTyCons tyMods source (pst, tcSt, accStmtsRev, loaded) stmt =
       case stmt of
         Load dirPath name -> do
@@ -1334,7 +1327,7 @@ main = do
           -- Type-check the statement
           liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
             Left tcErr -> do
-              msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
+              msg <- render (MsgTCError tcErr (Just source) paramTyCons tyMods)
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') ->
               return (pst, tcSt', (currentPath, stmt') : accStmtsRev, loaded)
@@ -1344,7 +1337,7 @@ main = do
                       -> FilePath -- ^ Current module file path.
                       -> (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Current state with reverse statement accumulator.
                       -> Stmt Ann -- ^ Statement to process.
-                      -> AppM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
+                      -> RenderM (ParserState, TCState, [TaggedStmt], Set FilePath) -- ^ Updated state.
     collectCachedStmt moduleDirs currentPath (pst, tcSt, accStmtsRev, loaded) stmt =
       case stmt of
         Load dirPath name -> do
@@ -1363,7 +1356,7 @@ main = do
              -> [FilePath] -- ^ Module search paths.
              -> Set FilePath -- ^ Loaded files.
              -> [FilePath] -- ^ Files to run.
-             -> AppM ReplState -- ^ Updated REPL state.
+             -> RenderM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
       (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
       return (ReplState pst' tcSt' evalSt' moduleDirs loaded' True False Nothing)
@@ -1374,11 +1367,11 @@ main = do
             -> [FilePath] -- ^ Module search paths.
             -> CompilerState -- ^ Current states.
             -> FilePath -- ^ File to run.
-            -> AppM CompilerState -- ^ Updated states.
+            -> RenderM CompilerState -- ^ Updated states.
     runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
       exists <- liftIO (doesFileExist path)
       unless exists $ do
-        msg <- renderMsg (MsgFileNotFound path)
+        msg <- render (MsgFileNotFound path)
         liftIO (die (T.unpack msg))
       absPath <- liftIO (canonicalizePathCached path)
       if Set.member absPath loaded
@@ -1407,7 +1400,7 @@ main = do
               liftIO (parseFromFile pst input) >>= \case
                 Left err -> do
                   emitMsgIOCtx (MsgParseError err)
-                  msg <- renderMsg MsgRunFailed
+                  msg <- render MsgRunFailed
                   liftIO (die (T.unpack msg))
                 Right (stmts, pst') -> do
                   let paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
@@ -1416,7 +1409,7 @@ main = do
                   -- Pre-register forward declarations for all functions and types
                   liftIO (runTCM (registerForwardDecls stmts) tcSt) >>= \case
                     Left tcErr -> do
-                      msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons (parserTyMods pst'))
+                      msg <- render (MsgTCError tcErr (Just source) paramTyCons (parserTyMods pst'))
                       liftIO (die (T.unpack msg))
                     Right (_, tcStWithDecls) -> do
                       let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded, [])
@@ -1462,7 +1455,7 @@ main = do
                  -> Text -- ^ Source input.
                  -> CompilerState -- ^ Current states.
                  -> Stmt Ann -- ^ Statement to run.
-                 -> AppM CompilerState -- ^ Updated states.
+                 -> RenderM CompilerState -- ^ Updated states.
     runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs _source (pst, tcSt, evalSt, loaded) stmt =
       case stmt of
         Load dirPath name ->
@@ -1487,7 +1480,7 @@ main = do
                    -> Text -- ^ Source input.
                    -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Current states with reverse typed statement accumulator.
                    -> Stmt Ann -- ^ Statement to run.
-                   -> AppM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Updated states.
+                   -> RenderM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Updated states.
     runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAccRev) stmt =
       case stmt of
         Load dirPath name -> do
@@ -1497,7 +1490,7 @@ main = do
         _ ->
           liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
             Left tcErr -> do
-              msg <- renderMsg (MsgTCError tcErr (Just source) paramTyCons tyMods)
+              msg <- render (MsgTCError tcErr (Just source) paramTyCons tyMods)
               liftIO (die (T.unpack msg))
             Right (stmt', tcSt') -> do
               when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
@@ -1514,7 +1507,7 @@ main = do
     resolveModulePath :: [FilePath] -- ^ Module search paths.
                       -> [Text] -- ^ Directory path components.
                       -> Identifier -- ^ Module identifier.
-                      -> AppM FilePath -- ^ Resolved file path.
+                      -> RenderM FilePath -- ^ Resolved file path.
     resolveModulePath dirs dirPath name@(xs, x) = do
       let dirComponents = map T.unpack dirPath
           parts = map T.unpack xs
@@ -1526,7 +1519,7 @@ main = do
       case found of
         path:_ -> return path
         [] -> do
-          msg <- renderMsg (MsgModuleNotFound dirPath name)
+          msg <- render (MsgModuleNotFound dirPath name)
           liftIO (die (T.unpack msg))
 
     isExpStmt :: Stmt Ann -> Bool
@@ -1561,7 +1554,7 @@ main = do
                             -> [FilePath] -- ^ Module search paths.
                             -> RenderCache -- ^ Shared morphology/render caches.
                             -> FSM -- ^ Morphology FSM.
-                            -> AppM (ParserState, TCState, Set FilePath) -- ^ Loaded parser/TC states.
+                            -> RenderM (ParserState, TCState, Set FilePath) -- ^ Loaded parser/TC states.
     loadPreludeCodegenState noPrelude moduleDirs cache fsm = do
       let pst = newParserStateWithCaches fsm Nothing cache
           tcSt = setTCOutputMode TCOutputCodegen emptyTCState
@@ -1586,7 +1579,7 @@ main = do
                      -> [FilePath] -- ^ Module search paths.
                      -> RenderCache -- ^ Render cache.
                      -> FSM -- ^ Morphology FSM.
-                     -> AppM CompilerState -- ^ Loaded states.
+                     -> RenderM CompilerState -- ^ Loaded states.
     loadPreludeState noPrelude moduleDirs cache fsm = do
       let pst = newParserStateWithCaches fsm Nothing cache
           tcSt = emptyTCState
