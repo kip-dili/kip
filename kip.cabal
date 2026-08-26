@@ -123,8 +123,6 @@ executable kip
     , text
     , filepath
     , mtl
-  default-extensions: CPP
-
 executable kip-playground
   import: kip-component
   main-is: Playground.hs
