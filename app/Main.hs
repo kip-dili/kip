@@ -17,7 +17,7 @@ import Data.List
 import Options.Applicative hiding (ParseError)
 import System.FilePath ((</>), joinPath, takeDirectory, replaceExtension, makeRelative, splitDirectories, normalise)
 
-import Control.Monad (forM, forM_, when, unless, filterM)
+import Control.Monad (forM, forM_, when, unless)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Exception (AsyncException(UserInterrupt), SomeException, catch, displayException, try)
@@ -29,6 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Maybe (isJust)
+import Data.Void (Void)
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
@@ -43,12 +44,10 @@ import qualified Kip.Eval as Eval
 import Kip.TypeCheck
 import Kip.Render
 import Kip.Cache
-import Kip.MorphCache (beginMorphTracking, finishMorphTracking)
 import Repl.Steps (formatStepsStreaming, setTopCaseNom, shouldSkipInfinitiveSteps, stripStepsCopulaTRmorph)
 import Kip.Runner
   ( Lang(..)
   , CompilerState
-  , collectNonInfinitiveRefs
   , foldM'
   , locateDataFile
   , mergeTCState
@@ -1188,6 +1187,50 @@ main = do
             _ -> return ()
           return (Just evalSt')
 
+    -- | Adapt shared runner failures to the CLI's colored/localized renderer.
+    abortRunFailure :: Runner.RunFailure -> RenderM Void
+    abortRunFailure failure =
+      case failure of
+        Runner.RunFileNotFound path -> dieRendered (MsgFileNotFound path)
+        Runner.RunParseFailure err -> do
+          emitMsgIOCtx (MsgParseError err)
+          dieRendered MsgRunFailed
+        Runner.RunTCFailure tcErr source paramTyCons tyMods ->
+          dieRendered (MsgTCError tcErr source paramTyCons tyMods)
+        Runner.RunEvalFailure evalErr ->
+          dieRendered (MsgEvalError evalErr)
+        Runner.RunModuleNotFound dirPath name ->
+          dieRendered (MsgModuleNotFound dirPath name)
+      where
+        dieRendered msg = do
+          rendered <- render msg
+          liftIO (die (T.unpack rendered))
+
+    -- | Supply CLI presentation callbacks to the shared file runner.
+    mainRunHooks :: RenderCtx -> Bool -> Bool -> Runner.RunHooks
+    mainRunHooks ctx showDefn showLoad =
+      Runner.RunHooks
+        { Runner.runFailure = \failure ->
+            liftIO (runReaderT (abortRunFailure failure) ctx)
+        , Runner.runStatementStatus =
+            if showDefn
+              then Just (\paramTyCons tyMods primRefs stmt ->
+                liftIO (runReaderT (emitStmtStatus paramTyCons tyMods primRefs stmt) ctx))
+              else Nothing
+        , Runner.runLoadStatus =
+            if showLoad
+              then Just (\name -> liftIO (runReaderT (emitMsgIOCtx (MsgLoaded name)) ctx))
+              else Nothing
+        }
+
+    -- | Run a shared-runner action with this CLI render context.
+    runRunnerAction :: RenderCache -> FSM -> Bool -> Bool -> (Runner.RunHooks -> Runner.RenderM a) -> RenderM a
+    runRunnerAction cache fsm showDefn showLoad action = do
+      ctx <- ask
+      let hooks = mainRunHooks ctx showDefn showLoad
+          runnerCtx = Runner.RenderCtx (rcLang ctx) cache fsm
+      liftIO (runReaderT (action hooks) runnerCtx)
+
     -- | Report a definition encountered while processing a source file.
     emitStmtStatus ::
       [Identifier] ->
@@ -1208,37 +1251,6 @@ main = do
         NewType name _ _ -> emitMsgIOCtx (MsgTypeAdded name)
         PrimType name _ -> emitMsgIOCtx (MsgPrimTypeAdded name)
         _ -> return ()
-
-    -- | Evaluate a file statement, omitting expression statements in build mode.
-    evalFileStmt :: Bool -> FilePath -> EvalState -> Stmt Ann -> RenderM EvalState
-    evalFileStmt buildOnly currentPath evalSt stmt =
-      case stmt of
-        ExpStmt _ | buildOnly -> return evalSt
-        _ ->
-          liftIO (runEvalM (evalStmtInFile (Just currentPath) stmt) evalSt) >>= \case
-            Left evalErr -> do
-              msg <- render (MsgEvalError evalErr)
-              liftIO (die (T.unpack msg))
-            Right (_, evalSt') -> return evalSt'
-
-    -- | Load a dependency statement and optionally report it.
-    runLoadStmt ::
-      Bool ->
-      Bool ->
-      [FilePath] ->
-      CompilerState ->
-      [Text] ->
-      Identifier ->
-      RenderM CompilerState
-    runLoadStmt showLoad buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath name = do
-      path <- resolveModulePath moduleDirs dirPath name
-      absPath <- liftIO (canonicalizePathCached path)
-      state' <-
-        if Set.member absPath loaded
-          then return state
-          else runFile False False buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path
-      when showLoad (emitMsgIOCtx (MsgLoaded name))
-      return state'
 
     codegenFilesTagged :: ParserState
                        -> TCState
@@ -1358,8 +1370,12 @@ main = do
              -> [FilePath] -- ^ Files to run.
              -> RenderM ReplState -- ^ Updated REPL state.
     runFiles showDefn showLoad buildOnly basePst baseTC baseEval moduleDirs loaded files = do
-      (pst', tcSt', evalSt', loaded') <- foldM' (runFile showDefn showLoad buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
+      (cache, fsm) <- requireCacheFsm
+      (pst', tcSt', evalSt', loaded') <-
+        runRunnerAction cache fsm showDefn showLoad $ \hooks ->
+          Runner.runFilesWithHooks hooks buildOnly basePst baseTC baseEval moduleDirs loaded files
       return (ReplState pst' tcSt' evalSt' moduleDirs loaded' True False Nothing)
+
     -- | Run a single file and update all states.
     runFile :: Bool -- ^ Whether to show definitions.
             -> Bool -- ^ Whether to show load messages.
@@ -1368,134 +1384,10 @@ main = do
             -> CompilerState -- ^ Current states.
             -> FilePath -- ^ File to run.
             -> RenderM CompilerState -- ^ Updated states.
-    runFile showDefn showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
-      exists <- liftIO (doesFileExist path)
-      unless exists $ do
-        msg <- render (MsgFileNotFound path)
-        liftIO (die (T.unpack msg))
-      absPath <- liftIO (canonicalizePathCached path)
-      if Set.member absPath loaded
-        then return (pst, tcSt, evalSt, loaded)
-        else do
-          (cache, fsm) <- requireCacheFsm
-          let cachePath = cacheFilePath absPath
-          mCached <- liftIO (loadCachedModule cachePath)
-          case mCached of
-            Just cached -> do
-              let loaded' = Set.insert absPath loaded
-              if buildOnly
-                then return (pst, tcSt, evalSt, loaded')
-                else do
-                  pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
-                  let tcSt' = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
-                      evalSt' = evalSt
-                      stmts = cachedTypedStmts cached
-                      paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
-                      source = ""
-                      primRefs = collectNonInfinitiveRefs stmts
-                  foldM' (runTypedStmt showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) (pst', tcSt', evalSt', loaded') stmts
-            Nothing -> do
-              morphToken <- liftIO beginMorphTracking
-              input <- liftIO (TIO.readFile path)
-              liftIO (parseFromFile pst input) >>= \case
-                Left err -> do
-                  emitMsgIOCtx (MsgParseError err)
-                  msg <- render MsgRunFailed
-                  liftIO (die (T.unpack msg))
-                Right (stmts, pst') -> do
-                  let paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
-                      source = input
-                      primRefs = collectNonInfinitiveRefs stmts
-                  -- Pre-register forward declarations for all functions and types
-                  liftIO (runTCM (registerForwardDecls stmts) tcSt) >>= \case
-                    Left tcErr -> do
-                      msg <- render (MsgTCError tcErr (Just source) paramTyCons (parserTyMods pst'))
-                      liftIO (die (T.unpack msg))
-                    Right (_, tcStWithDecls) -> do
-                      let startState = (pst', tcStWithDecls, evalSt, Set.insert absPath loaded, [])
-                      (pstFinal, tcSt', evalSt', loaded', typedStmtsRev) <-
-                        foldM' (runStmtCollect showDefn showLoad buildOnly moduleDirs absPath paramTyCons (parserTyMods pst') primRefs source) startState stmts
-                      let typedStmts = reverse typedStmtsRev
-
-                      -- Save to cache
-                      let depStmts = [(dp, n) | Load dp n <- stmts]
-                      depPathsRaw <- mapM (uncurry (resolveModulePath moduleDirs)) depStmts
-                      depPaths <- liftIO (uniquePreserve <$> mapM canonicalizePathCached depPathsRaw)
-                      depHashes <- liftIO (mapM fileFingerprintOrHash depPaths)
-                      morphDelta <- liftIO (finishMorphTracking morphToken)
-                      mMeta <- liftIO (buildCacheMetadata absPath input depHashes)
-                      case mMeta of
-                        Nothing -> return ()
-                        Just meta -> do
-                          cachedParserBase <- liftIO (toCachedParserStateDelta pst pst')
-                          let cachedParserState = attachMorphDelta morphDelta cachedParserBase
-                          let cachedModule = CachedModule
-                                { metadata = meta
-                                , cachedTypedStmts = typedStmts
-                                , cachedParser = cachedParserState
-                                , cachedTC = toCachedTCStateDelta tcSt tcSt'
-                                }
-                          liftIO (saveCachedModule cachePath cachedModule)
-
-                      return (pstFinal, tcSt', evalSt', loaded')
-
-    -- | Run a pre-typechecked statement in the context of a file.
-    --
-    -- This path is used when a valid module cache is loaded. It avoids
-    -- re-running 'tcStmt' and any forward-declaration pre-pass by assuming the
-    -- incoming statement list is already type-checked ('cachedTypedStmts').
-    runTypedStmt :: Bool -- ^ Whether to show definitions.
-                 -> Bool -- ^ Whether to show load messages.
-                 -> Bool -- ^ Whether to build-only.
-                 -> [FilePath] -- ^ Module search paths.
-                 -> FilePath -- ^ Current file path.
-                 -> [Identifier] -- ^ Type parameters for rendering.
-                 -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-                 -> [Identifier] -- ^ Non-infinitive primitive refs.
-                 -> Text -- ^ Source input.
-                 -> CompilerState -- ^ Current states.
-                 -> Stmt Ann -- ^ Statement to run.
-                 -> RenderM CompilerState -- ^ Updated states.
-    runTypedStmt showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs _source (pst, tcSt, evalSt, loaded) stmt =
-      case stmt of
-        Load dirPath name ->
-          runLoadStmt showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
-        _ -> do
-          when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt)
-          evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt
-          return (pst, tcSt, evalSt', loaded)
-
-    -- | Run a single statement while collecting type-checked statements for caching.
-    --
-    -- Typechecked statements are accumulated with cons and reversed once at
-    -- the end of file processing, avoiding per-statement list append cost.
-    runStmtCollect :: Bool -- ^ Whether to show definitions.
-                   -> Bool -- ^ Whether to show load messages.
-                   -> Bool -- ^ Whether to build-only.
-                   -> [FilePath] -- ^ Module search paths.
-                   -> FilePath -- ^ Current file path.
-                   -> [Identifier] -- ^ Type parameters for rendering.
-                   -> [(Identifier, [Identifier])] -- ^ Type modifier expansions.
-                   -> [Identifier] -- ^ Non-infinitive primitive refs.
-                   -> Text -- ^ Source input.
-                   -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Current states with reverse typed statement accumulator.
-                   -> Stmt Ann -- ^ Statement to run.
-                   -> RenderM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann]) -- ^ Updated states.
-    runStmtCollect showDefn showLoad buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAccRev) stmt =
-      case stmt of
-        Load dirPath name -> do
-          (pst', tcSt', evalSt', loaded') <-
-            runLoadStmt showLoad buildOnly moduleDirs (pst, tcSt, evalSt, loaded) dirPath name
-          return (pst', tcSt', evalSt', loaded', stmt : typedAccRev)
-        _ ->
-          liftIO (runTCM (tcStmt stmt) tcSt) >>= \case
-            Left tcErr -> do
-              msg <- render (MsgTCError tcErr (Just source) paramTyCons tyMods)
-              liftIO (die (T.unpack msg))
-            Right (stmt', tcSt') -> do
-              when showDefn (emitStmtStatus paramTyCons tyMods primRefs stmt')
-              evalSt' <- evalFileStmt buildOnly currentPath evalSt stmt'
-              return (pst, tcSt', evalSt', loaded, stmt' : typedAccRev)
+    runFile showDefn showLoad buildOnly moduleDirs state path = do
+      (cache, fsm) <- requireCacheFsm
+      runRunnerAction cache fsm showDefn showLoad $ \hooks ->
+        Runner.runFileWithHooks hooks buildOnly moduleDirs state path
 
     -- | Check whether an identifier refers to the write primitive.
     isWritePrim :: Identifier -- ^ Identifier to inspect.
@@ -1508,19 +1400,10 @@ main = do
                       -> [Text] -- ^ Directory path components.
                       -> Identifier -- ^ Module identifier.
                       -> RenderM FilePath -- ^ Resolved file path.
-    resolveModulePath dirs dirPath name@(xs, x) = do
-      let dirComponents = map T.unpack dirPath
-          parts = map T.unpack xs
-          nm = T.unpack x
-          fileName = intercalate "-" (parts ++ [nm]) ++ ".kip"
-          relPath = joinPath (dirComponents ++ [fileName])
-          candidates = map (</> relPath) dirs
-      found <- liftIO (filterM doesFileExist candidates)
-      case found of
-        path:_ -> return path
-        [] -> do
-          msg <- render (MsgModuleNotFound dirPath name)
-          liftIO (die (T.unpack msg))
+    resolveModulePath dirs dirPath name = do
+      (cache, fsm) <- requireCacheFsm
+      runRunnerAction cache fsm False False $ \hooks ->
+        Runner.resolveModulePathWithHooks hooks dirs dirPath name
 
     isExpStmt :: Stmt Ann -> Bool
     isExpStmt ExpStmt {} = True
@@ -1580,23 +1463,6 @@ main = do
                      -> RenderCache -- ^ Render cache.
                      -> FSM -- ^ Morphology FSM.
                      -> RenderM CompilerState -- ^ Loaded states.
-    loadPreludeState noPrelude moduleDirs cache fsm = do
-      let pst = newParserStateWithCaches fsm Nothing cache
-          tcSt = emptyTCState
-          evalSt = mkEvalState cache fsm
-      if noPrelude
-        then return (pst, tcSt, evalSt, Set.empty)
-        else do
-          snapshotPath <- liftIO preludeSnapshotPath
-          -- The first successful prelude load persists a merged snapshot. Later
-          -- startups validate file fingerprints and restore parser/TC/eval in
-          -- one step instead of traversing the whole stdlib graph.
-          liftIO (loadCachedPrelude snapshotPath cache fsm) >>= \case
-            Just snapState -> return snapState
-            Nothing -> do
-              path <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
-              let pst' = pst { parserFilePath = Just path }
-              state'@(pstLoaded, tcLoaded, evalLoaded, loaded') <-
-                runFile False False False moduleDirs (pst', tcSt, evalSt, Set.empty) path
-              liftIO (saveCachedPrelude snapshotPath pstLoaded tcLoaded evalLoaded loaded')
-              return state'
+    loadPreludeState noPrelude moduleDirs cache fsm =
+      runRunnerAction cache fsm False False $ \hooks ->
+        Runner.loadPreludeStateWithHooks hooks noPrelude moduleDirs cache fsm
