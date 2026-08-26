@@ -165,7 +165,7 @@ replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOu
           emitted = pointerLines ++ ["", arrow ++ highlightedNext]
       mapM_ emit emitted
       replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOutput (nextTop, nextTopText, arrow ++ highlightedNext) steps emit
-    _ -> case pickStep current currentText renderInput steps of
+    _ -> case pickStep current steps of
       Nothing -> continueOrFallback (current, currentText, lastLine) steps
       Just (idx, step, next) -> do
         let matchedChild = fromMaybe (tsInput step) (findFirstChild (tsInput step) current)
@@ -322,11 +322,9 @@ substituteFirstByHead from to = go False
 -- Indexes are tracked explicitly with strict recursion to avoid allocation from
 -- zipped index lists in the hot replay loop.
 pickStep :: Exp Ann
-         -> String
-         -> (Exp Ann -> a)
          -> [TraceStep]
          -> Maybe (Int, TraceStep, Exp Ann)
-pickStep current _currentText _renderInput steps =
+pickStep current steps =
   case reduceTopBooleanMatch current of
     Just (_, nextTop) -> findMatchingNextTop 0 nextTop steps
     Nothing -> findFirstApplicable 0 steps
