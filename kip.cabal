@@ -13,7 +13,6 @@ build-type:     Simple
 tested-with:    GHC == 9.14.1
 extra-source-files:
     README.md
-    vendor/trmorph.fst
 
 data-files:
     vendor/trmorph.fst
