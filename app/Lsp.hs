@@ -1193,7 +1193,7 @@ onDefinition req respond = do
           let resolved = resolveAtPosition pos doc
               mIdent = raVar resolved
               respondEmptyOrTypeFallback = do
-                mLoc <- definitionTypeFallbackLocation st doc uri pos token resolved
+                mLoc <- definitionTypeFallbackLocation st doc uri token resolved
                 case mLoc of
                   Just loc -> respond (Right (InL (Definition (InR [loc]))))
                   Nothing -> respond (Right (InL (Definition (InR []))))
@@ -1362,8 +1362,8 @@ typeDefinitionLocationsByKeys st doc uri keys =
 -- This is used by "go to definition" when normal symbol lookup fails,
 -- so type-ascription tokens (e.g. @tam-sayı@ in @tam-sayı olarak 5@)
 -- can jump to the type definition just like "go to type definition".
-definitionTypeFallbackLocation :: LspState -> DocState -> Uri -> Position -> Maybe TokenAtPosition -> ResolvedAt -> LspM Config (Maybe Location)
-definitionTypeFallbackLocation st doc uri _pos token resolved = do
+definitionTypeFallbackLocation :: LspState -> DocState -> Uri -> Maybe TokenAtPosition -> ResolvedAt -> LspM Config (Maybe Location)
+definitionTypeFallbackLocation st doc uri token resolved = do
   let mTyFromCtor =
         case raCtor resolved of
           Just (ctorIdent, _, _, _) ->
@@ -1491,8 +1491,7 @@ onDocumentHighlight req respond = do
             Nothing -> respond (Right (InL []))
             Just (ident, candidates) -> do
               let allIdents = ident : map fst candidates
-              highlights <- liftIO $ findHighlights st doc pos ident allIdents
-              respond (Right (InL highlights))
+              respond (Right (InL (findHighlights doc allIdents)))
 
 -- | Delay applied to edit-triggered analysis so bursts collapse to one job.
 analysisDebounceMicros :: Int
@@ -2321,21 +2320,19 @@ findDefinitionAt pos =
 --
 -- We expand related identifiers (morphological closure), then collect all
 -- variable uses and definition sites.
-findHighlights :: LspState -> DocState -> Position -> Identifier -> [Identifier] -> IO [DocumentHighlight]
-findHighlights _st doc _pos _ident allIdents = do
+findHighlights :: DocState -> [Identifier] -> [DocumentHighlight]
+findHighlights doc allIdents =
   let stmts = dsStmts doc
       defSpans = dsDefSpans doc
       -- Collect all morphological variants by computing transitive closure
       -- over all Vars in the AST and definitions
       targetIdents = Set.fromList (collectAllRelatedIdents allIdents stmts defSpans)
 
-  -- Traverse the AST to find all variable uses that match
-  let usageHighlights = concatMap (findHighlightsInStmt targetIdents) stmts
-
-  -- Also highlight function/value definitions
-  let defHighlights = mapMaybe (highlightDefinition targetIdents) (Map.toList defSpans)
-
-  return (usageHighlights ++ defHighlights)
+      -- Traverse the AST to find all variable uses that match
+      usageHighlights = concatMap (findHighlightsInStmt targetIdents) stmts
+      -- Also highlight function/value definitions
+      defHighlights = mapMaybe (highlightDefinition targetIdents) (Map.toList defSpans)
+  in usageHighlights ++ defHighlights
 
 -- | Collect all morphologically related identifiers by computing transitive closure.
 --
