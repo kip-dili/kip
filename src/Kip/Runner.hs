@@ -8,7 +8,6 @@ module Kip.Runner
     Lang(..)
   , parseLang
   , RenderCtx(..)
-  , ReplState(..)
   , CompilerState
   , CompilerMsg(..)
   , RenderM
@@ -50,7 +49,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
-import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
@@ -105,22 +103,6 @@ data RenderCtx =
 
 -- | Parser, typechecker, evaluator, and loaded-module state for file execution.
 type CompilerState = (ParserState, TCState, EvalState, Set FilePath)
-
--- | REPL runtime state (parser/type context + evaluator).
-data ReplState =
-  ReplState
-    { replCtx :: Set.Set Identifier
-    , replCtors :: [Identifier]
-    , replTyParams :: [Identifier]
-    , replTyCons :: [(Identifier, Int)]
-    , replTyMods :: [(Identifier, [Identifier])]
-    , replPrimTypes :: [Identifier]
-    , replFuncArities :: Map.Map Identifier (Set.Set Int)
-    , replTCState :: TCState
-    , replEvalState :: EvalState
-    , replModuleDirs :: [FilePath]
-    , replLoaded :: Set FilePath
-    }
 
 -- | Messages emitted by the runner.
 data CompilerMsg
@@ -835,10 +817,9 @@ requireCacheFsm = do
   return (rcCache ctx, rcFsm ctx)
 
 -- | Run multiple files through parsing, type checking, and evaluation.
-runFiles :: Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM ReplState
-runFiles buildOnly basePst baseTC baseEval moduleDirs loaded files = do
-  (pst', tcSt', evalSt', loaded') <- foldM' (runFile buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded) files
-  return (ReplState (parserCtx pst') (parserCtors pst') (parserTyParams pst') (parserTyCons pst') (parserTyMods pst') (parserPrimTypes pst') (parserFuncArities pst') tcSt' evalSt' moduleDirs loaded')
+runFiles :: Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM CompilerState
+runFiles buildOnly basePst baseTC baseEval moduleDirs loaded =
+  foldM' (runFile buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded)
 
 -- | Run a single file and update all states.
 runFile :: Bool -> [FilePath] -> CompilerState -> FilePath -> RenderM CompilerState
