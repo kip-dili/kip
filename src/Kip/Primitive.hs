@@ -537,7 +537,7 @@ primitiveEvalImpl ops mPath ident args = do
       | [(_, TyInt _)] <- args -> Just (primIntToFloat "tam-sayı-ondalık-sayı-hali")
       | otherwise -> Nothing
     (["karakter"], "hal")
-      | [(_, TyInt _)] <- args -> Just (primIntToChar "karakter-hal")
+      | [(_, TyInt _)] <- args -> Just primIntToChar
       | otherwise -> Nothing
     ([], "büyük")
       | [(_, TyChar _)] <- args -> Just (primCharUpper "büyük")
@@ -552,13 +552,13 @@ primitiveEvalImpl ops mPath ident args = do
       | [(_, TyChar _)] <- args -> Just (primCharIsDigit "rakamlık")
       | otherwise -> Nothing
     (["harf"], "rakamlık")
-      | [(_, TyChar _)] <- args -> Just (primCharIsAlphaNum "harf-rakamlık")
+      | [(_, TyChar _)] <- args -> Just primCharIsAlphaNum
       | otherwise -> Nothing
     (["büyük"], "harflik")
-      | [(_, TyChar _)] <- args -> Just (primCharIsUpper "büyük-harflik")
+      | [(_, TyChar _)] <- args -> Just primCharIsUpper
       | otherwise -> Nothing
     (["küçük"], "harflik")
-      | [(_, TyChar _)] <- args -> Just (primCharIsLower "küçük-harflik")
+      | [(_, TyChar _)] <- args -> Just primCharIsLower
       | otherwise -> Nothing
     ([], "boşlukluk")
       | [(_, TyChar _)] <- args -> Just (primCharIsSpace "boşlukluk")
@@ -588,10 +588,10 @@ primitiveEvalImpl ops mPath ident args = do
       | [(_, TyString _)] <- args -> Just (primStringWords "kelimeler")
       | otherwise -> Nothing
     (["büyük"], "hal")
-      | [(_, TyString _)] <- args -> Just (primStringUpper "büyük-hal")
+      | [(_, TyString _)] <- args -> Just primStringUpper
       | otherwise -> Nothing
     (["küçük"], "hal")
-      | [(_, TyString _)] <- args -> Just (primStringLower "küçük-hal")
+      | [(_, TyString _)] <- args -> Just primStringLower
       | otherwise -> Nothing
     ([], "toplam")
       | [(_, TyFloat _), (_, TyFloat _)] <- args ->
@@ -838,14 +838,14 @@ primStringWords fname args =
     [StrLit ann s] -> pure (textListExp ann (T.words s))
     _ -> pure (fallbackApp ([], fname) args)
 
-primStringUpper :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primStringUpper _fname args =
+primStringUpper :: Monad m => [Exp Ann] -> m (Exp Ann)
+primStringUpper args =
   case args of
     [StrLit ann s] -> pure (StrLit ann (T.toUpper s))
     _ -> pure (fallbackApp (["büyük"], "hal") args)
 
-primStringLower :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primStringLower _fname args =
+primStringLower :: Monad m => [Exp Ann] -> m (Exp Ann)
+primStringLower args =
   case args of
     [StrLit ann s] -> pure (StrLit ann (T.toLower s))
     _ -> pure (fallbackApp (["küçük"], "hal") args)
@@ -970,8 +970,8 @@ primCharToInt fname args =
     [CharLit ann c] -> pure (IntLit ann (toInteger (ord c)))
     _ -> pure (fallbackApp (["tam", "sayı"], fname) args)
 
-primIntToChar :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primIntToChar _ args =
+primIntToChar :: Monad m => [Exp Ann] -> m (Exp Ann)
+primIntToChar args =
   case args of
     [IntLit ann n]
       | n >= 0 && n <= 0x10FFFF ->
@@ -1004,20 +1004,20 @@ primCharIsDigit fname args =
     [CharLit _ c] -> pure (boolExp (isDigit c))
     _ -> pure (fallbackApp ([], fname) args)
 
-primCharIsAlphaNum :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primCharIsAlphaNum _fname args =
+primCharIsAlphaNum :: Monad m => [Exp Ann] -> m (Exp Ann)
+primCharIsAlphaNum args =
   case args of
     [CharLit _ c] -> pure (boolExp (isAlphaNum c))
     _ -> pure (fallbackApp (["harf"], "rakamlık") args)
 
-primCharIsUpper :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primCharIsUpper _fname args =
+primCharIsUpper :: Monad m => [Exp Ann] -> m (Exp Ann)
+primCharIsUpper args =
   case args of
     [CharLit _ c] -> pure (boolExp (isUpper c))
     _ -> pure (fallbackApp (["büyük"], "harflik") args)
 
-primCharIsLower :: Monad m => Text -> [Exp Ann] -> m (Exp Ann)
-primCharIsLower _fname args =
+primCharIsLower :: Monad m => [Exp Ann] -> m (Exp Ann)
+primCharIsLower args =
   case args of
     [CharLit _ c] -> pure (boolExp (isLower c))
     _ -> pure (fallbackApp (["küçük"], "harflik") args)
