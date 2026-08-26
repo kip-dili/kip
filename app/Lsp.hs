@@ -1182,77 +1182,54 @@ onDefinition req respond = do
   let params = req ^. L.params
       uri = params ^. L.textDocument . L.uri
       pos = params ^. L.position
+      respondLocations locs = respond (Right (InL (Definition (InR locs))))
+      respondLocation loc = respondLocations [loc]
+      respondEmpty = respondLocations []
   case lookupByUri uri (lsDocs st) of
-    Nothing -> respond (Right (InL (Definition (InR []))))
+    Nothing -> respondEmpty
     Just doc -> do
       token <- liftIO (tokenAtPositionIO doc pos)
       case token of
-        Nothing -> respond (Right (InL (Definition (InR []))))
-        Just (TokenKeyword _) -> respond (Right (InL (Definition (InR []))))
+        Nothing -> respondEmpty
+        Just (TokenKeyword _) -> respondEmpty
         _ -> do
           let resolved = resolveAtPosition pos doc
-              mIdent = raVar resolved
               respondEmptyOrTypeFallback =
-                case definitionTypeFallbackLocation st doc uri token resolved of
-                  Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                  Nothing -> respond (Right (InL (Definition (InR []))))
-          case mIdent of
-            Nothing -> do
+                maybe respondEmpty respondLocation (definitionTypeFallbackLocation st doc uri token resolved)
+              resolveKeys keys fallback =
+                case lookupDefRange keys (dsDefSpans doc) of
+                  Just range -> respondLocation (Location uri range)
+                  Nothing ->
+                    case lookupDefLocPreferExternal uri keys (lsDefIndex st) of
+                      Just loc -> respondLocation loc
+                      Nothing -> do
+                        let currentDefs = defLocationsForUri uri (dsDefSpans doc)
+                        idx <- ensureDefinitionIndex st uri currentDefs
+                        maybe fallback respondLocation (lookupDefLocPreferExternal uri keys idx)
+              resolveConstructor fallback =
+                case raCtor resolved of
+                  Just (ctorIdent, _, _, _) ->
+                    resolveKeys (dedupeIdents [ctorIdent]) fallback
+                  Nothing -> fallback
+              binderLocation keys =
+                Location uri <$> lookupBinderRange pos keys (fmap (annSpan . annExp) (raExp resolved)) (dsBinderSpans doc)
+          case raVar resolved of
+            Nothing ->
               case raPatVar resolved of
-                Just ident -> do
+                Just ident ->
                   let keys = dedupeIdents [ident]
-                      binderLoc = lookupBinderRange pos keys (fmap (annSpan . annExp) (raExp resolved)) (dsBinderSpans doc)
-                  case binderLoc of
-                    Just range -> do
-                      let loc = Location uri range
-                      respond (Right (InL (Definition (InR [loc]))))
-                    Nothing ->
-                      case raCtor resolved of
-                        Just (ctorIdent, _, _, _) -> do
-                          let keysCtor = dedupeIdents [ctorIdent]
-                          case lookupDefRange keysCtor (dsDefSpans doc) of
-                            Just range -> do
-                              let loc = Location uri range
-                              respond (Right (InL (Definition (InR [loc]))))
-                            Nothing -> do
-                              case lookupDefLocPreferExternal uri keysCtor (lsDefIndex st) of
-                                Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                                Nothing -> do
-                                  let currentDefs = defLocationsForUri uri (dsDefSpans doc)
-                                  idx <- ensureDefinitionIndex st uri currentDefs
-                                  case lookupDefLocPreferExternal uri keysCtor idx of
-                                    Nothing -> respondEmptyOrTypeFallback
-                                    Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                        Nothing -> respondEmptyOrTypeFallback
+                  in case binderLocation keys of
+                       Just loc -> respondLocation loc
+                       Nothing -> resolveConstructor respondEmptyOrTypeFallback
                 Nothing ->
-                  case raCtor resolved of
-                    Just (ctorIdent, _, _, _) -> do
-                      let keysCtor = dedupeIdents [ctorIdent]
-                      case lookupDefRange keysCtor (dsDefSpans doc) of
-                        Just range -> do
-                          let loc = Location uri range
-                          respond (Right (InL (Definition (InR [loc]))))
-                        Nothing -> do
-                          case lookupDefLocPreferExternal uri keysCtor (lsDefIndex st) of
-                            Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                            Nothing -> do
-                              let currentDefs = defLocationsForUri uri (dsDefSpans doc)
-                              idx <- ensureDefinitionIndex st uri currentDefs
-                              case lookupDefLocPreferExternal uri keysCtor idx of
-                                Nothing -> respondEmptyOrTypeFallback
-                                Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                    Nothing ->
-                      case definitionForArgKeyword uri pos doc of
-                        Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                        Nothing -> respondEmptyOrTypeFallback
+                  let argFallback =
+                        maybe respondEmptyOrTypeFallback respondLocation (definitionForArgKeyword uri pos doc)
+                  in resolveConstructor argFallback
             Just (ident, candidates) -> do
               -- First check if this is a bound variable (pattern variable or let/bind binding)
               let keys = dedupeIdents (ident : map fst candidates)
-                  binderLoc = lookupBinderRange pos keys (fmap (annSpan . annExp) (raExp resolved)) (dsBinderSpans doc)
-              case binderLoc of
-                Just range -> do
-                  let loc = Location uri range
-                  respond (Right (InL (Definition (InR [loc]))))
+              case binderLocation keys of
+                Just loc -> respondLocation loc
                 Nothing -> do
                   -- Not a bound variable, continue with normal definition lookup
                   let mExp = raExp resolved
@@ -1273,21 +1250,8 @@ onDefinition req respond = do
                             Just resolved -> defLocationFromTC resolved (dsTC doc)
                             Nothing -> Nothing
                   case tcLoc of
-                    Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                    Nothing -> do
-                      case lookupDefRange resolvedKeys (dsDefSpans doc) of
-                        Just range -> do
-                          let loc = Location uri range
-                          respond (Right (InL (Definition (InR [loc]))))
-                        Nothing -> do
-                          case lookupDefLocPreferExternal uri resolvedKeys (lsDefIndex st) of
-                            Just loc -> respond (Right (InL (Definition (InR [loc]))))
-                            Nothing -> do
-                              let currentDefs = defLocationsForUri uri (dsDefSpans doc)
-                              idx <- ensureDefinitionIndex st uri currentDefs
-                              case lookupDefLocPreferExternal uri resolvedKeys idx of
-                                Nothing -> respondEmptyOrTypeFallback
-                                Just loc -> respond (Right (InL (Definition (InR [loc]))))
+                    Just loc -> respondLocation loc
+                    Nothing -> resolveKeys resolvedKeys respondEmptyOrTypeFallback
 
 onTypeDefinition :: TRequestMessage 'Method_TextDocumentTypeDefinition -> (Either (TResponseError 'Method_TextDocumentTypeDefinition) (MessageResult 'Method_TextDocumentTypeDefinition) -> LspM Config ()) -> LspM Config ()
 -- | Handle go-to-type-definition requests.
