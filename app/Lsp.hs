@@ -1192,9 +1192,8 @@ onDefinition req respond = do
         _ -> do
           let resolved = resolveAtPosition pos doc
               mIdent = raVar resolved
-              respondEmptyOrTypeFallback = do
-                mLoc <- definitionTypeFallbackLocation st doc uri token resolved
-                case mLoc of
+              respondEmptyOrTypeFallback =
+                case definitionTypeFallbackLocation st doc uri token resolved of
                   Just loc -> respond (Right (InL (Definition (InR [loc]))))
                   Nothing -> respond (Right (InL (Definition (InR []))))
           case mIdent of
@@ -1321,9 +1320,7 @@ onTypeDefinition req respond = do
           let keys = dedupeIdents (typeConstructorsFromTy ty)
           if null keys
             then respond (Right (InL (Definition (InR []))))
-            else do
-              locs <- resolveTypeDefinitionLocations st doc uri keys
-              respond (Right (InL (Definition (InR locs))))
+            else respond (Right (InL (Definition (InR (typeDefinitionLocationsByKeys st doc uri keys)))))
         Nothing ->
           case token of
             Just (TokenIdent tokenIdent) -> do
@@ -1335,14 +1332,10 @@ onTypeDefinition req respond = do
                   sayıLikeKeys =
                     [([T.pack "tam"], T.pack "sayı")]
               if numericToken
-                then do
-                  locs <- resolveTypeDefinitionLocations st doc uri (dedupeIdents directKeysFromToken)
-                  respond (Right (InL (Definition (InR locs))))
+                then respond (Right (InL (Definition (InR (typeDefinitionLocationsByKeys st doc uri (dedupeIdents directKeysFromToken))))))
                 else
                   if sayıLikeToken
-                    then do
-                      locs <- resolveTypeDefinitionLocations st doc uri (dedupeIdents sayıLikeKeys)
-                      respond (Right (InL (Definition (InR locs))))
+                    then respond (Right (InL (Definition (InR (typeDefinitionLocationsByKeys st doc uri (dedupeIdents sayıLikeKeys))))))
                     else respond (Right (InL (Definition (InR []))))
             _ -> respond (Right (InL (Definition (InR []))))
 typeDefinitionLocationsByKeys :: LspState -> DocState -> Uri -> [Identifier] -> [Location]
@@ -1362,8 +1355,8 @@ typeDefinitionLocationsByKeys st doc uri keys =
 -- This is used by "go to definition" when normal symbol lookup fails,
 -- so type-ascription tokens (e.g. @tam-sayı@ in @tam-sayı olarak 5@)
 -- can jump to the type definition just like "go to type definition".
-definitionTypeFallbackLocation :: LspState -> DocState -> Uri -> Maybe TokenAtPosition -> ResolvedAt -> LspM Config (Maybe Location)
-definitionTypeFallbackLocation st doc uri token resolved = do
+definitionTypeFallbackLocation :: LspState -> DocState -> Uri -> Maybe TokenAtPosition -> ResolvedAt -> Maybe Location
+definitionTypeFallbackLocation st doc uri token resolved =
   let mTyFromCtor =
         case raCtor resolved of
           Just (ctorIdent, _, _, _) ->
@@ -1391,11 +1384,9 @@ definitionTypeFallbackLocation st doc uri token resolved = do
         case mTy of
           Just ty -> dedupeIdents (typeConstructorsFromTy ty)
           Nothing -> keysFromToken
-  if null keys
-    then return Nothing
-    else do
-      locs <- resolveTypeDefinitionLocations st doc uri keys
-      return (listToMaybe locs)
+  in if null keys
+       then Nothing
+       else listToMaybe (typeDefinitionLocationsByKeys st doc uri keys)
 
 -- | Parse a hyphenated type token into a Kip identifier.
 --
@@ -1414,12 +1405,6 @@ identifierFromTypeToken raw =
           (name:modsRev) -> Just (reverse modsRev, name)
           [] -> Nothing
 
-
-resolveTypeDefinitionLocations :: LspState -> DocState -> Uri -> [Identifier] -> LspM Config [Location]
-resolveTypeDefinitionLocations st doc uri keys = do
-  let initial = typeDefinitionLocationsByKeys st doc uri keys
-  return initial
-    
 onCompletion :: TRequestMessage 'Method_TextDocumentCompletion -> (Either (TResponseError 'Method_TextDocumentCompletion) (MessageResult 'Method_TextDocumentCompletion) -> LspM Config ()) -> LspM Config ()
 -- | Handle completion requests.
 --
