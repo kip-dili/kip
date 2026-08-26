@@ -1082,38 +1082,6 @@ stripCopulaSuffix :: Text -- ^ Surface form.
 stripCopulaSuffix txt =
   stripSuffixAny copulaSuffixesTxt (T.toLower txt)
 
--- | Resolve a candidate identifier using morphology and heuristics.
-resolveCandidate :: Bool -- ^ Whether to prefer identifiers in context.
-                 -> Identifier -- ^ Surface identifier.
-                 -> KipParser (Identifier, Case) -- ^ Resolved identifier and case.
-resolveCandidate useCtx ident = do
-  candidates <- estimateCandidates useCtx ident
-  MkParserState{parserCtx} <- getP
-  let copulaStripped =
-        case stripCopulaSuffix (identRoot ident) of
-          Just stripped ->
-            let (mods, _) = ident
-            in Just (mods, stripped)
-          Nothing -> Nothing
-      mRoot = infinitiveRoot ident <|> (copulaStripped >>= infinitiveRoot)
-  case mRoot of
-    Just root ->
-      case find (\(cand, _) -> cand == root) candidates of
-        Just match -> return match
-        Nothing ->
-          if root `Set.member` parserCtx
-            then return (root, Nom)
-            else pickFromCandidates candidates
-    Nothing -> pickFromCandidates candidates
-  where
-    -- | Choose a candidate, preferring inflected forms.
-    pickFromCandidates :: [(Identifier, Case)] -- ^ Candidate identifiers.
-                       -> KipParser (Identifier, Case) -- ^ Selected candidate.
-    pickFromCandidates candidates =
-      case preferInflected candidates of
-        [x] -> return x
-        x:_ -> return x
-
 -- | Resolve a candidate, preferring names in scope.
 resolveCandidatePreferCtx :: Identifier -- ^ Surface identifier.
                           -> KipParser (Identifier, Case) -- ^ Resolved identifier and case.

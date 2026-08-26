@@ -1532,11 +1532,6 @@ evalStmtInFile mPath stmt =
         _ <- evalExp e
         return ()
 
--- | Evaluate a statement in the global context.
-evalStmt :: Stmt Ann -- ^ Statement to evaluate.
-         -> EvalM () -- ^ No result.
-evalStmt = evalStmtInFile Nothing
-
 -- | Lookup the primitive implementation for a name and argument list.
 primImpl :: Maybe FilePath -- ^ Current file path.
          -> Identifier -- ^ Primitive name.
