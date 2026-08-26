@@ -822,7 +822,7 @@ matchPartialCaseIndices expectedCases = go 0
   where
     go :: Integer -> [Case] -> Maybe [Int]
     go !_ [] = Just []
-    go !used (pc:pcs) =
+    go used (pc:pcs) =
       case uniqueMatchIndex used pc of
         OneMatch i -> (i :) <$> go (setBit used i) pcs
         _ -> Nothing
