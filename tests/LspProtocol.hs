@@ -164,43 +164,59 @@ pathToUri path =
   let fixed = if take 1 path == "/" then path else "/" ++ path
   in T.pack ("file://" ++ fixed)
 
--- | Build an initialize request.
-initializeRequest :: Int -> Maybe T.Text -> A.Value
-initializeRequest reqId rootUri =
+-- | Build a JSON-RPC request envelope.
+request :: Int -> T.Text -> A.Value -> A.Value
+request reqId method params =
   A.object
     [ "jsonrpc" A..= ("2.0" :: String)
     , "id" A..= reqId
-    , "method" A..= ("initialize" :: String)
-    , "params" A..= A.object
-        [ "processId" A..= A.Null
-        , "rootUri" A..= maybe A.Null A.String rootUri
-        , "capabilities" A..= A.object []
-        , "workspaceFolders" A..= A.Null
-        ]
+    , "method" A..= method
+    , "params" A..= params
+    ]
+
+-- | Build a JSON-RPC notification envelope.
+notification :: T.Text -> Maybe A.Value -> A.Value
+notification method params =
+  A.object
+    ( [ "jsonrpc" A..= ("2.0" :: String)
+      , "method" A..= method
+      ]
+      ++ maybe [] (\value -> ["params" A..= value]) params
+    )
+
+-- | Build the common text-document identifier object.
+textDocument :: T.Text -> A.Value
+textDocument uri = A.object ["uri" A..= uri]
+
+-- | Build a versioned text-document identifier object.
+versionedTextDocument :: T.Text -> Int -> A.Value
+versionedTextDocument uri version =
+  A.object ["uri" A..= uri, "version" A..= version]
+
+-- | Build an initialize request.
+initializeRequest :: Int -> Maybe T.Text -> A.Value
+initializeRequest reqId rootUri =
+  request reqId "initialize" $ A.object
+    [ "processId" A..= A.Null
+    , "rootUri" A..= maybe A.Null A.String rootUri
+    , "capabilities" A..= A.object []
+    , "workspaceFolders" A..= A.Null
     ]
 
 -- | Build an initialized notification.
 initializedNotification :: A.Value
 initializedNotification =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "method" A..= ("initialized" :: String)
-    , "params" A..= A.object []
-    ]
+  notification "initialized" (Just (A.object []))
 
 -- | Build a didOpen notification.
 didOpenNotification :: T.Text -> T.Text -> A.Value
 didOpenNotification uri content =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "method" A..= ("textDocument/didOpen" :: String)
-    , "params" A..= A.object
-        [ "textDocument" A..= A.object
-            [ "uri" A..= uri
-            , "languageId" A..= ("kip" :: String)
-            , "version" A..= (1 :: Int)
-            , "text" A..= content
-            ]
+  notification "textDocument/didOpen" . Just $ A.object
+    [ "textDocument" A..= A.object
+        [ "uri" A..= uri
+        , "languageId" A..= ("kip" :: String)
+        , "version" A..= (1 :: Int)
+        , "text" A..= content
         ]
     ]
 
@@ -208,23 +224,16 @@ didOpenNotification uri content =
 didChangeAppendNotification :: T.Text -> Int -> T.Text -> T.Text -> A.Value
 didChangeAppendNotification uri version oldText suffix =
   let (line, character) = endPosition oldText
-  in A.object
-      [ "jsonrpc" A..= ("2.0" :: String)
-      , "method" A..= ("textDocument/didChange" :: String)
-      , "params" A..= A.object
-          [ "textDocument" A..= A.object
-              [ "uri" A..= uri
-              , "version" A..= version
-              ]
-          , "contentChanges" A..=
-              [ A.object
-                  [ "range" A..= A.object
-                      [ "start" A..= A.object ["line" A..= line, "character" A..= character]
-                      , "end" A..= A.object ["line" A..= line, "character" A..= character]
-                      ]
-                  , "rangeLength" A..= (0 :: Int)
-                  , "text" A..= suffix
+  in notification "textDocument/didChange" . Just $ A.object
+      [ "textDocument" A..= versionedTextDocument uri version
+      , "contentChanges" A..=
+          [ A.object
+              [ "range" A..= A.object
+                  [ "start" A..= A.object ["line" A..= line, "character" A..= character]
+                  , "end" A..= A.object ["line" A..= line, "character" A..= character]
                   ]
+              , "rangeLength" A..= (0 :: Int)
+              , "text" A..= suffix
               ]
           ]
       ]
@@ -232,16 +241,9 @@ didChangeAppendNotification uri version oldText suffix =
 -- | Build a didChange notification containing a full document replacement.
 didChangeWholeNotification :: T.Text -> Int -> T.Text -> A.Value
 didChangeWholeNotification uri version text =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "method" A..= ("textDocument/didChange" :: String)
-    , "params" A..= A.object
-        [ "textDocument" A..= A.object
-            [ "uri" A..= uri
-            , "version" A..= version
-            ]
-        , "contentChanges" A..= [A.object ["text" A..= text]]
-        ]
+  notification "textDocument/didChange" . Just $ A.object
+    [ "textDocument" A..= versionedTextDocument uri version
+    , "contentChanges" A..= [A.object ["text" A..= text]]
     ]
 
 -- | Send append edits one character at a time with increasing versions.
@@ -258,39 +260,25 @@ sendCharwiseAppend h uri versionStart oldText suffix =
 -- | Build a didSave notification.
 didSaveNotification :: T.Text -> A.Value
 didSaveNotification uri =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "method" A..= ("textDocument/didSave" :: String)
-    , "params" A..= A.object ["textDocument" A..= A.object ["uri" A..= uri]]
-    ]
+  notification "textDocument/didSave" (Just (A.object ["textDocument" A..= textDocument uri]))
 
 -- | Build a formatting request.
 formattingRequest :: Int -> T.Text -> A.Value
 formattingRequest reqId uri =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "id" A..= reqId
-    , "method" A..= ("textDocument/formatting" :: String)
-    , "params" A..= A.object
-        [ "textDocument" A..= A.object ["uri" A..= uri]
-        , "options" A..= A.object
-            [ "tabSize" A..= (2 :: Int)
-            , "insertSpaces" A..= True
-            ]
+  request reqId "textDocument/formatting" $ A.object
+    [ "textDocument" A..= textDocument uri
+    , "options" A..= A.object
+        [ "tabSize" A..= (2 :: Int)
+        , "insertSpaces" A..= True
         ]
     ]
 
 -- | Build a position-based text document request.
 positionRequest :: T.Text -> Int -> T.Text -> Int -> Int -> A.Value
 positionRequest method reqId uri line col =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "id" A..= reqId
-    , "method" A..= method
-    , "params" A..= A.object
-        [ "textDocument" A..= A.object ["uri" A..= uri]
-        , "position" A..= A.object ["line" A..= line, "character" A..= col]
-        ]
+  request reqId method $ A.object
+    [ "textDocument" A..= textDocument uri
+    , "position" A..= A.object ["line" A..= line, "character" A..= col]
     ]
 
 -- | Build a hover request.
@@ -303,21 +291,11 @@ completionRequest = positionRequest "textDocument/completion"
 
 -- | Build a shutdown request.
 shutdownRequest :: Int -> A.Value
-shutdownRequest reqId =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "id" A..= reqId
-    , "method" A..= ("shutdown" :: String)
-    , "params" A..= A.Null
-    ]
+shutdownRequest reqId = request reqId "shutdown" A.Null
 
 -- | Build an exit notification.
 exitNotification :: A.Value
-exitNotification =
-  A.object
-    [ "jsonrpc" A..= ("2.0" :: String)
-    , "method" A..= ("exit" :: String)
-    ]
+exitNotification = notification "exit" Nothing
 
 -- | Compute the final LSP position of a text buffer.
 endPosition :: T.Text -> (Int, Int)

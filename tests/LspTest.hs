@@ -359,20 +359,20 @@ expectDiagnosticsAtLeast h uri expected = do
 
 -- | Wait for diagnostics and ensure a maximum count.
 expectDiagnosticsAtMost :: Handle -> T.Text -> Int -> IO [A.Value]
-expectDiagnosticsAtMost h uri maxExpected = do
-  mDiags <- timeout 2000000 (awaitMessage h (matchDiagnostics uri))
-  let diags = fromMaybe [] mDiags
-  let count = length diags
-  assertBool "diagnostics count too large" (count <= maxExpected)
-  return diags
+expectDiagnosticsAtMost = expectDiagnosticsAtMostWithin 2000000 False
 
 -- | Wait for diagnostics (strict) and ensure a maximum count.
 expectDiagnosticsAtMostStrict :: Handle -> T.Text -> Int -> IO [A.Value]
-expectDiagnosticsAtMostStrict h uri maxExpected = do
-  mDiags <- timeout 5000000 (awaitMessage h (matchDiagnostics uri))
-  diags <- case mDiags of
-    Just ds -> return ds
-    Nothing -> assertFailure "expected diagnostics notification after change" >> return []
+expectDiagnosticsAtMostStrict = expectDiagnosticsAtMostWithin 5000000 True
+
+-- | Wait up to a timeout for diagnostics and enforce an upper bound.
+expectDiagnosticsAtMostWithin :: Int -> Bool -> Handle -> T.Text -> Int -> IO [A.Value]
+expectDiagnosticsAtMostWithin timeoutMicros required h uri maxExpected = do
+  mDiags <- timeout timeoutMicros (awaitMessage h (matchDiagnostics uri))
+  diags <- case (required, mDiags) of
+    (_, Just ds) -> return ds
+    (False, Nothing) -> return []
+    (True, Nothing) -> assertFailure "expected diagnostics notification after change" >> return []
   let count = length diags
   assertBool "diagnostics count too large" (count <= maxExpected)
   return diags
@@ -413,21 +413,22 @@ matchDiagnostics uri =
 
 -- | Ensure formatting returns at least one edit.
 expectNonEmptyEdits :: Handle -> Int -> IO ()
-expectNonEmptyEdits h target = do
-  obj <- awaitResponseId h target
-  case lookupKey "result" obj of
-    Just (A.Array edits) ->
-      when (null edits) (assertFailure "expected formatting edits")
-    _ -> assertFailure "expected formatting edits"
+expectNonEmptyEdits = expectEdits False
 
 -- | Ensure formatting returns no edits.
 expectEmptyEdits :: Handle -> Int -> IO ()
-expectEmptyEdits h target = do
+expectEmptyEdits = expectEdits True
+
+-- | Ensure formatting returns the expected edit-list emptiness.
+expectEdits :: Bool -> Handle -> Int -> IO ()
+expectEdits shouldBeEmpty h target = do
   obj <- awaitResponseId h target
   case lookupKey "result" obj of
-    Just (A.Array edits) ->
-      unless (null edits) (assertFailure "expected no formatting edits")
-    _ -> assertFailure "expected no formatting edits"
+    Just (A.Array edits) -> do
+      let isEmpty = null edits
+          message = if shouldBeEmpty then "expected no formatting edits" else "expected formatting edits"
+      unless (isEmpty == shouldBeEmpty) (assertFailure message)
+    _ -> assertFailure (if shouldBeEmpty then "expected no formatting edits" else "expected formatting edits")
 
 -- | Ensure hover returns content and satisfies string assertions.
 expectHover :: Handle -> Int -> [T.Text] -> Maybe T.Text -> [T.Text] -> IO ()
