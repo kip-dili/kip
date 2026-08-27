@@ -1828,6 +1828,30 @@ data CtorInfo = CtorInfo
   , ctorArgs :: [Ty Ann]
   }
 
+-- | Match constructor spellings, including Turkish possessive softening.
+{-# INLINE coverageCtorMatches #-}
+coverageCtorMatches :: Identifier -> Identifier -> Bool
+coverageCtorMatches left@(leftMods, leftRoot) right@(rightMods, rightRoot) =
+  identMatches left right
+    || ((leftMods == rightMods || null leftMods || null rightMods)
+          && not (null (coverageRoots leftRoot `intersect` coverageRoots rightRoot)))
+
+{-# INLINE coverageRoots #-}
+coverageRoots :: T.Text -> [T.Text]
+coverageRoots root =
+  case dropCoverageVowel root >>= softenCoverageG of
+    Just alternative | alternative /= root -> [root, alternative]
+    _ -> [root]
+  where
+    dropCoverageVowel text =
+      case T.unsnoc text of
+        Just (prefix, suffix) | suffix `elem` ['i', 'ı', 'u', 'ü'] -> Just prefix
+        _ -> Nothing
+    softenCoverageG text =
+      case T.unsnoc text of
+        Just (prefix, 'ğ') -> Just (prefix <> T.pack "k")
+        _ -> Nothing
+
 -- | Resolve constructors for a concrete scrutinee type.
 ctorsForType :: Ty Ann -- ^ Scrutinee type.
              -> TCM (Maybe [CtorInfo]) -- ^ Constructors when the type is known.
@@ -1927,39 +1951,13 @@ missingVectors (t:ts) matrix = do
         [] -> Nothing
         (p:ps) ->
           case p of
-            PCtor (name, _) subPats | identMatchesCtor (ctorName ctorInfo) name ->
+            PCtor (name, _) subPats | coverageCtorMatches (ctorName ctorInfo) name ->
               Just (subPats ++ ps)
             PWildcard {} ->
               Just (replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan)) ++ ps)
             PVar {} ->
               Just (replicate (length (ctorArgs ctorInfo)) (PWildcard (mkAnn Nom NoSpan)) ++ ps)
             _ -> Nothing
-
-    identMatchesCtor left right =
-      identMatches left right || identMatchesPoss left right
-
-    identMatchesPoss (xs1, x1) (xs2, x2) =
-      (xs1 == xs2 || null xs1 || null xs2)
-      && not (null (roots x1 `intersect` roots x2))
-
-    roots txt =
-      -- | Fast path: at most two variants are possible here (original root and
-      -- | softened-g variant), so we skip generic list construction + `nub`.
-      case dropTrailingVowel txt >>= dropTrailingSoftG of
-        Just alt
-          | alt /= txt -> [txt, alt]
-        _ -> [txt]
-
-    dropTrailingVowel txt =
-      case T.unsnoc txt of
-        Just (pref, c)
-          | c `elem` ['i', 'ı', 'u', 'ü'] -> Just pref
-        _ -> Nothing
-
-    dropTrailingSoftG txt =
-      case T.unsnoc txt of
-        Just (pref, 'ğ') -> Just (pref <> T.pack "k")
-        _ -> Nothing
 
 -- | Replace wildcards in a missing pattern with fresh variables and cases.
 annotateMissingPattern :: Ty Ann -- ^ Expected type for the pattern.
@@ -2010,7 +2008,7 @@ annotateMissingPattern scrutTy pat = do
       mCtors <- ctorsForType ty
       case mCtors of
         Nothing -> return Nothing
-        Just ctors -> return (find (\ctorInfo -> identMatchesCtor (ctorName ctorInfo) ctorIdent) ctors)
+        Just ctors -> return (find (\ctorInfo -> coverageCtorMatches (ctorName ctorInfo) ctorIdent) ctors)
 
     freshIdent :: Int -> (Identifier, Int)
     freshIdent idx =
@@ -2022,32 +2020,6 @@ annotateMissingPattern scrutTy pat = do
               then T.singleton base
               else T.singleton base <> T.pack (show suffix)
       in (([], name), idx + 1)
-
-    identMatchesCtor left right =
-      identMatches left right || identMatchesPoss left right
-
-    identMatchesPoss (xs1, x1) (xs2, x2) =
-      (xs1 == xs2 || null xs1 || null xs2)
-      && not (null (roots x1 `intersect` roots x2))
-
-    roots txt =
-      -- | Fast path: at most two variants are possible here (original root and
-      -- | softened-g variant), so we skip generic list construction + `nub`.
-      case dropTrailingVowel txt >>= dropTrailingSoftG of
-        Just alt
-          | alt /= txt -> [txt, alt]
-        _ -> [txt]
-
-    dropTrailingVowel txt =
-      case T.unsnoc txt of
-        Just (pref, c)
-          | c `elem` ['i', 'ı', 'u', 'ü'] -> Just pref
-        _ -> Nothing
-
-    dropTrailingSoftG txt =
-      case T.unsnoc txt of
-        Just (pref, 'ğ') -> Just (pref <> T.pack "k")
-        _ -> Nothing
 
 -- | Compare types while allowing unknown inferred types.
 typeMatchesAllowUnknown :: Map.Map Identifier Int -- ^ Type constructor arities.
