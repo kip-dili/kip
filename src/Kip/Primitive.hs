@@ -9,13 +9,9 @@ Different modules can annotate primitives with their specific information:
 - Codegen.JS: JavaScript code generation
 -}
 module Kip.Primitive
-  ( PrimitiveDef(..)
-  , PrimitiveVariant(..)
-  , PrimitiveEvalOps(..)
+  ( PrimitiveEvalOps(..)
   , primitiveEvalImpl
-  , allPrimitives
   , isImplementedPrimitive
-  , primFiles
   , primitiveJsPrelude
   , primitiveJsPrunableSpecs
   ) where
@@ -41,7 +37,7 @@ data PrimitiveDef = PrimitiveDef
     -- ^ Different overloaded variants of this primitive
   , primSourceFiles :: [FilePath]
     -- ^ Library files where this primitive is declared
-  } deriving (Show, Eq)
+  }
 
 -- | A variant of a primitive function (for overloading)
 data PrimitiveVariant = PrimitiveVariant
@@ -50,12 +46,6 @@ data PrimitiveVariant = PrimitiveVariant
   , variantArgTypeCheck :: [Arg Ann] -> Bool
     -- ^ Predicate to check if argument types match this variant
   }
-
-instance Show PrimitiveVariant where
-  show v = "PrimitiveVariant { arity = " ++ show (variantArity v) ++ " }"
-
-instance Eq PrimitiveVariant where
-  v1 == v2 = variantArity v1 == variantArity v2
 
 -- | Host callbacks needed to evaluate primitives.
 data PrimitiveEvalOps m = PrimitiveEvalOps
