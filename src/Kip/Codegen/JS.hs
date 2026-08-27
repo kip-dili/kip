@@ -32,17 +32,11 @@ debuggability high and to keep generated code close to the source language model
 -}
 module Kip.Codegen.JS
   ( codegenProgram
-  , pruneProgramStmts
   , pruneProgramTaggedStmts
   , codegenRuntime
   , runtimeExportNames
   , codegenStmtsInProgram
-  , codegenStmtsWithResolved
   , definedJsNamesInProgram
-  , definedJsNames
-  , codegenStmts
-  , codegenStmt
-  , codegenExp
   ) where
 
 import Data.Char (isAlphaNum, isLetter)
@@ -97,20 +91,6 @@ buildCallTargetIndexes = foldl' add (Map.empty, Map.empty, Map.empty, Map.empty)
          , Map.insertWith (flip (++)) (ident, arity) [target] byIdentArity
          , Map.insertWith (flip (++)) (root, arity) [target] byRootArity
          )
-
--- | Empty codegen context used by standalone helpers/tests.
-emptyCodegenCtx :: CodegenCtx
-emptyCodegenCtx = MkCodegenCtx
-  { sectionableFns = Set.empty
-  , resolvedCallNames = Map.empty
-  , overloadRegistry = Map.empty
-  , callTargetsByIdent = Map.empty
-  , callTargetsByRoot = Map.empty
-  , callTargetsByIdentArity = Map.empty
-  , callTargetsByRootArity = Map.empty
-  , localScope = []
-  , currentFunction = Nothing
-  }
 
 -- | Build codegen context from resolved call signatures and program statements.
 buildCodegenCtx :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> CodegenCtx
@@ -544,32 +524,6 @@ renderStmtMaybe ctx stmt =
   let out = codegenStmtWith ctx stmt
   in if T.null out then Nothing else Just out
 
--- | Prune dependency statements by reachability from root statements.
---
--- All root statements are kept. Additional statements are kept only when their
--- definitions are referenced transitively from kept statements.
-pruneProgramStmts :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> [Stmt Ann] -> [Stmt Ann]
-pruneProgramStmts resolvMap roots allStmts =
-  let indexed = zip [0 ..] allStmts
-      idxMap = Map.fromList indexed
-      rootIdx = Set.fromList [i | (i, s) <- indexed, s `elem` roots]
-      exactDefs =
-        foldl'
-          (\m (i, s) -> foldl' (\m' (n, tys) -> Map.insertWith (++) (n, normalizeSig tys) [i] m') m (stmtExactDefs s))
-          Map.empty
-          indexed
-      nameDefs =
-        foldl'
-          (\m (i, s) -> foldl' (\m' n -> Map.insertWith (++) n [i] m') m (stmtNameDefs s))
-          Map.empty
-          indexed
-      initialRefs =
-        concatMap
-          (\i -> maybe [] (stmtRefs resolvMap) (Map.lookup i idxMap))
-          (Set.toList rootIdx)
-      keptIdx = closeRefs resolvMap idxMap exactDefs nameDefs rootIdx Set.empty initialRefs
-  in [s | (i, s) <- indexed, i `Set.member` keptIdx]
-
 -- | Prune tagged statements by reachability from root-tagged statements.
 --
 -- Any statement whose tag satisfies the supplied predicate is treated as a
@@ -629,36 +583,6 @@ closeTaggedRefs resolvMap idxMap exactDefs nameDefs kept seen (r:rs)
           case Map.lookup idx idxMap of
             Nothing -> (k, accRefs)
             Just (_, stmt) ->
-              let refs = stmtRefs resolvMap stmt
-              in (Set.insert idx k, accRefs ++ refs)
-
-closeRefs ::
-     Map.Map Span (Identifier, [Ty Ann])
-  -> Map.Map Int (Stmt Ann)
-  -> Map.Map (Identifier, [Ty Ann]) [Int]
-  -> Map.Map Identifier [Int]
-  -> Set.Set Int
-  -> Set.Set DefRef
-  -> [DefRef]
-  -> Set.Set Int
-closeRefs _ _ _ _ kept _ [] = kept
-closeRefs resolvMap idxMap exactDefs nameDefs kept seen (r:rs)
-  | r `Set.member` seen = closeRefs resolvMap idxMap exactDefs nameDefs kept seen rs
-  | otherwise =
-      let nextSeen = Set.insert r seen
-          candidateIdx =
-            case r of
-              RefExact name tys -> Map.findWithDefault [] (name, normalizeSig tys) exactDefs
-              RefName name -> take 1 (Map.findWithDefault [] name nameDefs)
-          (kept', newRefs) = foldl' collect (kept, []) candidateIdx
-      in closeRefs resolvMap idxMap exactDefs nameDefs kept' nextSeen (rs ++ newRefs)
-  where
-    collect (k, accRefs) idx
-      | idx `Set.member` k = (k, accRefs)
-      | otherwise =
-          case Map.lookup idx idxMap of
-            Nothing -> (k, accRefs)
-            Just stmt ->
               let refs = stmtRefs resolvMap stmt
               in (Set.insert idx k, accRefs ++ refs)
 
@@ -741,16 +665,6 @@ codegenStmtsInProgram resolvMap programStmts stmts =
       merged = mergeCompatibleFunctions ctx stmts
   in formatJsOutput (renderStmtBlock ctx merged)
 
--- | Codegen statements using the same list for context and output subset.
-codegenStmtsWithResolved :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> Text
-codegenStmtsWithResolved resolvMap stmts =
-  codegenStmtsInProgram resolvMap stmts stmts
-
--- | List JS definition names emitted for a statement list.
-definedJsNames :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> [Text]
-definedJsNames resolvMap stmts =
-  definedJsNamesInProgram resolvMap stmts stmts
-
 -- | List JS definition names for a subset under full-program context.
 --
 -- Names are deduplicated via a set while folding, avoiding a second-pass
@@ -829,13 +743,6 @@ mergeCompatibleFunctions ctx stmts = F.toList (snd (foldl' step (Map.empty, Seq.
 -- helpers and selected at call sites via typechecker-resolved signatures.
 -- The code is async-capable to support interactive browser I/O.
 
--- | Generate JavaScript for a list of statements without the runtime prelude.
---
--- This is mainly useful for tests or embedding scenarios where the caller
--- manages prelude injection manually.
-codegenStmts :: [Stmt Ann] -> Text
-codegenStmts = codegenStmtsWithResolved Map.empty
-
 -- | Extract JS names defined by one top-level statement.
 stmtDefinedNames :: CodegenCtx -> Stmt Ann -> [Text]
 stmtDefinedNames ctx stmt =
@@ -852,13 +759,6 @@ stmtDefinedNames ctx stmt =
            _ -> ctorNames
     _ ->
       []
-
--- | Generate JavaScript for a single top-level statement.
---
--- Function and type declarations are emitted as declarations, while expression
--- statements are emitted in executable statement form.
-codegenStmt :: Stmt Ann -> Text
-codegenStmt = codegenStmtWith emptyCodegenCtx
 
 codegenStmtWith :: CodegenCtx -> Stmt Ann -> Text
 codegenStmtWith ctx stmt =
@@ -881,13 +781,6 @@ codegenStmtWith ctx stmt =
       ""
     ExpStmt exp' ->
       codegenExpWith ctx exp' <> ";"
-
--- | Generate JavaScript for an expression.
---
--- The result is always expression-shaped so it can be embedded in larger
--- contexts. Sequencing and local bindings are lowered through async IIFEs.
-codegenExp :: Exp Ann -> Text
-codegenExp = codegenExpWith emptyCodegenCtx
 
 -- | Extend local scope with newly bound identifiers.
 withLocalScope :: CodegenCtx -> [Identifier] -> CodegenCtx
