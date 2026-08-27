@@ -43,7 +43,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed as U
 import System.Directory (doesFileExist)
 import System.Environment (getExecutablePath)
 import System.FilePath (takeDirectory, (</>), normalise, addTrailingPathSeparator)
@@ -121,7 +120,7 @@ data AnalysisJob = AnalysisJob
 -- This is the central cache for a single document version. It stores:
 --
 -- * Raw text, parser, and typechecker state.
--- * The AST and diagnostics for this version.
+-- * The AST and typechecker results for this version.
 -- * Multiple symbol/type indices used by hover/definition/highlight.
 -- * A per-document type rendering cache to avoid repeated morphology work.
 --
@@ -132,22 +131,16 @@ data DocState = DocState
     dsText :: !Text
     -- | Pre-split lines for fast line-indexed lookups.
   , dsLines :: !(V.Vector Text)
-    -- | Start offsets of each line in the raw text.
-  , dsLineStarts :: !(U.Vector Int)
     -- | Parser state used for this document.
   , dsParser :: !ParserState
     -- | Typechecker state used for this document.
   , dsTC :: !TCState
     -- | Parsed statements for this document.
   , dsStmts :: ![Stmt Ann]
-    -- | Diagnostics generated for this document.
-  , dsDiagnostics :: ![Diagnostic]
     -- | Definition name spans for local go-to-definition.
   , dsDefSpans :: Map.Map Identifier Range
     -- | Resolved identifier names keyed by span.
   , dsResolved :: Map.Map Span Identifier
-    -- | Resolved overload signatures keyed by span.
-  , dsResolvedSigs :: Map.Map Span (Identifier, [Ty Ann])
     -- | Resolved types keyed by span.
   , dsResolvedTypes :: Map.Map Span (Ty Ann)
     -- | Binder spans for local variable definitions.
@@ -1264,7 +1257,7 @@ analyzeDocument st uri text = do
           resolvedSigs = Map.fromList (filterResolved docSpans (tcResolvedSigs tcCached))
           resolvedTypes = Map.fromList (filterResolved docSpans (tcResolvedTypes tcCached))
           binderSpans = collectBinderSpans stmts
-      doc <- newDocState text pstCached tcCached stmts []
+      doc <- newDocState text pstCached tcCached stmts
         defSpans resolved resolvedSigs resolvedTypes binderSpans
       return (doc, [])
     Nothing -> do
@@ -1274,7 +1267,7 @@ analyzeDocument st uri text = do
       case parseRes of
         Left err -> do
           let diag = parseErrorToDiagnostic text err
-          doc <- newDocState text basePst baseTC [] [diag]
+          doc <- newDocState text basePst baseTC []
             Map.empty Map.empty Map.empty Map.empty []
           return (doc, [diag])
         Right (stmts, pst') -> do
@@ -1285,7 +1278,7 @@ analyzeDocument st uri text = do
           case declRes of
             Left tcErr -> do
               diag <- tcErrorToDiagnostic st tcErr
-              doc <- newDocState text pst' baseTC stmts [diag]
+              doc <- newDocState text pst' baseTC stmts
                 defSpans Map.empty Map.empty Map.empty binderSpans
               return (doc, [diag])
             Right (_, tcStWithDecls) -> do
@@ -1307,7 +1300,7 @@ analyzeDocument st uri text = do
                   !resolved = Map.fromList (filterResolved docSpans (tcResolvedNames tcStFinal))
                   !resolvedSigs = Map.fromList (filterResolved docSpans (tcResolvedSigs tcStFinal))
                   !resolvedTypes = Map.fromList (filterResolved docSpans (tcResolvedTypes tcStFinal))
-              doc <- newDocState text pst' tcStFinal stmts diags
+              doc <- newDocState text pst' tcStFinal stmts
                 defSpans resolved resolvedSigs resolvedTypes binderSpans
               return (doc, diags)
 
@@ -1317,16 +1310,14 @@ newDocState ::
   ParserState ->
   TCState ->
   [Stmt Ann] ->
-  [Diagnostic] ->
   Map.Map Identifier Range ->
   Map.Map Span Identifier ->
   Map.Map Span (Identifier, [Ty Ann]) ->
   Map.Map Span (Ty Ann) ->
   [BinderInfo] ->
   IO DocState
-newDocState text parserState tcState stmts diagnostics defSpans resolved resolvedSigs resolvedTypes binderSpans = do
+newDocState text parserState tcState stmts defSpans resolved resolvedSigs resolvedTypes binderSpans = do
   let !docLines = V.fromList (T.lines text)
-      !docLineStarts = buildLineStarts text
       !spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
       !indices = buildDocIndices stmts
   tyRenderCache <- HT.new
@@ -1335,14 +1326,11 @@ newDocState text parserState tcState stmts diagnostics defSpans resolved resolve
     DocState
       { dsText = text
       , dsLines = docLines
-      , dsLineStarts = docLineStarts
       , dsParser = parserState
       , dsTC = tcState
       , dsStmts = stmts
-      , dsDiagnostics = diagnostics
       , dsDefSpans = defSpans
       , dsResolved = resolved
-      , dsResolvedSigs = resolvedSigs
       , dsResolvedTypes = resolvedTypes
       , dsBinderSpans = binderSpans
       , dsSpanIndex = spanIndex
@@ -2416,21 +2404,6 @@ offsetToPos prefix =
           (0, 0)
           prefix
   in (fromIntegral lineInt, fromIntegral colInt)
-
--- | Compute line start offsets for quick line-based lookups.
-buildLineStarts :: Text -> U.Vector Int
-buildLineStarts txt =
-  U.fromList (reverse startsRev)
-  where
-    (startsRev, _) =
-      T.foldl'
-        (\(acc, !off) c ->
-            let !off' = off + 1
-            in if c == '\n'
-                 then (off' : acc, off')
-                 else (acc, off'))
-        ([0], 0)
-        txt
 
 -- | Resolve previous document text for incremental didChange handling.
 --
