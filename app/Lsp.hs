@@ -6,8 +6,9 @@
 {-|
 Language Server Protocol implementation for Kip.
 
-This module is intentionally monolithic because it couples several cross-cutting
-concerns that need to share internal caches and typechecking results:
+This module coordinates the server handlers and document lifecycle. Focused
+text-document and positional-index operations live in @Lsp.TextDocument@ and
+@Lsp.Index@, while this module owns the shared caches and typechecking results:
 
 * Parsing and typechecking Kip source on document changes.
 * Maintaining document-level indices that power hover/definition/highlight.
@@ -38,7 +39,6 @@ import Data.Char (isAlphaNum, isDigit)
 import Data.Maybe (fromMaybe, mapMaybe, maybeToList, listToMaybe)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import qualified Data.HashMap.Strict as HM
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -68,12 +68,13 @@ import qualified Kip.Render as Render
 import Kip.Runner (RenderCtx(..), Lang(..), ParseErrorRenderTarget(..), renderParseErrorFor, renderTCError, tcErrSpan, loadPreludeStateWithMode, locateDataFile, listKipFilesRecursiveSkipping, uniquePreserve)
 import Kip.TypeCheck
 import Language.Foma
+import Lsp.Index
 import Lsp.TextDocument (applyContentChanges, documentEndPosition, formatText)
 
 import Control.Lens ((^.))
 import Text.Megaparsec (ParseErrorBundle(..), ParseError(..), errorOffset)
 import Text.Megaparsec.Error (ErrorFancy(..))
-import Text.Megaparsec.Pos (SourcePos(..), unPos, sourceLine, sourceColumn)
+import Text.Megaparsec.Pos (SourcePos(..), unPos, sourceLine)
 import Data.List.NonEmpty (NonEmpty(..))
 
 -- | Server configuration/state.
@@ -113,22 +114,6 @@ data LspState = LspState
 data AnalysisJob = AnalysisJob
   { ajId :: !Int
   , ajThread :: !ThreadId
-  }
-
--- | Information about a bound variable with its scope.
---
--- Each binder records:
---
--- * The identifier it binds.
--- * The range of the binder name itself (for go-to-definition).
--- * The span of the scope where the binding is valid (for resolution).
-data BinderInfo = BinderInfo
-  { -- | Identifier bound by this binder.
-    biIdent :: !Identifier
-    -- | LSP range of the binder name itself.
-  , biRange :: !Range
-    -- | Span where the binding is in scope.
-  , biScope :: !Span
   }
 
 -- | Per-document cached state.
@@ -472,264 +457,6 @@ data TokenAtPosition
   = TokenKeyword Text
   | TokenIdent Text
   deriving (Eq, Show)
-
-data SpanKey
-  = SpanKey Span
-  | RangeKey Range
-  deriving (Eq, Ord, Show)
-
-data SpanInfo = SpanInfo
-  { -- | Span for the indexed entity (if span-backed).
-    siSpan :: Maybe Span
-    -- | Range for the indexed entity (if range-backed).
-  , siRange :: Maybe Range
-    -- | Resolved identifier for this span/range.
-  , siIdent :: Maybe Identifier
-    -- | Resolved overload signature for this span/range.
-  , siSig :: Maybe (Identifier, [Ty Ann])
-    -- | Resolved type for this span/range.
-  , siType :: Maybe (Ty Ann)
-    -- | Binder information if this span/range is a binder.
-  , siBinder :: Maybe BinderInfo
-  }
-
--- | Key for the unified span index.
---
--- Some entities (expressions, resolved symbols) are indexed by 'Span', while
--- binder locations are naturally represented as LSP 'Range's. We keep both
--- and allow position lookups to match either.
---
--- The index is hash-backed for fast exact lookups, while a separate list
--- enables the “smallest enclosing span” search needed for cursor queries.
-data SpanIndex = SpanIndex
-  { -- | Hash map for exact span/range lookups.
-    siByKey :: HM.HashMap Text SpanInfo
-    -- | Entry list used for containment-based lookups.
-  , siEntries :: [(SpanKey, SpanInfo)]
-  }
-
--- | Entries used for smallest-enclosing-span lookups.
-newtype PosIndex a = PosIndex
-  { piEntries :: [(Span, a)]
-  }
-
--- | Map from expression span to the expression node.
-type ExpIndex = PosIndex (Exp Ann)
--- | Map from variable-use span to its name and morphological candidates.
-type VarIndex = PosIndex (Identifier, [(Identifier, Case)])
--- | Map from pattern variable span to the bound identifier.
-type PatVarIndex = PosIndex Identifier
--- | Map from constructor-pattern span to its constructor metadata.
-type CtorIndex = PosIndex (Identifier, Ann, [Pat Ann], Maybe (Exp Ann))
--- | Map from clause-body span to the enclosing match clause (scrutinee + pattern).
-type MatchClauseIndex = PosIndex (Exp Ann, Pat Ann)
--- | Map from clause scope span to the enclosing function clause (args + pattern).
-type FuncClauseIndex = PosIndex ([Arg Ann], Pat Ann)
-
--- | Positional lookup indices built together from one AST traversal.
-data DocIndices = DocIndices
-  { indexedExpressions :: !ExpIndex
-  , indexedVariables :: !VarIndex
-  , indexedPatternVariables :: !PatVarIndex
-  , indexedConstructors :: !CtorIndex
-  , indexedMatchClauses :: !MatchClauseIndex
-  , indexedFunctionClauses :: !FuncClauseIndex
-  }
-
-data DocIndexLists = DocIndexLists
-  { -- | Collected expression entries.
-    expEntries :: [(Span, Exp Ann)]
-    -- | Collected variable entries.
-  , varEntries :: [(Span, (Identifier, [(Identifier, Case)]))]
-    -- | Collected pattern variable entries.
-  , patVarEntries :: [(Span, Identifier)]
-    -- | Collected constructor-pattern entries.
-  , ctorEntries :: [(Span, (Identifier, Ann, [Pat Ann], Maybe (Exp Ann)))]
-    -- | Collected match clause entries.
-  , matchClauseEntries :: [(Span, (Exp Ann, Pat Ann))]
-    -- | Collected function clause entries.
-  , funcClauseEntries :: [(Span, ([Arg Ann], Pat Ann))]
-  }
-
-emptyDocIndexLists :: DocIndexLists
-emptyDocIndexLists =
-  DocIndexLists [] [] [] [] [] []
-
--- | Stable textual key for a span, used in hash-based indices.
-spanKeyText :: Span -> Text
-spanKeyText =
-  T.pack . show
-
--- | Stable textual key for an LSP range, used in hash-based indices.
-rangeKeyText :: Range -> Text
-rangeKeyText =
-  T.pack . show
-
--- | Stable textual key for a span index entry.
-spanKeyTextForSpanKey :: SpanKey -> Text
-spanKeyTextForSpanKey key =
-  case key of
-    SpanKey sp -> "S:" <> spanKeyText sp
-    RangeKey range -> "R:" <> rangeKeyText range
-
--- | Build a positional index from a list of span entries.
-posIndexFromEntries :: [(Span, a)] -> PosIndex a
-posIndexFromEntries = PosIndex
-
-buildSpanIndex :: Map.Map Span Identifier -> Map.Map Span (Identifier, [Ty Ann]) -> Map.Map Span (Ty Ann) -> [BinderInfo] -> SpanIndex
-buildSpanIndex resolved resolvedSigs resolvedTypes binders =
-  SpanIndex (HM.map snd byKey) (HM.elems byKey)
-  where
-    entries =
-      [ (SpanKey sp, SpanInfo (Just sp) Nothing (Just ident) Nothing Nothing Nothing)
-      | (sp, ident) <- Map.toList resolved
-      ] ++
-      [ (SpanKey sp, SpanInfo (Just sp) Nothing Nothing (Just sig) Nothing Nothing)
-      | (sp, sig) <- Map.toList resolvedSigs
-      ] ++
-      [ (SpanKey sp, SpanInfo (Just sp) Nothing Nothing Nothing (Just ty) Nothing)
-      | (sp, ty) <- Map.toList resolvedTypes
-      ] ++
-      [ (RangeKey (biRange bi), SpanInfo Nothing (Just (biRange bi)) (Just (biIdent bi)) Nothing Nothing (Just bi))
-      | bi <- binders
-      ]
-    byKey = foldl' insertEntry HM.empty entries
-    insertEntry acc (key, info) =
-      HM.insertWith mergeEntry (spanKeyTextForSpanKey key) (key, info) acc
-    mergeEntry new old =
-      let (oldKey, oldInfo) = old
-          (_, newInfo) = new
-      in (oldKey, mergeSpanInfo newInfo oldInfo)
-    mergeSpanInfo new old =
-      SpanInfo
-        { siSpan = siSpan new <|> siSpan old
-        , siRange = siRange new <|> siRange old
-        , siIdent = siIdent new <|> siIdent old
-        , siSig = siSig new <|> siSig old
-        , siType = siType new <|> siType old
-        , siBinder = siBinder new <|> siBinder old
-        }
-
--- | Lookup span-index information by exact span key.
---
--- This is used when we already have a precise span from an AST node and
--- want to merge that with resolved symbol/type data.
-spanInfoForSpan :: Span -> SpanIndex -> Maybe SpanInfo
-spanInfoForSpan sp idx =
-  HM.lookup ("S:" <> spanKeyText sp) (siByKey idx)
-
--- | Lookup span-index information at a cursor position.
---
--- Returns the smallest matching span/range (most specific) so that
--- nested constructs resolve to the innermost entity.
-spanInfoAtPosition :: Position -> SpanIndex -> Maybe SpanInfo
-spanInfoAtPosition pos idx =
-  let matches =
-        [ (spanKeySize key, info)
-        | (key, info) <- siEntries idx
-        , posInSpanKey pos key
-        ]
-  in fmap snd (listToMaybe (sortOn fst matches))
-  where
-    posInSpanKey p key =
-      case key of
-        SpanKey sp -> posInSpan p sp
-        RangeKey range -> positionInRange p range
-    spanKeySize key =
-      case key of
-        SpanKey sp -> spanSizeForSort sp
-        RangeKey range -> rangeSizeForSort range
-
-rangeSizeForSort :: Range -> (Int, Int)
-rangeSizeForSort (Range (Position sl sc) (Position el ec)) =
-  let lines = fromIntegral el - fromIntegral sl
-      cols = if lines == 0 then fromIntegral ec - fromIntegral sc else maxBound :: Int
-  in (lines, cols)
-
--- | Generic “smallest enclosing span” lookup for arbitrary indices.
---
--- Used by the per-document indices built from the AST to avoid repeated
--- tree traversals on hover/definition/highlight.
-lookupByPosition :: Position -> PosIndex a -> Maybe a
-lookupByPosition pos idx =
-  let matches =
-        [ (spanSizeForSort sp, value)
-        | (sp, value) <- piEntries idx
-        , posInSpan pos sp
-        ]
-  in fmap snd (listToMaybe (sortOn fst matches))
-
--- | Build all per-document indices in a single AST traversal.
---
--- These indices back the most frequent queries (hover/definition) and
--- allow near-O(log n) lookups instead of repeated tree walks.
-buildDocIndices :: [Stmt Ann] -> DocIndices
-buildDocIndices stmts =
-  let lists = foldl' collectStmt emptyDocIndexLists stmts
-  in DocIndices
-       { indexedExpressions = posIndexFromEntries (expEntries lists)
-       , indexedVariables = posIndexFromEntries (varEntries lists)
-       , indexedPatternVariables = posIndexFromEntries (patVarEntries lists)
-       , indexedConstructors = posIndexFromEntries (ctorEntries lists)
-       , indexedMatchClauses = posIndexFromEntries (matchClauseEntries lists)
-       , indexedFunctionClauses = posIndexFromEntries (funcClauseEntries lists)
-       }
-  where
-    addSpanEntry sp val xs =
-      case sp of
-        NoSpan -> xs
-        _ -> (sp, val) : xs
-    collectStmt acc stt =
-      case stt of
-        Defn _ _ e -> collectExp Nothing acc e
-        Function _ args _ clauses _ ->
-          foldl' (collectFunctionClause args) acc clauses
-        ExpStmt e -> collectExp Nothing acc e
-        _ -> acc
-    collectFunctionClause args acc (Clause pat body) =
-      let bodySpan = annSpan (annExp body)
-          scopeSpan = mergeSpanAll [bodySpan, patRootSpan pat]
-          acc' = acc
-            { funcClauseEntries = addSpanEntry scopeSpan (args, pat) (funcClauseEntries acc) }
-          acc'' = collectPat Nothing acc' pat
-      in collectExp Nothing acc'' body
-    collectExp mScrutinee acc e =
-      let acc' =
-            acc { expEntries = addSpanEntry (annSpan (annExp e)) e (expEntries acc)
-                , varEntries =
-                    case e of
-                      Var {annExp = ann, varName = name, varCandidates = candidates} ->
-                        addSpanEntry (annSpan ann) (name, candidates) (varEntries acc)
-                      _ -> varEntries acc
-                }
-      in case e of
-          App _ f args -> foldl' (collectExp mScrutinee) (collectExp mScrutinee acc' f) args
-          Bind _ _ _ b -> collectExp mScrutinee acc' b
-          Seq _ a b -> collectExp mScrutinee (collectExp mScrutinee acc' a) b
-          Match _ scr clauses ->
-            let accScr = collectExp mScrutinee acc' scr
-            in foldl' (collectMatchClause scr) accScr clauses
-          Let _ _ body -> collectExp mScrutinee acc' body
-          Ascribe _ _ exp' -> collectExp mScrutinee acc' exp'
-          _ -> acc'
-    collectMatchClause scr acc (Clause pat body) =
-      let bodySpan = annSpan (annExp body)
-          acc' = acc
-            { matchClauseEntries = addSpanEntry bodySpan (scr, pat) (matchClauseEntries acc) }
-          acc'' = collectPat (Just scr) acc' pat
-      in collectExp (Just scr) acc'' body
-    collectPat mScrutinee acc pat =
-      case pat of
-        PVar ident ann ->
-          acc { patVarEntries = addSpanEntry (annSpan ann) ident (patVarEntries acc) }
-        PCtor (ctor, ann) pats ->
-          let ctorSpan = mergeSpanAll (annSpan ann : map patRootSpan pats)
-              acc' = acc
-                { ctorEntries = addSpanEntry ctorSpan (ctor, ann, pats, mScrutinee) (ctorEntries acc) }
-          in foldl' (collectPat mScrutinee) acc' pats
-        PListLit pats ->
-          foldl' (collectPat mScrutinee) acc pats
-        _ -> acc
 
 -- | Resolve all symbol-related information for a cursor position.
 --
@@ -1771,19 +1498,6 @@ spanToRange :: Span -> Range
 spanToRange NoSpan = Range (Position 0 0) (Position 0 0)
 spanToRange (Span s e _) = Range (posToLsp s) (posToLsp e)
 
--- | Merge an arbitrary list of spans, preserving the earliest start and latest end.
-mergeSpanAll :: [Span] -> Span
-mergeSpanAll spans =
-  case [ (s, e) | Span s e _ <- spans ] of
-    [] -> NoSpan
-    pairs ->
-      let starts = map fst pairs
-          ends = map snd pairs
-          path = case [ p | Span _ _ (Just p) <- spans ] of
-            [] -> Nothing
-            p : _ -> Just p  -- Assume all spans share the same path if present
-      in Span (minimum starts) (maximum ends) path
-
 -- | Collect all expression spans from a document's statements.
 -- We use this to filter resolved-name/signature maps because 'Span'
 -- does not encode file paths, and collisions across modules are common.
@@ -1922,21 +1636,6 @@ patLineContains pos (Clause pat _) =
           endLine = unPos (sourceLine end) - 1
       in line >= startLine && line <= endLine
     NoSpan -> False
-
--- | Compute the span that covers a pattern and all its nested children.
---
--- This is used to approximate clause scope for line-based lookups.
-patRootSpan :: Pat Ann -> Span
-patRootSpan pat =
-  case pat of
-    PWildcard ann -> annSpan ann
-    PVar _ ann -> annSpan ann
-    PCtor (_, ann) pats -> mergeSpanAll (annSpan ann : map patRootSpan pats)
-    PIntLit _ ann -> annSpan ann
-    PFloatLit _ ann -> annSpan ann
-    PStrLit _ ann -> annSpan ann
-    PCharLit _ ann -> annSpan ann
-    PListLit pats -> mergeSpanAll (map patRootSpan pats)
 
 -- | Determine scrutinee type for a match clause when possible.
 --
@@ -2502,27 +2201,6 @@ typeConstructorsFromTy =
         TyInd _ ident -> [ident]
         Arr _ inTy outTy -> go (n - 1) inTy ++ go (n - 1) outTy
         TyApp _ ctor args -> go (n - 1) ctor ++ concatMap (go (n - 1)) args
-
--- | Check whether an LSP position lies within a Kip span.
-posInSpan :: Position -> Span -> Bool
-posInSpan _ NoSpan = False
-posInSpan (Position l c) (Span s e _) =
-  let sl = fromIntegral (unPos (sourceLine s) - 1)
-      sc = fromIntegral (unPos (sourceColumn s) - 1)
-      el = fromIntegral (unPos (sourceLine e) - 1)
-      ec = fromIntegral (unPos (sourceColumn e) - 1)
-  in (l > sl || (l == sl && c >= sc)) && (l < el || (l == el && c <= ec))
-
--- | Compute an ordering key for spans (smaller spans sort first).
-spanSizeForSort :: Span -> (Int, Int)
-spanSizeForSort sp = case sp of
-  NoSpan -> (maxBound :: Int, maxBound :: Int)
-  Span start end _ ->
-    let SourcePos _ startLine startCol = start
-        SourcePos _ endLine endCol = end
-        lines = unPos endLine - unPos startLine
-        cols = if lines == 0 then unPos endCol - unPos startCol else maxBound :: Int
-    in (lines, cols)
 
 -- | Find the smallest resolved type span that contains the given position.
 resolvedTypeAt :: Position -> Map.Map Span (Ty Ann) -> Maybe (Ty Ann)
