@@ -323,7 +323,10 @@ renderIdentWithCases cache fsm (xs, x) cases = do
   return (T.unpack (T.intercalate (T.pack "-") (xs ++ [T.pack finalRoot])))
 
 -- | Infer a dative surface from TRmorph analyses when downs generation is empty.
-inferDatSurfaceViaUps :: RenderCache -> FSM -> String -> IO (Maybe String)
+inferDatSurfaceViaUps :: RenderCache -- ^ Shared morphology cache.
+                      -> FSM -- ^ Morphology machine used for analysis.
+                      -> String -- ^ Surface stem whose dative form is required.
+                      -> IO (Maybe String) -- ^ Inferred dative surface form when generation succeeds.
 inferDatSurfaceViaUps cache fsm stem = do
   let probes = map (stem ++) ["a", "e", "ya", "ye"]
   analysesByProbe <- upsCachedBatch cache fsm (map T.pack probes)
@@ -610,8 +613,9 @@ renderTyPossessive cache fsm paramTyCons tyMods ty =
           else applyCaseToLastWord cache fsm (annCase ann) iBase
       return (dStr ++ " " ++ normalizePossIns iStr)
 
--- | Normalize possessive+instrumental spellings like "b'si'yle" to "b'siyle".
-normalizePossIns :: String -> String
+-- | Remove the redundant apostrophe between a possessive suffix and instrumental ending.
+normalizePossIns :: String -- ^ Inflected surface spelling to normalize.
+                 -> String -- ^ Spelling without a redundant possessive apostrophe.
 normalizePossIns s =
   let t = normalizeQuoteChars (T.pack s)
       t1 = T.replace (T.pack "'si'yle") (T.pack "'siyle") t
@@ -621,7 +625,8 @@ normalizePossIns s =
   in T.unpack t4
 
 -- | Normalize quote-like apostrophes to plain ASCII apostrophe.
-normalizeQuoteChars :: Text -> Text
+normalizeQuoteChars :: Text -- ^ Source text that may contain typographic apostrophes.
+                    -> Text -- ^ Text using the ASCII apostrophe expected by morphology rules.
 normalizeQuoteChars =
   T.map (\c -> if c `elem` ("'´`ʼ" :: String) then '\'' else c)
 
@@ -681,10 +686,11 @@ renderTyPartsPossessive cache fsm paramTyCons tyMods ty =
 
 -- | Apply a grammatical case to the last rendered type part.
 inflectLastPartCase :: RenderCache
-                    -> FSM
-                    -> Case
-                    -> [(String, Bool)]
-                    -> IO [(String, Bool)]
+                    -- ^ Shared morphology cache.
+                    -> FSM -- ^ Morphology machine used for generation.
+                    -> Case -- ^ Case to apply to the final type-name part.
+                    -> [(String, Bool)] -- ^ Rendered parts paired with type-variable flags.
+                    -> IO [(String, Bool)] -- ^ Parts with the final eligible part inflected.
 inflectLastPartCase cache fsm cas parts =
   case reverse parts of
     [] -> return []
@@ -693,7 +699,8 @@ inflectLastPartCase cache fsm cas parts =
       return (reverse ((inflected, isVar) : restRev))
 
 -- | Heuristic: treat single-letter identifiers as type variables for coloring.
-isLikelyTypeVar :: Identifier -> Bool
+isLikelyTypeVar :: Identifier -- ^ Identifier to classify.
+                -> Bool -- ^ 'True' when its spelling follows type-variable conventions.
 isLikelyTypeVar (mods, name) =
   null mods
     && T.length name == 1
@@ -936,7 +943,11 @@ renderExpPreservingCase cache fsm evalSt expr =
       renderExpPreservingCase cache fsm evalSt ascExp
 
 -- | Render the first expression of a sequence in converb style when possible.
-renderSeqFirstExp :: RenderCache -> FSM -> EvalState -> Exp Ann -> IO String
+renderSeqFirstExp :: RenderCache -- ^ Shared morphology cache.
+                  -> FSM -- ^ Morphology machine used for surface generation.
+                  -> EvalState -- ^ Evaluator state used to resolve runtime names.
+                  -> Exp Ann -- ^ First expression in a sequence.
+                  -> IO String -- ^ Rendered expression text.
 renderSeqFirstExp cache fsm evalSt exp' =
   case exp' of
     Bind {bindName, bindExp} -> do
@@ -979,7 +990,13 @@ renderSeqFirstExp cache fsm evalSt exp' =
     _ -> renderExpPreservingCase cache fsm evalSt exp'
 
 -- | Render a function application preserving case annotations.
-renderAppPC :: RenderCache -> FSM -> EvalState -> Ann -> Exp Ann -> [Exp Ann] -> IO String
+renderAppPC :: RenderCache -- ^ Shared morphology cache.
+            -> FSM -- ^ Morphology machine used for surface generation.
+            -> EvalState -- ^ Evaluator state used for call resolution.
+            -> Ann -- ^ Annotation of the application node.
+            -> Exp Ann -- ^ Function expression.
+            -> [Exp Ann] -- ^ Applied arguments in source order.
+            -> IO String -- ^ Rendered application text.
 renderAppPC cache fsm evalSt appAnn fn' args' = do
   let topCase = annCase appAnn
   (argStrs, fnStr) <- case fn' of
@@ -1035,20 +1052,29 @@ renderAppPC cache fsm evalSt appAnn fn' args' = do
 
 -- | Decide whether to keep the exact surface form for a function token.
 -- Uses TRmorph analyses rather than suffix heuristics.
-shouldPreserveSurfaceForm :: RenderCache -> FSM -> Identifier -> IO Bool
+shouldPreserveSurfaceForm :: RenderCache -- ^ Shared morphology cache.
+                          -> FSM -- ^ Morphology machine used for analysis.
+                          -> Identifier -- ^ Surface identifier being rendered.
+                          -> IO Bool -- ^ Whether rendering should retain the original spelling.
 shouldPreserveSurfaceForm cache fsm ident = do
   analyses <- map T.unpack <$> upsCached cache fsm (T.pack (prettyIdent ident))
   let hasMarker a = "<adv>" `isInfixOf` a
   return (any hasMarker analyses)
 
 -- | Keep exact copula surface so :steps can strip only the copula suffix.
-shouldPreserveCopulaSurface :: RenderCache -> FSM -> Identifier -> IO Bool
+shouldPreserveCopulaSurface :: RenderCache -- ^ Shared morphology cache.
+                            -> FSM -- ^ Morphology machine used for analysis.
+                            -> Identifier -- ^ Identifier that may already carry a copula.
+                            -> IO Bool -- ^ Whether the copular surface form should remain unchanged.
 shouldPreserveCopulaSurface cache fsm ident = do
   analyses <- map T.unpack <$> upsCached cache fsm (T.pack (prettyIdent ident))
   return (any ("<0><V><cpl:" `isInfixOf`) analyses)
 
 -- | Check whether an identifier has a verbal analysis.
-isVerbLike :: RenderCache -> FSM -> Identifier -> IO Bool
+isVerbLike :: RenderCache -- ^ Shared morphology cache.
+           -> FSM -- ^ Morphology machine used for analysis.
+           -> Identifier -- ^ Candidate predicate identifier.
+           -> IO Bool -- ^ Whether morphology classifies the identifier as verb-like.
 isVerbLike cache fsm ident = do
   analyses <- map T.unpack <$> upsCached cache fsm (T.pack (prettyIdent ident))
   let hasVerb = any ("<V>" `isInfixOf`) analyses
@@ -1056,19 +1082,27 @@ isVerbLike cache fsm ident = do
   return (hasVerb && not hasNoun)
 
 -- | Check whether an identifier has any verbal analysis.
-hasVerbAnalysis :: RenderCache -> FSM -> Identifier -> IO Bool
+hasVerbAnalysis :: RenderCache -- ^ Shared morphology cache.
+                -> FSM -- ^ Morphology machine used for analysis.
+                -> Identifier -- ^ Candidate verb identifier.
+                -> IO Bool -- ^ Whether any analysis is verbal.
 hasVerbAnalysis cache fsm ident = do
   analyses <- map T.unpack <$> upsCached cache fsm (T.pack (prettyIdent ident))
   return (any ("<V>" `isInfixOf`) analyses)
 
 -- | Check whether an identifier has a 2nd-person imperative verbal analysis.
-hasImperativeAnalysis :: RenderCache -> FSM -> Identifier -> IO Bool
+hasImperativeAnalysis :: RenderCache -- ^ Shared morphology cache.
+                      -> FSM -- ^ Morphology machine used for analysis.
+                      -> Identifier -- ^ Candidate imperative surface identifier.
+                      -> IO Bool -- ^ Whether any analysis is imperative.
 hasImperativeAnalysis cache fsm ident = do
   analyses <- map T.unpack <$> upsCached cache fsm (T.pack (prettyIdent ident))
   return (any ("<V>" `isInfixOf`) analyses && any ("<imp><2s>" `isInfixOf`) analyses)
 
 -- | Pick a lemma-like candidate, preferring nominative analyses.
-pickLemmaCandidate :: Identifier -> [(Identifier, Case)] -> Identifier
+pickLemmaCandidate :: Identifier -- ^ Fallback identifier when no suitable candidate exists.
+                   -> [(Identifier, Case)] -- ^ Resolved candidate names and cases.
+                   -> Identifier -- ^ Preferred lemma-shaped candidate.
 pickLemmaCandidate fallback candidates =
   case find (\(_, cas) -> cas == Nom) candidates of
     Just (ident, _) -> ident
@@ -1078,7 +1112,11 @@ pickLemmaCandidate fallback candidates =
         [] -> fallback
 
 -- | Pick a lemma identifier via TRmorph analyses, then fall back to candidates.
-pickLemmaIdentifier :: RenderCache -> FSM -> Identifier -> [(Identifier, Case)] -> IO Identifier
+pickLemmaIdentifier :: RenderCache -- ^ Shared morphology cache.
+                    -> FSM -- ^ Morphology machine used for analysis.
+                    -> Identifier -- ^ Surface-form fallback identifier.
+                    -> [(Identifier, Case)] -- ^ Resolved candidate names and cases.
+                    -> IO Identifier -- ^ Morphologically preferred lemma identifier.
 pickLemmaIdentifier cache fsm fallback@(mods, _) candidates = do
   case candidates of
     _:_ ->
@@ -1107,7 +1145,11 @@ pickLemmaIdentifier cache fsm fallback@(mods, _) candidates = do
         _ -> return fallback
 
 -- | Render a verb in ip-converb form using TRmorph.
-renderVerbAsConverb :: RenderCache -> FSM -> Identifier -> [(Identifier, Case)] -> IO String
+renderVerbAsConverb :: RenderCache -- ^ Shared morphology cache.
+                    -> FSM -- ^ Morphology machine used for generation.
+                    -> Identifier -- ^ Verb surface identifier.
+                    -> [(Identifier, Case)] -- ^ Resolved lemma candidates.
+                    -> IO String -- ^ Verb rendered with a converb suffix.
 renderVerbAsConverb cache fsm name candidates = do
   lemma <- pickLemmaIdentifier cache fsm name candidates
   let stem = prettyIdent lemma
@@ -1116,7 +1158,12 @@ renderVerbAsConverb cache fsm name candidates = do
   return (fromMaybe (prettyIdent name) (pickDownForm forms))
 
 -- | Render a verb in imperative form by preferring concise TRmorph surfaces.
-renderVerbAsImperative :: RenderCache -> FSM -> Identifier -> Identifier -> [(Identifier, Case)] -> IO String
+renderVerbAsImperative :: RenderCache -- ^ Shared morphology cache.
+                       -> FSM -- ^ Morphology machine used for generation.
+                       -> Identifier -- ^ Original surface identifier.
+                       -> Identifier -- ^ Selected lemma identifier.
+                       -> [(Identifier, Case)] -- ^ Resolved candidates used as fallbacks.
+                       -> IO String -- ^ Imperative surface spelling.
 renderVerbAsImperative cache fsm surface lemma candidates = do
   analyses <- map T.unpack <$> upsCached cache fsm (T.pack (prettyIdent surface))
   let verbAnalyses = filter ("<V>" `isInfixOf`) analyses
@@ -1170,7 +1217,8 @@ renderVerbAsImperative cache fsm surface lemma candidates = do
     isPlainLower = all (\ch -> (isLetter ch && isLower ch) || ch == '-')
 
 -- | Check whether rendered text already carries an accusative suffix.
-hasAccSuffix :: String -> Bool
+hasAccSuffix :: String -- ^ Surface spelling to inspect.
+             -> Bool -- ^ 'True' when an accusative suffix is already present.
 hasAccSuffix s =
   any (`isSuffixOf` s)
     [ "'ı", "'i", "'u", "'ü"
@@ -1178,7 +1226,13 @@ hasAccSuffix s =
     ]
 
 -- | Render a clause preserving case annotations.
-renderClausePC :: RenderCache -> FSM -> EvalState -> Case -> String -> Clause Ann -> IO String
+renderClausePC :: RenderCache -- ^ Shared morphology cache.
+               -> FSM -- ^ Morphology machine used for generation.
+               -> EvalState -- ^ Evaluator state used to render the clause body.
+               -> Case -- ^ Case carried by the match expression.
+               -> String -- ^ Already rendered scrutinee text.
+               -> Clause Ann -- ^ Clause to render.
+               -> IO String -- ^ Rendered clause text.
 renderClausePC cache fsm evalSt matchCase scrutStr (Clause pat body) = do
   patStr <- renderPatPC cache fsm scrutStr pat
   let bodyForRender =
@@ -1193,7 +1247,9 @@ renderClausePC cache fsm evalSt matchCase scrutStr (Clause pat body) = do
 
 -- | Try to select the matching clause if the scrutinee is a value.
 -- Returns Just clauseBody if a clause matches, Nothing if scrutinee needs evaluation.
-selectMatchingClause :: Exp Ann -> [Clause Ann] -> Maybe (Exp Ann)
+selectMatchingClause :: Exp Ann -- ^ Evaluated match scrutinee.
+                     -> [Clause Ann] -- ^ Clauses in declaration order.
+                     -> Maybe (Exp Ann) -- ^ Body of the first matching clause.
 selectMatchingClause scrut clauses =
   case scrut of
     IntLit {} -> findMatchingClauseBody scrut clauses
@@ -1224,7 +1280,11 @@ selectMatchingClause scrut clauses =
 
 
 -- | Render a pattern preserving case annotations.
-renderPatPC :: RenderCache -> FSM -> String -> Pat Ann -> IO String
+renderPatPC :: RenderCache -- ^ Shared morphology cache.
+            -> FSM -- ^ Morphology machine used for generation.
+            -> String -- ^ Rendered scrutinee used to phrase the pattern.
+            -> Pat Ann -- ^ Pattern to render.
+            -> IO String -- ^ Rendered pattern text.
 renderPatPC cache fsm scrutStr pat =
   case pat of
     PWildcard _ -> return "değilse"
@@ -1442,7 +1502,11 @@ applyCaseToLastWord cache fsm cas s =
            else Just (reverse revPref, reverse revWord, reverse revSuff)
 
 -- | Render a quoted string literal with a case suffix (if any).
-renderStrLitWithCase :: RenderCache -> FSM -> Case -> Text -> IO String
+renderStrLitWithCase :: RenderCache -- ^ Shared morphology cache.
+                     -> FSM -- ^ Morphology machine used for generation.
+                     -> Case -- ^ Grammatical case to apply to the literal.
+                     -> Text -- ^ String literal contents.
+                     -> IO String -- ^ Quoted and inflected literal text.
 renderStrLitWithCase cache fsm cas litText = do
   let bare = T.unpack litText
       quoted = "\"" ++ bare ++ "\""
@@ -1458,7 +1522,11 @@ renderStrLitWithCase cache fsm cas litText = do
     quoteSuffix s = '\'' : s
 
 -- | Render a character literal with a case suffix (if any).
-renderCharLitWithCase :: RenderCache -> FSM -> Case -> Char -> IO String
+renderCharLitWithCase :: RenderCache -- ^ Shared morphology cache.
+                      -> FSM -- ^ Morphology machine used for generation.
+                      -> Case -- ^ Grammatical case to apply to the literal.
+                      -> Char -- ^ Character literal value.
+                      -> IO String -- ^ Quoted and inflected literal text.
 renderCharLitWithCase cache fsm cas c = do
   let quoted = "'" ++ [c] ++ "'"
   if cas == Nom

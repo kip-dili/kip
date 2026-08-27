@@ -52,15 +52,23 @@ import Paths_kip (getLibDir, version)
 -- | Process-local memo state shared by cache operations.
 data CacheMemo = CacheMemo
   { memoHashes :: !(IORef (Map.Map FilePath (Integer, ByteString)))
+    -- ^ Content hashes keyed by path and guarded by the observed modification time.
   , memoCanonicalPaths :: !(IORef (Map.Map FilePath FilePath))
+    -- ^ Canonical absolute paths already resolved during this process.
   , memoCompilerHash :: !(IORef (Maybe ByteString))
+    -- ^ Cached fingerprint of the shared compiler artifact.
   , memoVerifiedPaths :: !(IORef (Map.Map (FilePath, Integer, Integer, ByteString) Bool))
+    -- ^ Successful fingerprint validations keyed by all relevant file metadata.
   , memoReverseDependencies :: !(IORef (Map.Map FilePath (Set.Set FilePath)))
+    -- ^ Source dependency graph indexed from dependency to direct dependents.
   , memoDirtySources :: !(IORef (Set.Set FilePath))
+    -- ^ Sources known to be stale during the current process.
   , memoValidatedRoots :: !(IORef (Set.Set ByteString))
+    -- ^ Dependency Merkle roots whose complete file sets were already validated.
   }
 
 {-# NOINLINE cacheMemo #-}
+-- | Process-wide memo tables used to avoid repeated cache validation work.
 cacheMemo :: CacheMemo
 cacheMemo = unsafePerformIO $
   CacheMemo
@@ -75,9 +83,13 @@ cacheMemo = unsafePerformIO $
 -- | Stable identity and filesystem metadata for one source file.
 data FileFingerprint = FileFingerprint
   { fingerprintPath :: !FilePath
+    -- ^ Canonical path of the source file.
   , fingerprintDigest :: !ByteString
+    -- ^ SHA-256 digest of the file contents.
   , fingerprintSize :: !Integer
+    -- ^ File size in bytes when the fingerprint was captured.
   , fingerprintMTime :: !Integer
+    -- ^ File modification time in microseconds when captured.
   }
 
 -- Keep the existing tuple-compatible prelude-cache representation.
@@ -97,14 +109,15 @@ data CacheMetadata = CacheMetadata
   , sourceMTime  :: !Integer             -- ^ Source file mtime in microseconds.
   , dependencyRootHash :: !ByteString    -- ^ Merkle root of direct dependency fingerprints.
   , dependencies :: ![FileFingerprint]
+    -- ^ Fingerprints of direct source dependencies.
   } deriving (Generic)
 
 -- | Build cache metadata for one source and its direct dependencies.
 buildCacheMetadata ::
-  FilePath ->
-  T.Text ->
-  [FileFingerprint] ->
-  IO (Maybe CacheMetadata)
+  FilePath -- ^ Source file represented by the cache.
+  -> T.Text -- ^ Current source contents.
+  -> [FileFingerprint] -- ^ Direct dependency fingerprints.
+  -> IO (Maybe CacheMetadata) -- ^ Metadata, unless the compiler cannot be fingerprinted.
 buildCacheMetadata sourcePath sourceText dependencyFingerprints = do
   mCompilerHash <- getCompilerHash
   case mCompilerHash of
@@ -159,22 +172,28 @@ instance Binary CacheMetadata where
         mtime <- fromIntegral <$> getWord64be
         return (FileFingerprint path digest size mtime)
 
-putHash :: ByteString -> Put
+-- | Encode a length-prefixed cryptographic digest.
+putHash :: ByteString -- ^ Digest bytes to encode.
+        -> Put -- ^ Binary encoder action.
 putHash digest = do
   putWord8 (fromIntegral (BS.length digest))
   putByteString digest
 
+-- | Decode a length-prefixed cryptographic digest.
 getHash :: Get ByteString
 getHash = getWord8 >>= getByteString . fromIntegral
 
+-- | Magic word identifying a Kip module-cache file.
 cacheMagic :: Word32
 cacheMagic = 0x4b49505a -- "KIPZ"
 
+-- | Version of the sectioned module-cache encoding.
 cacheFormatVersion :: Word16
 cacheFormatVersion = 3
 
 -- | Stable Merkle root for a module's direct dependency leaves.
-dependencyMerkleRoot :: [FileFingerprint] -> ByteString
+dependencyMerkleRoot :: [FileFingerprint] -- ^ Direct dependencies to summarize.
+                     -> ByteString -- ^ Stable hash of dependency paths and digests.
 dependencyMerkleRoot deps =
   hashlazy
     (encode
@@ -182,12 +201,15 @@ dependencyMerkleRoot deps =
       | fingerprint <- deps
       ])
 
-putCacheHeader :: CacheMetadata -> Put
+-- | Encode the module-cache magic, format version, and validation metadata.
+putCacheHeader :: CacheMetadata -- ^ Metadata to place in the cache prefix.
+               -> Put -- ^ Binary encoder action.
 putCacheHeader meta = do
   putWord32be cacheMagic
   putWord16be cacheFormatVersion
   put meta
 
+-- | Validate and decode a module-cache header.
 getCacheHeader :: Get CacheMetadata
 getCacheHeader = do
   magic <- getWord32be
@@ -225,24 +247,36 @@ instance Binary CachedModule where
     cachedTC <- decodeSection tcBytes
     return CachedModule{..}
 
-encodeSection :: Binary a => a -> ByteString
+-- | Encode a cache section as a strict byte string.
+encodeSection :: Binary a
+              => a -- ^ Section value to encode.
+              -> ByteString -- ^ Encoded section payload.
 encodeSection = toStrict . encode
 
-putSection :: Binary a => Word8 -> a -> Put
+-- | Encode a tagged, length-prefixed cache section.
+putSection :: Binary a
+           => Word8 -- ^ Section tag expected by readers.
+           -> a -- ^ Section value to encode.
+           -> Put -- ^ Binary encoder action.
 putSection tag value = do
   let bytes = encodeSection value
   putWord8 tag
   putWord32be (fromIntegral (BS.length bytes))
   putByteString bytes
 
-getSection :: Word8 -> Get ByteString
+-- | Decode one tagged cache section without decoding its payload value.
+getSection :: Word8 -- ^ Required section tag.
+           -> Get ByteString -- ^ Encoded section payload.
 getSection expectedTag = do
   tag <- getWord8
   when (tag /= expectedTag) (fail "Unexpected module-cache section tag")
   sectionLength <- getWord32be
   getByteString (fromIntegral sectionLength)
 
-decodeSection :: Binary a => ByteString -> Get a
+-- | Decode an isolated section and reject trailing bytes.
+decodeSection :: Binary a
+              => ByteString -- ^ Encoded section payload.
+              -> Get a -- ^ Decoder for the contained value.
 decodeSection bytes =
   case decodeOrFail (fromStrict bytes) of
     Left (_, _, err) -> fail err
@@ -256,11 +290,17 @@ decodeSection bytes =
 -- loading @lib/giriş.kip@ and transitive dependencies.
 data CachedPrelude = CachedPrelude
   { preludeCompilerHash :: !ByteString
+    -- ^ Fingerprint of the compiler that created the snapshot.
   , preludeFiles :: ![FileFingerprint]
+    -- ^ Source files whose contents determine snapshot validity.
   , preludeLoaded :: ![FilePath]
+    -- ^ Canonical module paths already loaded by the snapshot.
   , preludeParser :: !CachedParserState
+    -- ^ Fully merged parser state after loading the prelude.
   , preludeTC :: !CachedTCState
+    -- ^ Fully merged typechecker state after loading the prelude.
   , preludeEval :: !CachedEvalState
+    -- ^ Serializable evaluator state after loading the prelude.
   , preludePrimStmts :: ![(FilePath, Stmt Ann)]
     -- ^ Source path and 'PrimFunc' statement pairs needed to rebuild
     -- 'evalPrimFuncs' host callbacks (see 'Kip.Eval.evalPrimFuncs').
@@ -269,9 +309,11 @@ data CachedPrelude = CachedPrelude
     -- re-decoding each module cache.
   } deriving (Generic)
 
+-- | Magic word identifying a Kip prelude snapshot.
 preludeMagic :: Word32
 preludeMagic = 0x4b495050 -- "KIPP"
 
+-- | Version of the prelude-snapshot encoding.
 preludeFormatVersion :: Word16
 preludeFormatVersion = 2
 
@@ -352,10 +394,14 @@ instance Binary CachedParserState where
     (pupsCache, pdownsCache) <- getMorphCaches
     return CachedParserState{..}
 
+-- | Minimum text occurrence count at which morphology values use a dictionary.
 morphDictionaryThreshold :: Int
 morphDictionaryThreshold = 64
 
-putMorphCaches :: [(T.Text, [T.Text])] -> [(T.Text, [T.Text])] -> Put
+-- | Encode analysis and generation caches, selecting compact dictionary mode when useful.
+putMorphCaches :: [(T.Text, [T.Text])] -- ^ Surface-to-analysis entries.
+               -> [(T.Text, [T.Text])] -- ^ Analysis-to-surface entries.
+               -> Put -- ^ Binary encoder action.
 putMorphCaches upsEntries downsEntries
   | textCount < morphDictionaryThreshold = do
       putWord8 0
@@ -373,7 +419,10 @@ putMorphCaches upsEntries downsEntries
     dictionary = Set.toAscList (Set.fromList [txt | (key, values) <- allEntries, txt <- key : values])
     dictionaryIds = Map.fromDistinctAscList (zip dictionary [0..])
 
-putMorphEntries :: Map.Map T.Text Word32 -> [(T.Text, [T.Text])] -> Put
+-- | Encode morphology entries as indices into a shared text dictionary.
+putMorphEntries :: Map.Map T.Text Word32 -- ^ Dictionary text-to-index mapping.
+                -> [(T.Text, [T.Text])] -- ^ Entries to encode.
+                -> Put -- ^ Binary encoder action.
 putMorphEntries dictionaryIds entries = do
   putWord32be (fromIntegral (length entries))
   mapM_ putEntry entries
@@ -383,6 +432,7 @@ putMorphEntries dictionaryIds entries = do
       putWord32be (fromIntegral (length values))
       mapM_ (putWord32be . (dictionaryIds Map.!)) values
 
+-- | Decode the analysis and generation morphology caches.
 getMorphCaches :: Get ([(T.Text, [T.Text])], [(T.Text, [T.Text])])
 getMorphCaches = do
   encoding <- getWord8
@@ -396,7 +446,9 @@ getMorphCaches = do
       return (upsEntries, downsEntries)
     _ -> fail "Unsupported morphology-cache encoding"
 
-getMorphEntries :: V.Vector T.Text -> Get [(T.Text, [T.Text])]
+-- | Decode morphology entries using a shared text dictionary.
+getMorphEntries :: V.Vector T.Text -- ^ Dictionary indexed by encoded identifiers.
+                -> Get [(T.Text, [T.Text])] -- ^ Decoded key/value entries.
 getMorphEntries dictionary = do
   entryCount <- getWord32be
   replicateM (fromIntegral entryCount) $ do
@@ -405,7 +457,9 @@ getMorphEntries dictionary = do
     values <- replicateM (fromIntegral valueCount) (getMorphText dictionary)
     return (key, values)
 
-getMorphText :: V.Vector T.Text -> Get T.Text
+-- | Decode one validated index into a morphology text dictionary.
+getMorphText :: V.Vector T.Text -- ^ Dictionary indexed by encoded identifiers.
+             -> Get T.Text -- ^ Referenced text or a decoding failure.
 getMorphText dictionary = do
   idx <- getWord32be
   case dictionary V.!? fromIntegral idx of
@@ -475,7 +529,9 @@ toCachedParserStateDelta base current =
 
 -- | Attach the O(number-of-genuine-misses) morphology delta collected while
 -- compiling one module.
-attachMorphDelta :: MorphDelta -> CachedParserState -> CachedParserState
+attachMorphDelta :: MorphDelta -- ^ Morphology entries recorded while compiling the module.
+                 -> CachedParserState -- ^ Parser-state delta to enrich.
+                 -> CachedParserState -- ^ Delta carrying only the recorded morphology entries.
 attachMorphDelta MorphDelta{..} cached =
   cached
     { pupsCache = morphUpsDelta
@@ -503,12 +559,12 @@ fromCachedParserState fsm cachePath morphCaches CachedParserState{..} = do
 
 -- | Apply a cached parser delta to the state accumulated by earlier modules.
 fromCachedParserStateDelta ::
-  FSM
-  -> Maybe FilePath
-  -> MC.MorphCaches
-  -> ParserState
-  -> CachedParserState
-  -> IO ParserState
+  FSM -- ^ Morphology FSM handle.
+  -> Maybe FilePath -- ^ Cached module path used for parser spans.
+  -> MC.MorphCaches -- ^ Shared morphology caches to update.
+  -> ParserState -- ^ State accumulated from previously loaded modules.
+  -> CachedParserState -- ^ Module-local parser delta.
+  -> IO ParserState -- ^ State after merging the cached delta.
 fromCachedParserStateDelta fsm cachePath morphCaches base cached = do
   delta <- fromCachedParserState fsm cachePath morphCaches cached
   return
@@ -538,7 +594,9 @@ toCachedTCState ::
 toCachedTCState = CachedTCState
 
 -- | Cache only typechecker entries introduced or changed by one module load.
-toCachedTCStateDelta :: TCState -> TCState -> CachedTCState
+toCachedTCStateDelta :: TCState -- ^ State before loading the module.
+                     -> TCState -- ^ State after loading the module.
+                     -> CachedTCState -- ^ Only entries introduced or changed by the module.
 toCachedTCStateDelta base current =
   CachedTCState
     (emptyTCState
@@ -565,21 +623,34 @@ toCachedTCStateDelta base current =
 
 -- | Remove one occurrence of every baseline element while preserving the
 -- order of entries introduced by the current module.
-listDelta :: Eq a => [a] -> [a] -> [a]
+listDelta :: Eq a
+          => [a] -- ^ Current list whose order is preserved.
+          -> [a] -- ^ Baseline occurrences to remove once each.
+          -> [a] -- ^ Entries introduced after the baseline.
 listDelta = foldl' (flip delete)
 
-multiMapDelta :: (Ord key, Eq value) => Map.Map key [value] -> Map.Map key [value] -> Map.Map key [value]
+-- | Retain list-valued map entries added after a baseline state.
+multiMapDelta :: (Ord key, Eq value)
+              => Map.Map key [value] -- ^ Baseline multimap.
+              -> Map.Map key [value] -- ^ Current multimap.
+              -> Map.Map key [value] -- ^ Per-key values absent from the baseline.
 multiMapDelta base =
   Map.mapMaybeWithKey $ \key values ->
     let added = listDelta values (Map.findWithDefault [] key base)
     in if null added then Nothing else Just added
 
-mapDelta :: (Ord key, Eq value) => Map.Map key value -> Map.Map key value -> Map.Map key value
+-- | Retain map entries whose values differ from a baseline state.
+mapDelta :: (Ord key, Eq value)
+         => Map.Map key value -- ^ Baseline map.
+         -> Map.Map key value -- ^ Current map.
+         -> Map.Map key value -- ^ New or changed entries.
 mapDelta base =
   Map.filterWithKey $ \key value -> Map.lookup key base /= Just value
 
 -- | Merge one cached typechecker delta into the accumulated state.
-mergeCachedTCState :: TCState -> TCState -> TCState
+mergeCachedTCState :: TCState -- ^ State accumulated from earlier modules.
+                   -> TCState -- ^ Module-local cached delta.
+                   -> TCState -- ^ Combined typechecker state with derived indexes rebuilt.
 mergeCachedTCState current delta =
   let mergedFuncs = Map.unionWith (++) (tcFuncs delta) (tcFuncs current)
       mergedSigs = Map.unionWith (++) (tcFuncSigs delta) (tcFuncSigs current)
@@ -682,8 +753,8 @@ cacheFilePath path = replaceExtension path ".iz"
 
 -- | Default on-disk location for the prelude snapshot.
 --
--- We keep this in @~/.kip/cache@ so all executables (`kip`, `kip-lsp`,
--- `kip-playground`) can reuse the same startup artifact.
+-- We keep this in @~/.kip/cache@ so all executables (@kip@, @kip-lsp@,
+-- @kip-playground@) can reuse the same startup artifact.
 preludeSnapshotPath :: IO FilePath
 preludeSnapshotPath = do
   home <- getHomeDirectory
@@ -706,7 +777,7 @@ canonicalizePathCached path = do
 
 -- | Load a cached module from disk if it is valid.
 --
--- 'CachedModule' encodes metadata first, so validate that prefix before
+-- @CachedModule@ encodes metadata first, so validate that prefix before
 -- decoding the larger AST/state payload.
 loadCachedModule ::
   FilePath -- ^ Cache file path.
@@ -727,7 +798,8 @@ loadCachedModule path = do
               Right (_, _, m) -> return (Just m)
 
 -- | Load only the typed-statement section from a valid module cache.
-loadCachedTypedStmts :: FilePath -> IO (Maybe [Stmt Ann])
+loadCachedTypedStmts :: FilePath -- ^ Module-cache path.
+                     -> IO (Maybe [Stmt Ann]) -- ^ Typed statements when the cache is valid.
 loadCachedTypedStmts path =
   loadCachedSections path getStmtsPrefix fst (\(_, stmtsBytes) -> decodeSectionValue stmtsBytes)
   where
@@ -736,7 +808,8 @@ loadCachedTypedStmts path =
 
 -- | Load the typed-statement and parser sections without decoding typechecker
 -- state.  This is the exact prefix needed by LSP workspace definition scans.
-loadCachedAstParser :: FilePath -> IO (Maybe ([Stmt Ann], CachedParserState))
+loadCachedAstParser :: FilePath -- ^ Module-cache path.
+                    -> IO (Maybe ([Stmt Ann], CachedParserState)) -- ^ AST and parser prefix when valid.
 loadCachedAstParser path =
   loadCachedSections path getAstParserPrefix (\(meta, _, _) -> meta) decodePrefix
   where
@@ -749,7 +822,11 @@ loadCachedAstParser path =
       return (stmts, parserState)
 
 -- | Read, validate, and decode a selected cache prefix.
-loadCachedSections :: FilePath -> Get prefix -> (prefix -> CacheMetadata) -> (prefix -> Either String value) -> IO (Maybe value)
+loadCachedSections :: FilePath -- ^ Module-cache path.
+                   -> Get prefix -- ^ Decoder for the required cache prefix.
+                   -> (prefix -> CacheMetadata) -- ^ Metadata projection used for validation.
+                   -> (prefix -> Either String value) -- ^ Decoder for the selected consumer value.
+                   -> IO (Maybe value) -- ^ Decoded value when I/O, validation, and decoding succeed.
 loadCachedSections path getPrefix prefixMetadata decodePrefix = do
   mCacheFile <- readCacheBytes path
   case mCacheFile of
@@ -765,7 +842,8 @@ loadCachedSections path getPrefix prefixMetadata decodePrefix = do
             else return (either (const Nothing) Just (decodePrefix prefix))
 
 -- | Read a cache file, swallowing missing-file and I/O failures.
-readCacheBytes :: FilePath -> IO (Maybe (FilePath, ByteString))
+readCacheBytes :: FilePath -- ^ Cache path to read.
+               -> IO (Maybe (FilePath, ByteString)) -- ^ Canonical path and bytes when readable.
 readCacheBytes path = do
   absPath <- canonicalizePathCached path
   exists <- doesFileExist absPath
@@ -775,7 +853,10 @@ readCacheBytes path = do
       result <- try (BS.readFile absPath) :: IO (Either SomeException ByteString)
       return (either (const Nothing) (\bytes -> Just (absPath, bytes)) result)
 
-decodeSectionValue :: Binary a => ByteString -> Either String a
+-- | Decode a standalone cache section and report malformed or trailing bytes.
+decodeSectionValue :: Binary a
+                   => ByteString -- ^ Encoded section payload.
+                   -> Either String a -- ^ Decoded value or error text.
 decodeSectionValue bytes =
   case decodeOrFail (fromStrict bytes) of
     Left (_, _, err) -> Left err
@@ -791,7 +872,9 @@ saveCachedModule ::
 saveCachedModule path = writeCacheBytesIfChanged path . toStrict . encode
 
 -- | Write cache bytes only when their contents differ from the existing file.
-writeCacheBytesIfChanged :: FilePath -> ByteString -> IO ()
+writeCacheBytesIfChanged :: FilePath -- ^ Destination cache path.
+                         -> ByteString -- ^ Complete bytes intended for the file.
+                         -> IO () -- ^ Completion after any necessary write.
 writeCacheBytesIfChanged path bytes = do
   absPath <- canonicalizePathCached path
   mCurrentMeta <- getFileMeta absPath
@@ -806,7 +889,7 @@ writeCacheBytesIfChanged path bytes = do
   when shouldWrite (BS.writeFile absPath bytes)
 
 -- | Check whether cache metadata is valid for the current compiler and
--- sources, without requiring the full decoded 'CachedModule'.
+-- sources, without requiring the full decoded @CachedModule@.
 isCacheValidMeta ::
   FilePath -- ^ Cache file path.
   -> CacheMetadata -- ^ Cache metadata to validate.
@@ -876,7 +959,9 @@ isCacheValidMeta path meta = do
               return ok
 
 -- | Register reverse edges for one source file to its direct dependencies.
-registerDependencyEdges :: FilePath -> [FilePath] -> IO ()
+registerDependencyEdges :: FilePath -- ^ Source that depends on the listed files.
+                        -> [FilePath] -- ^ Direct dependency paths.
+                        -> IO () -- ^ Completion after extending the reverse graph.
 registerDependencyEdges source deps = do
   deps' <- mapM canonicalizePathCached deps
   modifyIORef'
@@ -888,7 +973,8 @@ registerDependencyEdges source deps = do
         deps')
 
 -- | Mark one source file dirty and propagate to transitive dependents.
-markDirtySource :: FilePath -> IO ()
+markDirtySource :: FilePath -- ^ Source known to have changed.
+                -> IO () -- ^ Completion after marking transitive dependents dirty.
 markDirtySource sourceRaw = do
   source <- canonicalizePathCached sourceRaw
   graph <- readIORef (memoReverseDependencies cacheMemo)
@@ -966,7 +1052,8 @@ saveCachedPrelude snapshotPath pst tcSt evalSt loaded = do
           writeCacheBytesIfChanged snapshotPath (toStrict (encode snap))
 
 -- | Validate a prelude snapshot against current compiler and source metadata.
-isCachedPreludeValid :: CachedPrelude -> IO Bool
+isCachedPreludeValid :: CachedPrelude -- ^ Prelude snapshot to validate.
+                     -> IO Bool -- ^ 'True' when compiler and every source still match.
 isCachedPreludeValid snap = do
   mCompilerHash <- getCompilerHash
   case mCompilerHash of
@@ -987,7 +1074,11 @@ isCachedPreludeValid snap = do
 -- | Compare a file with an expected fingerprint, hashing only when metadata
 -- does not match.
 fileMatchesFingerprint ::
-  FilePath -> ByteString -> Integer -> Integer -> IO Bool
+  FilePath -- ^ File to inspect.
+  -> ByteString -- ^ Expected content digest.
+  -> Integer -- ^ Expected size in bytes.
+  -> Integer -- ^ Expected modification time in microseconds.
+  -> IO Bool -- ^ 'True' when metadata or a fallback hash matches.
 fileMatchesFingerprint path expectedDigest expectedSize expectedMTime = do
   mMeta <- getFileMeta path
   case mMeta of
@@ -998,7 +1089,8 @@ fileMatchesFingerprint path expectedDigest expectedSize expectedMTime = do
       return (mDigest == Just expectedDigest)
 
 -- | Compute a stable fingerprint for one source file.
-fileFingerprint :: FilePath -> IO (Maybe FileFingerprint)
+fileFingerprint :: FilePath -- ^ Source path to fingerprint.
+                -> IO (Maybe FileFingerprint) -- ^ Fingerprint when metadata and hashing succeed.
 fileFingerprint pathRaw = do
   path <- canonicalizePathCached pathRaw
   mMeta <- getFileMeta path
@@ -1011,7 +1103,8 @@ fileFingerprint pathRaw = do
         Just digest -> return (Just (FileFingerprint path digest size mtime))
 
 -- | Fingerprint a file, falling back to a content hash when metadata fails.
-fileFingerprintOrHash :: FilePath -> IO FileFingerprint
+fileFingerprintOrHash :: FilePath -- ^ Source path to fingerprint.
+                      -> IO FileFingerprint -- ^ Metadata-backed or content-only fingerprint.
 fileFingerprintOrHash path = do
   mFingerprint <- fileFingerprint path
   case mFingerprint of
@@ -1023,12 +1116,13 @@ fileFingerprintOrHash path = do
 -- | Collect the @(source path, 'PrimFunc' statement)@ pairs needed to
 -- rebuild 'evalPrimFuncs' host callbacks for a set of loaded modules.
 --
--- `evalPrimFuncs` contains host callbacks and therefore cannot be
+-- @evalPrimFuncs@ contains host callbacks and therefore cannot be
 -- serialized directly. This decodes each module's @.iz@ cache once to
 -- extract its 'PrimFunc' statements; the result is small and is persisted
--- directly in 'CachedPrelude' so future loads never need to touch the
+-- directly in @CachedPrelude@ so future loads never need to touch the
 -- module caches again (see 'replayPreludePrimStmts').
-collectPreludePrimStmts :: [FilePath] -> IO [(FilePath, Stmt Ann)]
+collectPreludePrimStmts :: [FilePath] -- ^ Canonical source paths loaded by the prelude.
+                        -> IO [(FilePath, Stmt Ann)] -- ^ Primitive statements paired with their source paths.
 collectPreludePrimStmts loaded = do
   canonicalLoaded <- mapM canonicalizePathCached loaded
   concat <$> mapM collectOne canonicalLoaded
@@ -1048,7 +1142,9 @@ collectPreludePrimStmts loaded = do
 -- replaying pre-collected 'PrimFunc' statements. No file I/O or cache
 -- decoding is needed here; see 'collectPreludePrimStmts' for where the
 -- statements come from.
-replayPreludePrimStmts :: [(FilePath, Stmt Ann)] -> EvalState -> IO EvalState
+replayPreludePrimStmts :: [(FilePath, Stmt Ann)] -- ^ Pre-collected primitive statements and source paths.
+                       -> EvalState -- ^ Restored evaluator state lacking host callbacks.
+                       -> IO EvalState -- ^ Evaluator state with primitive bindings rebuilt.
 replayPreludePrimStmts primStmts evalBase =
   foldM
     (\acc (srcPath, stmt) -> do
@@ -1120,7 +1216,7 @@ hashFile path = do
 -- @kip-playground@. Fingerprinting the current executable made those programs
 -- invalidate one another's otherwise-compatible caches because their binary
 -- sizes and mtimes necessarily differ. Cabal installs the single library
--- archive linked by all three programs in the library component's 'getLibDir';
+-- archive linked by all three programs in the library component's @getLibDir@;
 -- its metadata changes whenever the shared compiler implementation is rebuilt
 -- while remaining identical for every frontend.
 getCompilerHash ::

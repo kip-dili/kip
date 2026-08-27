@@ -39,81 +39,137 @@ import Kip.AST
 -- | A bound identifier, its declaration range, and its lexical scope.
 data BinderInfo = BinderInfo
   { biIdent :: !Identifier
+    -- ^ The bound name.
   , biRange :: !Range
+    -- ^ Range of the binding occurrence itself.
   , biScope :: !Span
+    -- ^ Span over which the binding is visible.
   }
 
+-- | How one index entry is located: by Kip source span or by LSP range.
 data SpanKey
   = SpanKey Span
+  -- ^ Keyed by a span from the Kip AST.
   | RangeKey Range
+  -- ^ Keyed by an LSP range, used for binder declarations.
   deriving (Eq, Ord, Show)
 
 -- | Resolved information attached to one source span or LSP range.
 data SpanInfo = SpanInfo
   { siSpan :: Maybe Span
+    -- ^ Source span this information came from.
   , siRange :: Maybe Range
+    -- ^ LSP range this information came from.
   , siIdent :: Maybe Identifier
+    -- ^ Name the typechecker resolved here.
   , siSig :: Maybe (Identifier, [Ty Ann])
+    -- ^ Function and argument types resolved for a call here.
   , siType :: Maybe (Ty Ann)
+    -- ^ Type inferred for the expression here.
   , siBinder :: Maybe BinderInfo
+    -- ^ Binder declared here, when this entry is a declaration.
   }
 
 -- | Exact hash lookup plus entries for smallest-enclosing-span lookup.
 data SpanIndex = SpanIndex
   { siByKey :: HM.HashMap Text SpanInfo
+    -- ^ Entries keyed by their serialized span or range, for exact lookup.
   , siEntries :: [(SpanKey, SpanInfo)]
+    -- ^ The same entries as a list, scanned to find the innermost match for a position.
   }
 
+-- | Values attached to source spans, looked up by the innermost span containing
+-- a cursor position.
 newtype PosIndex a = PosIndex
   { piEntries :: [(Span, a)]
+    -- ^ Each indexed value with the span it covers.
   }
 
+-- | Expressions by the span they occupy.
 type ExpIndex = PosIndex (Exp Ann)
+
+-- | Variable occurrences, each with the name as written and its candidate readings.
 type VarIndex = PosIndex (Identifier, [(Identifier, Case)])
+
+-- | Variables bound by patterns, by the span of the binding occurrence.
 type PatVarIndex = PosIndex Identifier
+
+-- | Constructor patterns: the constructor, its annotation, its argument
+-- patterns, and the scrutinee it matches against when known.
 type CtorIndex = PosIndex (Identifier, Ann, [Pat Ann], Maybe (Exp Ann))
+
+-- | Clauses of a @Match@ expression, each with its scrutinee and pattern.
 type MatchClauseIndex = PosIndex (Exp Ann, Pat Ann)
+
+-- | Clauses of a function definition, each with the function's arguments and
+-- the clause's pattern.
 type FuncClauseIndex = PosIndex ([Arg Ann], Pat Ann)
 
 -- | Positional lookup indices built together in one AST traversal.
 data DocIndices = DocIndices
   { indexedExpressions :: !ExpIndex
+    -- ^ Every expression by span.
   , indexedVariables :: !VarIndex
+    -- ^ Every variable occurrence by span.
   , indexedPatternVariables :: !PatVarIndex
+    -- ^ Every pattern-bound variable by span.
   , indexedConstructors :: !CtorIndex
+    -- ^ Every constructor pattern by span.
   , indexedMatchClauses :: !MatchClauseIndex
+    -- ^ Every @Match@ clause by span.
   , indexedFunctionClauses :: !FuncClauseIndex
+    -- ^ Every function-definition clause by span.
   }
 
+-- | Entries accumulated during the traversal that builds 'DocIndices'.
 data DocIndexLists = DocIndexLists
   { expEntries :: [(Span, Exp Ann)]
+    -- ^ Expression entries collected so far.
   , varEntries :: [(Span, (Identifier, [(Identifier, Case)]))]
+    -- ^ Variable-occurrence entries collected so far.
   , patVarEntries :: [(Span, Identifier)]
+    -- ^ Pattern-bound variable entries collected so far.
   , ctorEntries :: [(Span, (Identifier, Ann, [Pat Ann], Maybe (Exp Ann)))]
+    -- ^ Constructor-pattern entries collected so far.
   , matchClauseEntries :: [(Span, (Exp Ann, Pat Ann))]
+    -- ^ @Match@ clause entries collected so far.
   , funcClauseEntries :: [(Span, ([Arg Ann], Pat Ann))]
+    -- ^ Function-clause entries collected so far.
   }
 
-emptyDocIndexLists :: DocIndexLists
+-- | Accumulator with no entries collected yet.
+emptyDocIndexLists :: DocIndexLists -- ^ Empty entry lists.
 emptyDocIndexLists = DocIndexLists [] [] [] [] [] []
 
-spanKeyText :: Span -> Text
+-- | Serialize a span for use as a hash-map key.
+spanKeyText :: Span -- ^ Span to serialize.
+            -> Text -- ^ Its textual key.
 spanKeyText = T.pack . show
 
-rangeKeyText :: Range -> Text
+-- | Serialize an LSP range for use as a hash-map key.
+rangeKeyText :: Range -- ^ Range to serialize.
+             -> Text -- ^ Its textual key.
 rangeKeyText = T.pack . show
 
-spanKeyTextForSpanKey :: SpanKey -> Text
+-- | Serialize a span key, prefixed so span and range keys cannot collide.
+spanKeyTextForSpanKey :: SpanKey -- ^ Key to serialize.
+                      -> Text -- ^ Its textual key, prefixed @S:@ or @R:@.
 spanKeyTextForSpanKey key =
   case key of
     SpanKey sp -> "S:" <> spanKeyText sp
     RangeKey range -> "R:" <> rangeKeyText range
 
-posIndexFromEntries :: [(Span, a)] -> PosIndex a
+-- | Build a positional index from collected entries.
+posIndexFromEntries :: [(Span, a)] -- ^ Values with the spans they cover.
+                    -> PosIndex a -- ^ Index over those entries.
 posIndexFromEntries = PosIndex
 
 -- | Build the unified resolved-symbol index.
-buildSpanIndex :: Map.Map Span Identifier -> Map.Map Span (Identifier, [Ty Ann]) -> Map.Map Span (Ty Ann) -> [BinderInfo] -> SpanIndex
+buildSpanIndex :: Map.Map Span Identifier -- ^ Name resolved at each span.
+               -> Map.Map Span (Identifier, [Ty Ann]) -- ^ Call signature resolved at each span.
+               -> Map.Map Span (Ty Ann) -- ^ Type inferred at each span.
+               -> [BinderInfo] -- ^ Binders declared in the document.
+               -> SpanIndex -- ^ Index merging all four sources per location.
 buildSpanIndex resolved resolvedSigs resolvedTypes binders =
   SpanIndex (HM.map snd byKey) (HM.elems byKey)
   where
@@ -148,12 +204,16 @@ buildSpanIndex resolved resolvedSigs resolvedTypes binders =
         }
 
 -- | Look up resolved information by an exact AST span.
-spanInfoForSpan :: Span -> SpanIndex -> Maybe SpanInfo
+spanInfoForSpan :: Span -- ^ Span to look up.
+                -> SpanIndex -- ^ Index to search.
+                -> Maybe SpanInfo -- ^ Information recorded at exactly that span.
 spanInfoForSpan sp idx =
   HM.lookup ("S:" <> spanKeyText sp) (siByKey idx)
 
 -- | Find the smallest indexed span or range containing a position.
-spanInfoAtPosition :: Position -> SpanIndex -> Maybe SpanInfo
+spanInfoAtPosition :: Position -- ^ Cursor position.
+                   -> SpanIndex -- ^ Index to search.
+                   -> Maybe SpanInfo -- ^ Information at the innermost entry containing the position.
 spanInfoAtPosition pos idx =
   fmap snd . listToMaybe . sortOn fst $
     [ (spanKeySize key, info)
@@ -170,14 +230,18 @@ spanInfoAtPosition pos idx =
         SpanKey sp -> spanSizeForSort sp
         RangeKey range -> rangeSizeForSort range
 
-rangeSizeForSort :: Range -> (Int, Int)
+-- | Size key ordering ranges from smallest to largest.
+rangeSizeForSort :: Range -- ^ Range to measure.
+                 -> (Int, Int) -- ^ Line span, then column span for single-line ranges.
 rangeSizeForSort (Range (Position sl sc) (Position el ec)) =
   let lines = fromIntegral el - fromIntegral sl
       cols = if lines == 0 then fromIntegral ec - fromIntegral sc else maxBound :: Int
   in (lines, cols)
 
 -- | Find the value attached to the smallest span containing a position.
-lookupByPosition :: Position -> PosIndex a -> Maybe a
+lookupByPosition :: Position -- ^ Cursor position.
+                 -> PosIndex a -- ^ Index to search.
+                 -> Maybe a -- ^ Value at the innermost span containing the position.
 lookupByPosition pos idx =
   fmap snd . listToMaybe . sortOn fst $
     [ (spanSizeForSort sp, value)
@@ -186,7 +250,8 @@ lookupByPosition pos idx =
     ]
 
 -- | Build every per-document positional index in one AST traversal.
-buildDocIndices :: [Stmt Ann] -> DocIndices
+buildDocIndices :: [Stmt Ann] -- ^ Statements of one document.
+                -> DocIndices -- ^ Every positional index for that document.
 buildDocIndices stmts =
   let lists = foldl' collectStmt emptyDocIndexLists stmts
   in DocIndices
@@ -253,7 +318,8 @@ buildDocIndices stmts =
         _ -> acc
 
 -- | Merge spans while preserving the earliest start and latest end.
-mergeSpanAll :: [Span] -> Span
+mergeSpanAll :: [Span] -- ^ Spans to combine.
+             -> Span -- ^ Span from the earliest start to the latest end, 'NoSpan' if none are located.
 mergeSpanAll spans =
   case [(start, end) | Span start end _ <- spans] of
     [] -> NoSpan
@@ -262,7 +328,8 @@ mergeSpanAll spans =
       in Span (minimum (map fst pairs)) (maximum (map snd pairs)) path
 
 -- | Compute the span covering a pattern and all nested children.
-patRootSpan :: Pat Ann -> Span
+patRootSpan :: Pat Ann -- ^ Pattern to measure.
+            -> Span -- ^ Span covering the pattern and all its subpatterns.
 patRootSpan pat =
   case pat of
     PWildcard ann -> annSpan ann
@@ -275,7 +342,9 @@ patRootSpan pat =
     PListLit pats -> mergeSpanAll (map patRootSpan pats)
 
 -- | Test whether an LSP position lies within a Kip span.
-posInSpan :: Position -> Span -> Bool
+posInSpan :: Position -- ^ Zero-based LSP position.
+          -> Span -- ^ One-based Kip source span.
+          -> Bool -- ^ 'True' when the position falls inside the span.
 posInSpan _ NoSpan = False
 posInSpan (Position line column) (Span start end _) =
   let startLine = fromIntegral (unPos (sourceLine start) - 1)
@@ -286,7 +355,9 @@ posInSpan (Position line column) (Span start end _) =
        && (line < endLine || (line == endLine && column <= endColumn))
 
 -- | Sort spans from smallest to largest for innermost lookup.
-spanSizeForSort :: Span -> (Int, Int)
+spanSizeForSort :: Span -- ^ Span to measure.
+                -> (Int, Int) -- ^ Line span, then column span for single-line spans;
+                -- 'NoSpan' sorts last.
 spanSizeForSort NoSpan = (maxBound, maxBound)
 spanSizeForSort (Span (SourcePos _ startLine startColumn) (SourcePos _ endLine endColumn) _) =
   let lines = unPos endLine - unPos startLine

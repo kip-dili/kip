@@ -21,14 +21,15 @@ import qualified Data.Text.Encoding as TE
 import Kip.Util (stableNub)
 
 -- | Opaque handle for a Foma finite state machine.
-newtype FSM = FSM (Ptr ())
+newtype FSM = FSM (Ptr ()) -- ^ Pointer owned by the Foma library.
 
 -- | Opaque handle for a Foma apply handle.
 data ApplyHandle
 
 -- | Strip trailing grammatical-case tags from an analyzer result.
 {-# INLINE stripCaseTags #-}
-stripCaseTags :: Text -> Text
+stripCaseTags :: Text -- ^ Analyzer result that may end in case tags.
+              -> Text -- ^ The result with every trailing case tag removed.
 stripCaseTags = go
   where
     tags = map T.pack
@@ -49,7 +50,8 @@ stripCaseTags = go
 
 -- | Raw FFI binding for reading a binary FSM file.
 foreign import ccall unsafe "fomalib.h fsm_read_binary_file"
-  fsmReadBinaryFile' :: CString -> IO FSM
+  fsmReadBinaryFile' :: CString -- ^ NUL-terminated path to a compiled FSM.
+                     -> IO FSM -- ^ Raw Foma handle loaded from the file.
 
 -- | Read an FSM from a binary file on disk.
 --
@@ -58,7 +60,7 @@ foreign import ccall unsafe "fomalib.h fsm_read_binary_file"
 --
 -- Safety: the deferred action only reads a file and builds a self-contained
 -- FSM value with no shared mutable state; if two threads race to force the
--- same thunk (via 'unsafeInterleaveIO's use of 'unsafeDupablePerformIO'),
+-- same thunk (via 'unsafeInterleaveIO' and its internal duplicate-safe IO),
 -- at worst one redundant read/parse happens and one result is discarded --
 -- never corruption.
 fsmReadBinaryFile ::
@@ -77,46 +79,68 @@ fsmReadBinaryFile path = do
       return fsm
 
 {-# NOINLINE fsmCache #-}
+-- | Process-wide map of source paths to lazily loaded finite-state machines.
 fsmCache :: MVar (Map.Map FilePath FSM)
 fsmCache = unsafePerformIO (newMVar Map.empty)
 
 -- | Release batch-allocated results.
 foreign import ccall unsafe "morphology.h free_batch"
-  freeBatch_ffi :: Ptr (Ptr CString) -> CInt -> IO ()
+  freeBatch_ffi :: Ptr (Ptr CString) -- ^ Array returned by a batch morphology call.
+                -> CInt -- ^ Number of rows in the array.
+                -> IO () -- ^ Completion after releasing the C allocation.
 
 -- | Initialize a reusable apply handle for analysis.
 foreign import ccall unsafe "morphology.h ups_handle_init"
-  upsHandleInit_ffi :: FSM -> IO (Ptr ApplyHandle)
+  upsHandleInit_ffi :: FSM -- ^ Machine used for morphological analysis.
+                    -> IO (Ptr ApplyHandle) -- ^ Newly allocated analysis handle.
+
 -- | Initialize a reusable apply handle for generation.
 foreign import ccall unsafe "morphology.h downs_handle_init"
-  downsHandleInit_ffi :: FSM -> IO (Ptr ApplyHandle)
+  downsHandleInit_ffi :: FSM -- ^ Machine used for morphological generation.
+                      -> IO (Ptr ApplyHandle) -- ^ Newly allocated generation handle.
+
 -- | Free an apply handle.
 foreign import ccall unsafe "&apply_handle_free"
-  applyHandleFree_ffi :: FunPtr (Ptr ApplyHandle -> IO ())
+  applyHandleFree_ffi :: FunPtr (Ptr ApplyHandle -- ^ Handle to release.
+                             -> IO ()) -- ^ C finalizer for an apply handle.
 
 -- | Batch FFI binding using a pre-initialized handle for analysis.
 foreign import ccall unsafe "morphology.h ups_batch_handle"
-  upsBatchHandle_ffi :: Ptr ApplyHandle -> Ptr CString -> CInt -> IO (Ptr (Ptr CString))
+  upsBatchHandle_ffi :: Ptr ApplyHandle -- ^ Reusable analysis handle.
+                     -> Ptr CString -- ^ Array of surface-form strings.
+                     -> CInt -- ^ Number of strings in the input array.
+                     -> IO (Ptr (Ptr CString)) -- ^ Rows of analyzer results.
+
 -- | Batch FFI binding using a pre-initialized handle for generation.
 foreign import ccall unsafe "morphology.h downs_batch_handle"
-  downsBatchHandle_ffi :: Ptr ApplyHandle -> Ptr CString -> CInt -> IO (Ptr (Ptr CString))
+  downsBatchHandle_ffi :: Ptr ApplyHandle -- ^ Reusable generation handle.
+                       -> Ptr CString -- ^ Array of analysis strings.
+                       -> CInt -- ^ Number of strings in the input array.
+                       -> IO (Ptr (Ptr CString)) -- ^ Rows of generated surface forms.
 
+-- | Lazily initialized analysis and generation handles for one FSM.
 data ApplyHandleCache = ApplyHandleCache
   { ahUps :: !(MVar (Maybe (ForeignPtr ApplyHandle)))
+    -- ^ Serialized access to the reusable analysis handle.
   , ahDowns :: !(MVar (Maybe (ForeignPtr ApplyHandle)))
+    -- ^ Serialized access to the reusable generation handle.
   }
 
-newApplyHandleCache :: IO ApplyHandleCache
+-- | Create an apply-handle cache whose handles have not yet been initialized.
+newApplyHandleCache :: IO ApplyHandleCache -- ^ Empty cache for one FSM.
 newApplyHandleCache = do
   upsVar <- newMVar Nothing
   downsVar <- newMVar Nothing
   return (ApplyHandleCache upsVar downsVar)
 
 {-# NOINLINE applyHandleCache #-}
+-- | Process-wide association between FSM pointers and their reusable handles.
 applyHandleCache :: MVar (Map.Map (Ptr ()) ApplyHandleCache)
 applyHandleCache = unsafePerformIO (newMVar Map.empty)
 
-getApplyHandleCache :: FSM -> IO ApplyHandleCache
+-- | Obtain or create the reusable apply handles associated with an FSM.
+getApplyHandleCache :: FSM -- ^ Machine whose handles are required.
+                    -> IO ApplyHandleCache -- ^ Cache associated with the machine.
 getApplyHandleCache (FSM key) =
   modifyMVar applyHandleCache $ \m ->
     case Map.lookup key m of
@@ -125,12 +149,13 @@ getApplyHandleCache (FSM key) =
         cache <- newApplyHandleCache
         return (Map.insert key cache m, cache)
 
+-- | Run an action with one lazily initialized, serialized Foma apply handle.
 withApplyHandle ::
-  FSM
-  -> (ApplyHandleCache -> MVar (Maybe (ForeignPtr ApplyHandle)))
-  -> (FSM -> IO (Ptr ApplyHandle))
-  -> (Ptr ApplyHandle -> IO a)
-  -> IO a
+  FSM -- ^ Machine that owns the handle.
+  -> (ApplyHandleCache -> MVar (Maybe (ForeignPtr ApplyHandle))) -- ^ Selector for the analysis or generation slot.
+  -> (FSM -> IO (Ptr ApplyHandle)) -- ^ FFI initializer used when the slot is empty.
+  -> (Ptr ApplyHandle -> IO a) -- ^ Operation to run while holding the handle lock.
+  -> IO a -- ^ Result produced by the operation.
 withApplyHandle fsm pickHandle initHandle action = do
   cache <- getApplyHandleCache fsm
   modifyMVar (pickHandle cache) $ \mHandle -> do
@@ -309,7 +334,8 @@ generateEditDistance1 word =
 
 -- | Generate candidates by repeatedly stripping common case-like suffixes.
 -- Candidates are validated via TRmorph before use.
-generateSuffixStrips :: Text -> [Text]
+generateSuffixStrips :: Text -- ^ Surface word from which suffixes are removed.
+                     -> [Text] -- ^ Successive, unique stripped forms.
 generateSuffixStrips = go 0 []
   where
     -- Ordered longest-first to prefer removing the most specific suffix.

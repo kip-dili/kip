@@ -28,28 +28,51 @@ import LspProtocol
 -- | Expected behaviors for a single LSP fixture.
 data LspSpec = LspSpec
   { specDiagnosticsAtLeast :: Int
+    -- ^ Minimum number of diagnostics expected when the document is opened.
   , specDiagnosticsAfterChangeAtMost :: Maybe Int
+    -- ^ Maximum number of diagnostics allowed after an edit.
   , specDiagnosticsAfterAppendAtLeast :: Maybe Int
+    -- ^ Minimum number of diagnostics expected after appending text.
   , specDiagnosticsAfterRevertAtMost :: Maybe Int
+    -- ^ Maximum number of diagnostics allowed after reverting to the original text.
   , specDiagnosticMessageContains :: [T.Text]
+    -- ^ Substrings that must appear among the diagnostic messages.
   , specFormattingEdits :: Bool
+    -- ^ Whether formatting must return at least one edit.
   , specFormattingNoop :: Bool
+    -- ^ Whether formatting must return no edits.
   , specHover :: Bool
+    -- ^ Whether a hover request should be issued at all.
   , specHoverAt :: Maybe PositionQuery
+    -- ^ Position to hover at, when not the default.
   , specHoverContains :: [T.Text]
+    -- ^ Substrings the hover text must contain.
   , specHoverEquals :: Maybe T.Text
+    -- ^ Exact text the hover must equal.
   , specHoverNotContains :: [T.Text]
+    -- ^ Substrings the hover text must not contain.
   , specHoverChecks :: [HoverCheck]
+    -- ^ Additional hover assertions at further positions.
   , specCompletionIncludes :: [T.Text]
+    -- ^ Labels the completion list must include.
   , specCompletionAt :: Maybe PositionQuery
+    -- ^ Position to request completions at, when not the default.
   , specCache :: Bool
+    -- ^ Whether a module cache file must be written after saving.
   , specCacheReuse :: Bool
+    -- ^ Whether a second session must reuse the cache rather than rewrite it.
   , specDidChangeAppend :: Maybe T.Text
+    -- ^ Text to append through a didChange notification.
   , specDidChangeRevertToOriginal :: Bool
+    -- ^ Whether to send a further edit restoring the original text.
   , specDidChangeAppendCharwise :: Bool
+    -- ^ Whether the append is sent one character per notification.
   , specDefinitionAt :: Maybe DefinitionQuery
+    -- ^ Go-to-definition query to run, when the fixture tests one.
   , specTypeDefinitionAt :: Maybe DefinitionQuery
+    -- ^ Go-to-type-definition query to run, when the fixture tests one.
   , specDocumentHighlightAt :: Maybe HighlightQuery
+    -- ^ Document-highlight query to run, when the fixture tests one.
   }
 
 -- | Decode fixture expectations from JSON.
@@ -107,26 +130,39 @@ instance A.FromJSON LspSpec where
 -- | Definition query position and minimum result count.
 data DefinitionQuery = DefinitionQuery
   { defLine :: Int
+    -- ^ Zero-based line to query.
   , defCharacter :: Int
+    -- ^ Zero-based character offset to query.
   , defAtLeast :: Int
+    -- ^ Minimum number of locations the server must return.
   , defExpectedLine :: Maybe Int
+    -- ^ Line the returned location must point at.
   , defExpectedCharacter :: Maybe Int
+    -- ^ Character offset the returned location must point at.
   , defUriContains :: Maybe T.Text
+    -- ^ Substring the returned location's URI must contain.
   }
 
 -- | Hover query with per-position assertions.
 data HoverCheck = HoverCheck
   { hoverCheckAt :: PositionQuery
+    -- ^ Position to hover at.
   , hoverCheckContains :: [T.Text]
+    -- ^ Substrings the hover text must contain.
   , hoverCheckEquals :: Maybe T.Text
+    -- ^ Exact text the hover must equal.
   , hoverCheckNotContains :: [T.Text]
+    -- ^ Substrings the hover text must not contain.
   }
 
 -- | Document highlight query with expected highlight positions.
 data HighlightQuery = HighlightQuery
   { hlLine :: Int
+    -- ^ Zero-based line to query.
   , hlCharacter :: Int
-  , hlExpectedRanges :: [[Int]]  -- List of [line, startChar, endChar]
+    -- ^ Zero-based character offset to query.
+  , hlExpectedRanges :: [[Int]]
+    -- ^ Expected highlights, each given as @[line, startChar, endChar]@.
   }
 
 -- | Decode definition query positions from JSON.
@@ -175,7 +211,9 @@ instance A.FromJSON HighlightQuery where
 -- | Hover/completion position for LSP requests.
 data PositionQuery = PositionQuery
   { posLine :: Int
+    -- ^ Zero-based line number.
   , posCharacter :: Int
+    -- ^ Zero-based character offset.
   }
 
 -- | Decode hover/completion positions from JSON.
@@ -188,13 +226,18 @@ instance A.FromJSON PositionQuery where
 -- | Resolved fixture input and expectations.
 data LspFixture = LspFixture
   { fixtureName :: String
+    -- ^ Name the test is reported under.
   , fixturePath :: FilePath
+    -- ^ Path of the fixture's Kip source file.
   , fixtureContent :: T.Text
+    -- ^ Contents of that source file.
   , fixtureSpec :: LspSpec
+    -- ^ Expectations loaded from the fixture's JSON spec.
   }
 
 -- | Build all LSP tests for the given kip-lsp executable.
-lspTestsFor :: FilePath -> IO [TestTree]
+lspTestsFor :: FilePath -- ^ Path to the @kip-lsp@ executable.
+            -> IO [TestTree] -- ^ One test per fixture under @tests\/lsp@.
 lspTestsFor lspPath = map (mkFixtureTest lspPath) <$> loadFixtures
 
 -- | Load all fixtures under tests/lsp.
@@ -206,7 +249,8 @@ loadFixtures = do
   mapM loadFixture kipFiles
 
 -- | Load a single fixture from disk.
-loadFixture :: FilePath -> IO LspFixture
+loadFixture :: FilePath -- ^ Path to the fixture's Kip source file.
+            -> IO LspFixture -- ^ The fixture with its contents and spec.
 loadFixture path = do
   content <- TIO.readFile path
   let specPath = replaceExtension path "json"
@@ -220,7 +264,8 @@ loadFixture path = do
     }
 
 -- | Load the JSON spec for a fixture, or defaults when missing.
-loadSpec :: FilePath -> IO LspSpec
+loadSpec :: FilePath -- ^ Path to the fixture's JSON spec file.
+         -> IO LspSpec -- ^ Parsed expectations, or defaults when the file is absent.
 loadSpec path = do
   exists <- doesFileExist path
   if not exists
@@ -256,7 +301,9 @@ loadSpec path = do
         Right spec -> return spec
 
 -- | Create a test for an individual fixture file.
-mkFixtureTest :: FilePath -> LspFixture -> TestTree
+mkFixtureTest :: FilePath -- ^ Path to the @kip-lsp@ executable.
+              -> LspFixture -- ^ Fixture to exercise.
+              -> TestTree -- ^ Test case for that fixture.
 mkFixtureTest lspPath fixture =
   testCase (fixtureName fixture) $ do
     tempDir <- getTemporaryDirectory
@@ -277,7 +324,12 @@ mkFixtureTest lspPath fixture =
       else runSession lspPath uri content spec (specCache spec)
 
 -- | Run an LSP session for a fixture and validate expectations.
-runSession :: FilePath -> T.Text -> T.Text -> LspSpec -> Bool -> IO ()
+runSession :: FilePath -- ^ Path to the @kip-lsp@ executable.
+           -> T.Text -- ^ Document URI.
+           -> T.Text -- ^ Document text.
+           -> LspSpec -- ^ Expectations to check.
+           -> Bool -- ^ Whether this is the second session, which checks cache reuse.
+           -> IO () -- ^ Fails the test when an expectation is not met.
 runSession lspPath uri content spec doSave = do
   (inH, outH, errH, ph) <- startLsp lspPath
   (do
@@ -350,7 +402,10 @@ runSession lspPath uri content spec doSave = do
     `finally` cleanupLsp (inH, outH, errH, ph)
 
 -- | Wait for diagnostics and ensure a minimum count.
-expectDiagnosticsAtLeast :: Handle -> T.Text -> Int -> IO [A.Value]
+expectDiagnosticsAtLeast :: Handle -- ^ Server's standard output.
+                         -> T.Text -- ^ Document URI the diagnostics must be for.
+                         -> Int -- ^ Minimum number expected.
+                         -> IO [A.Value] -- ^ The diagnostics received.
 expectDiagnosticsAtLeast h uri expected = do
   diags <- awaitMessage h (matchDiagnostics uri)
   let count = length diags
@@ -358,15 +413,26 @@ expectDiagnosticsAtLeast h uri expected = do
   return diags
 
 -- | Wait for diagnostics and ensure a maximum count.
-expectDiagnosticsAtMost :: Handle -> T.Text -> Int -> IO [A.Value]
+expectDiagnosticsAtMost :: Handle -- ^ Server's standard output.
+                        -> T.Text -- ^ Document URI the diagnostics must be for.
+                        -> Int -- ^ Maximum number allowed.
+                        -> IO [A.Value] -- ^ The diagnostics received.
 expectDiagnosticsAtMost = expectDiagnosticsAtMostWithin 2000000 False
 
 -- | Wait for diagnostics (strict) and ensure a maximum count.
-expectDiagnosticsAtMostStrict :: Handle -> T.Text -> Int -> IO [A.Value]
+expectDiagnosticsAtMostStrict :: Handle -- ^ Server's standard output.
+                              -> T.Text -- ^ Document URI the diagnostics must be for.
+                              -> Int -- ^ Maximum number allowed.
+                              -> IO [A.Value] -- ^ The diagnostics received; a timeout fails the test.
 expectDiagnosticsAtMostStrict = expectDiagnosticsAtMostWithin 5000000 True
 
 -- | Wait up to a timeout for diagnostics and enforce an upper bound.
-expectDiagnosticsAtMostWithin :: Int -> Bool -> Handle -> T.Text -> Int -> IO [A.Value]
+expectDiagnosticsAtMostWithin :: Int -- ^ Timeout in microseconds.
+                              -> Bool -- ^ Whether a timeout should fail the test.
+                              -> Handle -- ^ Server's standard output.
+                              -> T.Text -- ^ Document URI the diagnostics must be for.
+                              -> Int -- ^ Maximum number allowed.
+                              -> IO [A.Value] -- ^ The diagnostics received, empty on a tolerated timeout.
 expectDiagnosticsAtMostWithin timeoutMicros required h uri maxExpected = do
   mDiags <- timeout timeoutMicros (awaitMessage h (matchDiagnostics uri))
   diags <- case (required, mDiags) of
@@ -378,13 +444,17 @@ expectDiagnosticsAtMostWithin timeoutMicros required h uri maxExpected = do
   return diags
 
 -- | Ensure diagnostic messages contain a substring.
-expectDiagnosticContains :: [A.Value] -> T.Text -> IO ()
+expectDiagnosticContains :: [A.Value] -- ^ Diagnostics received.
+                         -> T.Text -- ^ Substring one message must contain.
+                         -> IO () -- ^ Fails the test when no message contains it.
 expectDiagnosticContains diags needle =
   unless (any (diagHas needle) diags) $
     assertFailure ("missing diagnostic substring: " ++ T.unpack needle)
 
 -- | Check whether a diagnostic contains a substring.
-diagHas :: T.Text -> A.Value -> Bool
+diagHas :: T.Text -- ^ Substring to look for.
+        -> A.Value -- ^ Diagnostic to inspect.
+        -> Bool -- ^ 'True' when its message contains the substring.
 diagHas needle =
   \case
     A.Object obj ->
@@ -394,7 +464,9 @@ diagHas needle =
     _ -> False
 
 -- | Match publishDiagnostics messages for a specific URI.
-matchDiagnostics :: T.Text -> A.Value -> Maybe [A.Value]
+matchDiagnostics :: T.Text -- ^ Document URI to match.
+                 -> A.Value -- ^ Incoming message.
+                 -> Maybe [A.Value] -- ^ Its diagnostics when it is a matching publishDiagnostics.
 matchDiagnostics uri =
   \case
     A.Object obj -> do
@@ -412,15 +484,22 @@ matchDiagnostics uri =
     _ -> Nothing
 
 -- | Ensure formatting returns at least one edit.
-expectNonEmptyEdits :: Handle -> Int -> IO ()
+expectNonEmptyEdits :: Handle -- ^ Server's standard output.
+                    -> Int -- ^ Request id of the formatting request.
+                    -> IO () -- ^ Fails the test when no edits are returned.
 expectNonEmptyEdits = expectEdits False
 
 -- | Ensure formatting returns no edits.
-expectEmptyEdits :: Handle -> Int -> IO ()
+expectEmptyEdits :: Handle -- ^ Server's standard output.
+                 -> Int -- ^ Request id of the formatting request.
+                 -> IO () -- ^ Fails the test when any edits are returned.
 expectEmptyEdits = expectEdits True
 
 -- | Ensure formatting returns the expected edit-list emptiness.
-expectEdits :: Bool -> Handle -> Int -> IO ()
+expectEdits :: Bool -- ^ Whether at least one edit is expected.
+            -> Handle -- ^ Server's standard output.
+            -> Int -- ^ Request id of the formatting request.
+            -> IO () -- ^ Fails the test when the edit list does not match.
 expectEdits shouldBeEmpty h target = do
   obj <- awaitResponseId h target
   case lookupKey "result" obj of
@@ -431,7 +510,12 @@ expectEdits shouldBeEmpty h target = do
     _ -> assertFailure (if shouldBeEmpty then "expected no formatting edits" else "expected formatting edits")
 
 -- | Ensure hover returns content and satisfies string assertions.
-expectHover :: Handle -> Int -> [T.Text] -> Maybe T.Text -> [T.Text] -> IO ()
+expectHover :: Handle -- ^ Server's standard output.
+            -> Int -- ^ Request id of the hover request.
+            -> [T.Text] -- ^ Substrings the hover text must contain.
+            -> Maybe T.Text -- ^ Exact text the hover must equal.
+            -> [T.Text] -- ^ Substrings the hover text must not contain.
+            -> IO () -- ^ Fails the test when an assertion is not met.
 expectHover h target contains mEquals notContains = do
   obj <- awaitResponseId h target
   case lookupKey "result" obj of
@@ -448,23 +532,33 @@ expectHover h target contains mEquals notContains = do
     Nothing -> assertFailure "missing hover result"
 
 -- | Assert a hover string contains a substring.
-assertHoverContains :: T.Text -> T.Text -> IO ()
+assertHoverContains :: T.Text -- ^ Hover text received.
+                    -> T.Text -- ^ Substring it must contain.
+                    -> IO () -- ^ Fails the test when absent.
 assertHoverContains text needle =
   unless (T.isInfixOf needle text) (assertFailure $ "hover missing expected text '" ++ T.unpack needle ++ "' in: " ++ T.unpack text)
 
 -- | Assert a hover string does not contain a substring.
-assertHoverNotContains :: T.Text -> T.Text -> IO ()
+assertHoverNotContains :: T.Text -- ^ Hover text received.
+                       -> T.Text -- ^ Substring it must not contain.
+                       -> IO () -- ^ Fails the test when present.
 assertHoverNotContains text needle =
   when (T.isInfixOf needle text) (assertFailure $ "hover unexpectedly contains text '" ++ T.unpack needle ++ "' in: " ++ T.unpack text)
 
-runHoverCheck :: Handle -> Handle -> T.Text -> (Int, HoverCheck) -> IO ()
+-- | Issue one extra hover request and check its assertions.
+runHoverCheck :: Handle -- ^ Server's standard input.
+              -> Handle -- ^ Server's standard output.
+              -> T.Text -- ^ Document URI.
+              -> (Int, HoverCheck) -- ^ Request id and the assertions to apply.
+              -> IO () -- ^ Fails the test when an assertion is not met.
 runHoverCheck inH outH uri (reqId, hoverCheck) = do
   let (line, col) = positionOrDefault (Just (hoverCheckAt hoverCheck))
   sendMessage inH (hoverRequest reqId uri line col)
   expectHover outH reqId (hoverCheckContains hoverCheck) (hoverCheckEquals hoverCheck) (hoverCheckNotContains hoverCheck)
 
 -- | Extract hover contents text when present.
-hoverText :: A.Value -> Maybe T.Text
+hoverText :: A.Value -- ^ Hover response result.
+          -> Maybe T.Text -- ^ Its contents as plain text, when present.
 hoverText =
   \case
     A.Object obj -> do
@@ -475,19 +569,25 @@ hoverText =
     _ -> Nothing
 
 -- | Ensure completion results contain required labels.
-expectCompletion :: Handle -> Int -> [T.Text] -> IO ()
+expectCompletion :: Handle -- ^ Server's standard output.
+                 -> Int -- ^ Request id of the completion request.
+                 -> [T.Text] -- ^ Labels the result must include.
+                 -> IO () -- ^ Fails the test when a label is missing.
 expectCompletion h target needles = do
   obj <- awaitResponseId h target
   let items = completionItems obj
   mapM_ (assertCompletion items) needles
 
 -- | Assert a completion list contains a label.
-assertCompletion :: [A.Value] -> T.Text -> IO ()
+assertCompletion :: [A.Value] -- ^ Completion items received.
+                 -> T.Text -- ^ Label one item must carry.
+                 -> IO () -- ^ Fails the test when no item matches.
 assertCompletion items needle =
   unless (any (completionHas needle) items) (assertFailure "missing completion item")
 
 -- | Extract completion items from a completion response.
-completionItems :: A.Object -> [A.Value]
+completionItems :: A.Object -- ^ Completion response object.
+                -> [A.Value] -- ^ Its items, whether returned as a list or a completion list.
 completionItems obj =
   case lookupKey "result" obj of
     Just (A.Array items) -> toList items
@@ -498,7 +598,9 @@ completionItems obj =
     _ -> []
 
 -- | Check whether a completion item matches a label.
-completionHas :: T.Text -> A.Value -> Bool
+completionHas :: T.Text -- ^ Label to look for.
+              -> A.Value -- ^ Completion item to inspect.
+              -> Bool -- ^ 'True' when the item carries that label.
 completionHas needle =
   \case
     A.Object obj ->
@@ -508,7 +610,11 @@ completionHas needle =
     _ -> False
 
 -- | Ensure definition results include the current document.
-expectDefinition :: Handle -> Int -> T.Text -> DefinitionQuery -> IO ()
+expectDefinition :: Handle -- ^ Server's standard output.
+                 -> Int -- ^ Request id of the definition request.
+                 -> T.Text -- ^ Document URI, used when the query has no URI expectation.
+                 -> DefinitionQuery -- ^ Expectations for the returned locations.
+                 -> IO () -- ^ Fails the test when an expectation is not met.
 expectDefinition h target expectedUri defQuery = do
   obj <- awaitResponseId h target
   let (count, locations) = definitionLocations obj
@@ -526,7 +632,8 @@ expectDefinition h target expectedUri defQuery = do
       assertBool "definition range mismatch" (any (locationMatches defQuery) locations)
 
 -- | Extract definition count and URIs from a response.
-definitionLocations :: A.Object -> (Int, [LocationInfo])
+definitionLocations :: A.Object -- ^ Definition response object.
+                    -> (Int, [LocationInfo]) -- ^ Number of locations and their details.
 definitionLocations obj =
   case lookupKey "result" obj of
     Just A.Null -> (0, [])
@@ -537,17 +644,23 @@ definitionLocations obj =
 -- | Fold location-like responses into counts and URIs.
 data LocationInfo = LocationInfo
   { locUri :: T.Text
+    -- ^ URI of the file the location points into.
   , locLine :: Maybe Int
+    -- ^ Zero-based line of the location's start, when the response carried a range.
   , locCharacter :: Maybe Int
+    -- ^ Zero-based character offset of the location's start.
   }
 
-foldLocations :: [A.Value] -> (Int, [LocationInfo])
+-- | Count locations and extract the details of those that parse.
+foldLocations :: [A.Value] -- ^ Location or DefinitionLink values.
+              -> (Int, [LocationInfo]) -- ^ Number of values and their parsed details.
 foldLocations vals =
   let locations = mapMaybe locationInfo vals
   in (length vals, locations)
 
 -- | Extract a URI from a Location/DefinitionLink value.
-locationInfo :: A.Value -> Maybe LocationInfo
+locationInfo :: A.Value -- ^ A Location or DefinitionLink value.
+             -> Maybe LocationInfo -- ^ Its URI and start position, when it parses.
 locationInfo =
   \case
     A.Object obj ->
@@ -563,7 +676,9 @@ locationInfo =
             _ -> Nothing
     _ -> Nothing
 
-rangeLine :: A.Object -> Maybe Int
+-- | Read the start line of a range object.
+rangeLine :: A.Object -- ^ Object containing a @range@ field.
+          -> Maybe Int -- ^ Zero-based line of the range's start.
 rangeLine obj =
   case lookupKey "range" obj of
     Just (A.Object rangeObj) ->
@@ -575,7 +690,9 @@ rangeLine obj =
         _ -> Nothing
     _ -> Nothing
 
-rangeCharacter :: A.Object -> Maybe Int
+-- | Read the start character offset of a range object.
+rangeCharacter :: A.Object -- ^ Object containing a @range@ field.
+               -> Maybe Int -- ^ Zero-based character offset of the range's start.
 rangeCharacter obj =
   case lookupKey "range" obj of
     Just (A.Object rangeObj) ->
@@ -587,10 +704,16 @@ rangeCharacter obj =
         _ -> Nothing
     _ -> Nothing
 
-uriMatches :: T.Text -> LocationInfo -> Bool
+-- | Check whether a location's URI contains the expected substring.
+uriMatches :: T.Text -- ^ Substring the URI must contain.
+           -> LocationInfo -- ^ Location to test.
+           -> Bool -- ^ 'True' when the URI contains it.
 uriMatches needle loc = needle `T.isInfixOf` locUri loc
 
-locationMatches :: DefinitionQuery -> LocationInfo -> Bool
+-- | Check a location against a query's position expectations.
+locationMatches :: DefinitionQuery -- ^ Expected line and character, when specified.
+                -> LocationInfo -- ^ Location to test.
+                -> Bool -- ^ 'True' when every stated expectation holds.
 locationMatches defQuery loc =
   let lineOk =
         case defExpectedLine defQuery of
@@ -603,32 +726,45 @@ locationMatches defQuery loc =
   in lineOk && charOk
 
 -- | Resolve a position query, defaulting to (0, 0).
-positionOrDefault :: Maybe PositionQuery -> (Int, Int)
+positionOrDefault :: Maybe PositionQuery -- ^ Position from the fixture spec, when given.
+                  -> (Int, Int) -- ^ Its line and character, or @(0, 0)@.
 positionOrDefault mPos =
   case mPos of
     Nothing -> (0, 0)
     Just pos -> (posLine pos, posCharacter pos)
 
 -- | Build a definition request payload.
-definitionRequest :: Int -> T.Text -> DefinitionQuery -> A.Value
+definitionRequest :: Int -- ^ Request id.
+                  -> T.Text -- ^ Document URI.
+                  -> DefinitionQuery -- ^ Query supplying the position.
+                  -> A.Value -- ^ The definition request.
 definitionRequest reqId uri defQuery =
   positionRequest "textDocument/definition" reqId uri
     (defLine defQuery) (defCharacter defQuery)
 
 -- | Build a typeDefinition request payload.
-typeDefinitionRequest :: Int -> T.Text -> DefinitionQuery -> A.Value
+typeDefinitionRequest :: Int -- ^ Request id.
+                      -> T.Text -- ^ Document URI.
+                      -> DefinitionQuery -- ^ Query supplying the position.
+                      -> A.Value -- ^ The typeDefinition request.
 typeDefinitionRequest reqId uri defQuery =
   positionRequest "textDocument/typeDefinition" reqId uri
     (defLine defQuery) (defCharacter defQuery)
 
 -- | Build a documentHighlight request payload.
-documentHighlightRequest :: Int -> T.Text -> HighlightQuery -> A.Value
+documentHighlightRequest :: Int -- ^ Request id.
+                         -> T.Text -- ^ Document URI.
+                         -> HighlightQuery -- ^ Query supplying the position.
+                         -> A.Value -- ^ The documentHighlight request.
 documentHighlightRequest reqId uri hlQuery =
   positionRequest "textDocument/documentHighlight" reqId uri
     (hlLine hlQuery) (hlCharacter hlQuery)
 
 -- | Expect document highlight results matching the expected ranges.
-expectDocumentHighlight :: Handle -> Int -> HighlightQuery -> IO ()
+expectDocumentHighlight :: Handle -- ^ Server's standard output.
+                        -> Int -- ^ Request id of the highlight request.
+                        -> HighlightQuery -- ^ Expected highlight ranges.
+                        -> IO () -- ^ Fails the test when an expected range is missing.
 expectDocumentHighlight h target hlQuery = do
   obj <- awaitResponseId h target
   let highlights = extractHighlights obj
@@ -637,14 +773,16 @@ expectDocumentHighlight h target hlQuery = do
   mapM_ (assertHighlightMatch highlights) expected
 
 -- | Extract highlight ranges from a response.
-extractHighlights :: A.Object -> [[Int]]
+extractHighlights :: A.Object -- ^ Highlight response object.
+                  -> [[Int]] -- ^ Each highlight as @[line, startChar, endChar]@.
 extractHighlights obj =
   case lookupKey "result" obj of
     Just (A.Array items) -> mapMaybe extractRange (toList items)
     _ -> []
 
 -- | Extract [line, startChar, endChar] from a DocumentHighlight.
-extractRange :: A.Value -> Maybe [Int]
+extractRange :: A.Value -- ^ A DocumentHighlight value.
+             -> Maybe [Int] -- ^ Its range as @[line, startChar, endChar]@, when it parses.
 extractRange =
   \case
     A.Object obj ->
@@ -663,13 +801,16 @@ extractRange =
     _ -> Nothing
 
 -- | Assert a highlight range exists in the results.
-assertHighlightMatch :: [[Int]] -> [Int] -> IO ()
+assertHighlightMatch :: [[Int]] -- ^ Highlights received.
+                     -> [Int] -- ^ Expected @[line, startChar, endChar]@.
+                     -> IO () -- ^ Fails the test when the range is absent.
 assertHighlightMatch highlights expected =
   unless (expected `elem` highlights) $
     assertFailure ("missing highlight range: " ++ show expected)
 
 -- | Wait for a cache file to appear for the given URI.
-waitForCache :: T.Text -> IO ()
+waitForCache :: T.Text -- ^ Document URI whose cache file is awaited.
+             -> IO () -- ^ Fails the test if the file does not appear in time.
 waitForCache uri = go 10
   where
     cachePath = replaceExtension (T.unpack (uriToPath uri)) "iz"
@@ -683,7 +824,8 @@ waitForCache uri = go 10
           go (n - 1)
 
 -- | Read the modification time of a cache file if it exists.
-cacheMTime :: FilePath -> IO (Maybe UTCTime)
+cacheMTime :: FilePath -- ^ Path of the source file whose cache is inspected.
+           -> IO (Maybe UTCTime) -- ^ Modification time of its cache file, when it exists.
 cacheMTime path = do
   let cachePath = replaceExtension path "iz"
   exists <- doesFileExist cachePath
@@ -692,6 +834,7 @@ cacheMTime path = do
     else return Nothing
 
 -- | Strip the file:// prefix from a URI.
-uriToPath :: T.Text -> T.Text
+uriToPath :: T.Text -- ^ A @file:@ URI.
+          -> T.Text -- ^ The corresponding filesystem path.
 uriToPath uri =
   fromMaybe uri (T.stripPrefix "file://" uri)

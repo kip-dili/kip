@@ -112,27 +112,47 @@ import Kip.Util (stableNub)
 -- | Parser-specific error categories for human-friendly rendering.
 data ParserError
   = ErrKeywordAsIdent
+  -- ^ A reserved keyword was used where an identifier was required.
   | ErrNoMatchingNominative
+  -- ^ No nominative-case identifier fits at this position.
   | ErrUnrecognizedTurkishWord Text Span [Text]
+  -- ^ The word is not recognized as Turkish: the word, its span, and spelling suggestions.
   | ErrMatchPatternExpected
+  -- ^ A constructor pattern was expected for matching.
   | ErrDefinitionName
+  -- ^ The name being defined is not a valid identifier.
   | ErrDefinitionBodyMissing
+  -- ^ A definition was started but has no body.
   | ErrLoadNeedsAcc
+  -- ^ The @yükle@ import keyword requires its argument in the accusative case.
   | ErrTypeNotFound
+  -- ^ No type expression fits at this position.
   | ErrPatternExpected
+  -- ^ A pattern was expected at this position.
   | ErrPatternComplexExpr
+  -- ^ A pattern contains a complex expression, which is not allowed.
   | ErrPatternAmbiguousName
+  -- ^ A pattern uses a name that resolves ambiguously.
   | ErrPatternOnlyNames
+  -- ^ A pattern contains something other than identifiers.
   | ErrPatternArgNameRepeated
+  -- ^ The same argument name appears more than once in a pattern.
   | ErrPatternBinderRepeated Identifier Span
+  -- ^ The same binder is bound twice in one pattern: the binder and its span.
   | ErrAmbiguousBareApplication Span
+  -- ^ A parenthesis-free call at this span parses more than one way.
   | ErrAmbiguousBareApplicationOverload Identifier [Int] Span
+  -- ^ A parenthesis-free call is ambiguous because the function is overloaded:
+  -- the function name, the arities it is defined at, and the call's span.
   | ErrYaDaInvalid
+  -- ^ @ya da@ appeared somewhere other than before the last constructor.
   | ErrInternal Text
+  -- ^ Parser invariant violation, carrying a message for reporting.
   deriving (Eq, Ord, Show)
 
 -- | Render parser errors in Turkish.
-renderParserErrorTr :: ParserError -> Text
+renderParserErrorTr :: ParserError -- ^ Structured parser failure.
+                    -> Text -- ^ Turkish diagnostic text.
 renderParserErrorTr err =
   case err of
     ErrKeywordAsIdent -> "Anahtar kelime isim yerine kullanılamaz."
@@ -173,7 +193,8 @@ renderParserErrorTr err =
     ErrInternal msg -> msg
 
 -- | Render parser errors in English.
-renderParserErrorEn :: ParserError -> Text
+renderParserErrorEn :: ParserError -- ^ Structured parser failure.
+                    -> Text -- ^ English diagnostic text.
 renderParserErrorEn err =
   case err of
     ErrKeywordAsIdent -> "A keyword cannot be used as an identifier."
@@ -216,11 +237,17 @@ renderParserErrorEn err =
 -- | A source token indexed by its character offset.
 data LexToken
   = LexWord !Text
+  -- ^ A run of word characters.
   | LexWhitespace !Int
+  -- ^ A run of whitespace of the given length.
   | LexPunctuation !Char
+  -- ^ A single punctuation character.
 
 {-# INLINE stripSuffixAny #-}
-stripSuffixAny :: [Text] -> Text -> Maybe Text
+-- | Remove the first matching nonempty suffix from a text value.
+stripSuffixAny :: [Text] -- ^ Suffixes to try in order.
+               -> Text -- ^ Text from which to strip a suffix.
+               -> Maybe Text -- ^ Remaining nonempty prefix, when one matches.
 stripSuffixAny suffixes txt = go suffixes
   where
     go [] = Nothing
@@ -229,28 +256,37 @@ stripSuffixAny suffixes txt = go suffixes
         Just base | not (T.null base) -> Just base
         _ -> go ss
 
+-- | Conditional-mood suffixes recognized without apostrophes.
 condSuffixesTxt :: [Text]
 condSuffixesTxt = ["ysa", "yse", "sa", "se"]
 
+-- | Converb suffixes corresponding to Turkish @-ip@ variants.
 ipSuffixesTxt :: [Text]
 ipSuffixesTxt = ["ip", "ıp", "up", "üp"]
 
+-- | Present-tense copula suffixes used during identifier normalization.
 copulaSuffixesTxt :: [Text]
 copulaSuffixesTxt = ["dir","dır","dur","dür","tir","tır","tur","tür"]
 
+-- | Genitive suffixes accepted on identifiers without apostrophes.
 genSuffixesNoApostropheTxt :: [Text]
 genSuffixesNoApostropheTxt = ["nın", "nin", "nun", "nün", "ın", "in", "un", "ün"]
 
 {-# INLINE hasCondSuffix #-}
-hasCondSuffix :: Text -> Bool
+-- | Test whether text ends in a recognized conditional suffix.
+hasCondSuffix :: Text -- ^ Surface text to inspect.
+              -> Bool -- ^ 'True' when a conditional suffix is present.
 hasCondSuffix = isJust . stripSuffixAny condSuffixesTxt
 
 {-# INLINE identScore #-}
-identScore :: Identifier -> Int
+-- | Measure an identifier by the total number of characters in its parts.
+identScore :: Identifier -- ^ Identifier to measure.
+           -> Int -- ^ Combined namespace and root length.
 identScore (mods, word) = sum (map T.length mods) + T.length word
 
--- Keep only the first candidate with maximal identifier size.
-chooseLongestCandidate :: [(Identifier, Case)] -> [(Identifier, Case)]
+-- | Keep only the first candidate with maximal identifier size.
+chooseLongestCandidate :: [(Identifier, Case)] -- ^ Candidate identifiers and their cases.
+                       -> [(Identifier, Case)] -- ^ Empty input or a singleton maximal candidate.
 chooseLongestCandidate [] = []
 chooseLongestCandidate (x:xs) =
   let (!best, !_bestScore) = foldl' step (x, identScore (fst x)) xs
@@ -309,30 +345,50 @@ data ParserState =
     -- These strict fields keep parser context/index updates in WHNF as the
     -- state is threaded through large files and stdlib bootstrap.
     { fsm :: FSM
+      -- ^ Finite-state morphology machine used during parsing.
     , parserCtx :: !(Set.Set Identifier)
+      -- ^ Identifiers currently available for context-sensitive resolution.
     , parserCtors :: ![Identifier]
+      -- ^ Constructors in declaration order for stable candidate selection.
     , parserCtorSet :: !(Set.Set Identifier)
+      -- ^ Constructor membership index for hot lookups.
     , parserTyParams :: ![Identifier]
+      -- ^ Type parameters currently in scope, preserving declaration order.
     , parserTyParamSet :: !(Set.Set Identifier)
+      -- ^ Type-parameter membership index for hot lookups.
     , parserTyCons :: ![(Identifier, Int)]
+      -- ^ Type constructors and arities in declaration order.
     , parserTyConsMap :: !(M.Map Identifier Int)
+      -- ^ Type-constructor arity index by canonical identifier.
     -- | Cached type-constructor names to avoid rebuilding @map fst parserTyCons@
     -- on hot lookup paths.
     , parserTyConsNames :: ![Identifier]
+      -- ^ Cached type-constructor names in declaration order.
     , parserTyConsNameSet :: !(Set.Set Identifier)
+      -- ^ Membership index for cached type-constructor names.
     , parserTyMods :: ![(Identifier, [Identifier])]
+      -- ^ Type modifiers and the identifiers to which they expand.
     , parserPrimTypes :: ![Identifier]
+      -- ^ Primitive type names accepted without prior declarations.
     , parserPrimTypeSet :: !(Set.Set Identifier)
+      -- ^ Primitive-type membership index for hot lookups.
     , parserTypeScopeSet :: !(Set.Set Identifier)
+      -- ^ Union of all type names currently valid during type parsing.
     , parserFuncArities :: !(M.Map Identifier (Set.Set Int))
+      -- ^ Declared function arities grouped by canonical identifier.
     -- | Secondary index used by hot-path overload checks.
     --
     -- Provides direct lookup of every arity for a surface name.
     , parserFuncAritiesByName :: !(M.Map Text (Set.Set Int))
+      -- ^ Declared function arities grouped only by final surface name.
     , parserDefSpans :: !(M.Map Identifier [Span])
+      -- ^ Definition spans recorded per identifier in encounter order.
     , parserFilePath :: !(Maybe FilePath)
+      -- ^ Current source path attached to newly constructed spans.
     , parserLexTokens :: !(IM.IntMap LexToken)
+      -- ^ Per-parse lexical tokens indexed by source character offset.
     , parserMorphCaches :: !MC.MorphCaches
+      -- ^ Shared morphology analysis and generation caches.
     }
 
 -- | Parser monad uses IO for morphology lookups.
@@ -352,6 +408,7 @@ turkishCaseSuffixes =
   , ("'de", Loc), ("'da", Loc), ("'te", Loc), ("'ta", Loc)
   ]
 
+-- | Text representation of every apostrophe-prefixed case suffix.
 turkishCaseSuffixesTxt :: [Text]
 turkishCaseSuffixesTxt = map (T.pack . fst) turkishCaseSuffixes
 
@@ -426,7 +483,9 @@ modifyP :: (ParserState -> ParserState) -- ^ State update function.
 modifyP = lift . modify
 
 -- | Record a definition span for later lookup (prefers the first occurrence).
-recordDefSpan :: Identifier -> Span -> KipParser ()
+recordDefSpan :: Identifier -- ^ Declared identifier.
+              -> Span -- ^ Source span of this definition occurrence.
+              -> KipParser () -- ^ Parser action that records the location.
 recordDefSpan ident sp =
   modifyP (\ps -> ps { parserDefSpans = M.insertWith (flip (<>)) ident [sp] (parserDefSpans ps) })
 
@@ -434,7 +493,9 @@ recordDefSpan ident sp =
 --
 -- Updates both arity maps in one state transition so the secondary name
 -- index stays in sync without requiring periodic rebuilds.
-registerFuncArity :: Identifier -> Int -> KipParser ()
+registerFuncArity :: Identifier -- ^ Declared function identifier.
+                  -> Int -- ^ Number of declared parameters.
+                  -> KipParser () -- ^ Parser action that updates both arity indexes.
 registerFuncArity ident arity =
   modifyP (\ps ->
     ps
@@ -449,7 +510,8 @@ registerFuncArity ident arity =
 -- This is used by parenthesis-free ambiguity checks that operate on
 -- inflected surface forms where only the final word is needed for
 -- overload grouping.
-funcAritiesNameIndex :: M.Map Identifier (Set.Set Int) -> M.Map Text (Set.Set Int)
+funcAritiesNameIndex :: M.Map Identifier (Set.Set Int) -- ^ Arities keyed by canonical identifier.
+                     -> M.Map Text (Set.Set Int) -- ^ Arities grouped by final surface name.
 funcAritiesNameIndex =
   M.foldlWithKey'
     (\acc (_, name) arities -> M.insertWith Set.union name arities acc)
@@ -477,14 +539,19 @@ withPatVars patVars p = do
   return result
 
 -- | O(n log n) duplicate removal preserving first-occurrence order.
-ordNub :: Ord a => [a] -> [a]
+ordNub :: Ord a
+       => [a] -- ^ Values that may contain duplicates.
+       -> [a] -- ^ First occurrence of each value in original order.
 ordNub = stableNub
 
 -- | Append items to an already deduplicated list, keeping first occurrence.
 --
 -- This avoids re-running 'ordNub' over the entire left list when only a
 -- small right list is appended.
-ordNubAppend :: Ord a => [a] -> [a] -> [a]
+ordNubAppend :: Ord a
+             => [a] -- ^ Already deduplicated prefix.
+             -> [a] -- ^ Values to append when not already present.
+             -> [a] -- ^ Stable union of both lists.
 ordNubAppend xs ys = xs ++ reverse extrasRev
   where
     -- Build only the new unique suffix in reverse order, then append once.
@@ -497,7 +564,8 @@ ordNubAppend xs ys = xs ++ reverse extrasRev
           in (seen', z : acc)
 
 -- | Tokenize words, whitespace, and punctuation once, keyed by source offset.
-tokenizeSource :: Text -> IM.IntMap LexToken
+tokenizeSource :: Text -- ^ Source buffer to scan.
+               -> IM.IntMap LexToken -- ^ Tokens keyed by zero-based character offset.
 tokenizeSource = go 0 IM.empty
   where
     go !offset !tokens txt =
@@ -517,11 +585,14 @@ tokenizeSource = go 0 IM.empty
               go (offset + 1) (IM.insert offset (LexPunctuation c) tokens) rest
 
 -- | Attach a temporary token index for one parser invocation.
-withLexTokens :: Text -> ParserState -> ParserState
+withLexTokens :: Text -- ^ Source buffer to tokenize.
+              -> ParserState -- ^ State used for the parse invocation.
+              -> ParserState -- ^ State carrying the new token index.
 withLexTokens source st = st { parserLexTokens = tokenizeSource source }
 
 -- | Do not retain source slices after parsing finishes.
-clearLexTokens :: ParserState -> ParserState
+clearLexTokens :: ParserState -- ^ State after a parse invocation.
+               -> ParserState -- ^ State with source-specific tokens released.
 clearLexTokens st = st { parserLexTokens = IM.empty }
 
 -- | Whitespace parser.
@@ -1283,7 +1354,8 @@ pickCase allowP3s candidates =
 --
 -- Uses a single pass to build case order and per-case identifier sets,
 -- replacing repeated @ordNub@ and per-case list scans.
-findAmbiguousCase :: [(Identifier, Case)] -> Maybe Case
+findAmbiguousCase :: [(Identifier, Case)] -- ^ Candidate identifiers and cases.
+                  -> Maybe Case -- ^ First case shared by multiple distinct identifiers.
 findAmbiguousCase candidates =
   let (caseOrderRev, grouped, _) =
         foldl'
@@ -1420,7 +1492,7 @@ parseExpAny = parseExpWithCtx False
 
 -- | Parse a pattern expression without match or sequence parsing.
 -- This is a documentation marker for the pattern parser path; the actual
--- implementation lives in 'parsePatExp' near clause parsing.
+-- implementation lives in @parsePatExp@ near clause parsing.
 
 -- | Parse an expression with optional context filtering.
 parseExpWithCtx :: Bool -- ^ Whether to use context when resolving names.
@@ -3277,7 +3349,8 @@ checkedExpToPat allowScrutinee argNames expItem = do
   return pat
 
 -- | Reject a pattern that binds the same identifier more than once.
-rejectRepeatedPatternBinders :: Pat Ann -> KipParser ()
+rejectRepeatedPatternBinders :: Pat Ann -- ^ Pattern whose bound names are validated.
+                             -> KipParser () -- ^ Success or a duplicate-binder parser error.
 rejectRepeatedPatternBinders pat =
   case collect Set.empty pat of
     Left (ident, sp) -> customFailure (ErrPatternBinderRepeated ident sp)
@@ -3492,13 +3565,32 @@ stringCaseFromSuffix suff =
       | s `elem` condCaseSuffixesTxt -> Cond
       | otherwise -> Nom
 
-accSuffixesTxt, datSuffixesTxt, locSuffixesTxt, ablSuffixesTxt, genSuffixesTxt, insSuffixesTxt, condCaseSuffixesTxt :: [Text]
+-- | Accusative suffixes recognized in a surface word.
+accSuffixesTxt :: [Text]
 accSuffixesTxt = ["ni","nı","nu","nü","yi","yı","yu","yü","i","ı","u","ü"]
+
+-- | Dative suffixes recognized in a surface word.
+datSuffixesTxt :: [Text]
 datSuffixesTxt = ["ne","na","ye","ya","e","a"]
+
+-- | Locative suffixes recognized in a surface word.
+locSuffixesTxt :: [Text]
 locSuffixesTxt = ["nde","nda","nte","nta","de","da","te","ta"]
+
+-- | Ablative suffixes recognized in a surface word.
+ablSuffixesTxt :: [Text]
 ablSuffixesTxt = ["nden","ndan","nten","ntan","den","dan","ten","tan"]
+
+-- | Genitive suffixes recognized in a surface word.
+genSuffixesTxt :: [Text]
 genSuffixesTxt = ["in","ın","un","ün","nin","nın","nun","nün"]
+
+-- | Instrumental suffixes recognized in a surface word.
+insSuffixesTxt :: [Text]
 insSuffixesTxt = ["le","la","yle","yla"]
+
+-- | Conditional suffixes recognized when inferring a grammatical case.
+condCaseSuffixesTxt :: [Text]
 condCaseSuffixesTxt = ["se","sa"]
 
 -- | Prefer surface genitive over nominative when inflection is explicit.
@@ -3991,8 +4083,10 @@ parseExpFromRepl st input = do
 
 -- | Parse for debugging - returns AST with any remaining input (no eof required).
 -- For statements, tries to parse without requiring eof.
-parseForDebug :: ParserState -> Text
+parseForDebug :: ParserState -- ^ Initial parser state.
+              -> Text -- ^ Source buffer to parse without requiring end of input.
               -> Outer (Either (ParseErrorBundle Text ParserError) (Stmt Ann, Text))
+              -- ^ Parsed statement and unconsumed suffix, or parser errors.
 parseForDebug st input = do
   let stripped = removeComments input
   (res, _) <- runStateT (runParserT p "Kip" stripped) (withLexTokens stripped st)
@@ -4006,8 +4100,10 @@ parseForDebug st input = do
       return (stmt, remaining)
 
 -- | Parse expression for debugging.
-parseExpForDebug :: ParserState -> Text
+parseExpForDebug :: ParserState -- ^ Initial parser state.
+                 -> Text -- ^ Source buffer to parse without requiring end of input.
                  -> Outer (Either (ParseErrorBundle Text ParserError) (Exp Ann, Text))
+                 -- ^ Parsed expression and unconsumed suffix, or parser errors.
 parseExpForDebug st input = do
   let stripped = removeComments input
       tokenizedSt = withLexTokens stripped st
@@ -4036,7 +4132,10 @@ parseExpForDebug st input = do
 --   unintended way without parentheses.
 -- * It does not hard-code function names; decisions are derived from arity
 --   information plus source-form cues.
-ambiguousBareReplError :: ParserState -> Text -> Exp Ann -> Maybe ParserError
+ambiguousBareReplError :: ParserState -- ^ State containing known function arities.
+                       -> Text -- ^ Original REPL source used for surface-form cues.
+                       -> Exp Ann -- ^ Parsed expression to inspect.
+                       -> Maybe ParserError -- ^ Ambiguity diagnostic when the heuristic triggers.
 ambiguousBareReplError st sourceText expItem =
   case expItem of
     App _ fnExp args ->

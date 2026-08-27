@@ -2,6 +2,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE TupleSections #-}
 
+-- | Formatting for the REPL's @:steps@ command, which replays a recorded
+-- evaluation trace and prints each reduction as it happens.
 module Repl.Steps
   ( formatStepsStreaming
   , stripStepsCopulaTRmorph
@@ -30,13 +32,13 @@ import qualified Kip.Render
 -- This prints interactive REPL output incrementally instead of building one
 -- large intermediate string.
 formatStepsStreaming :: Monad m
-                     => Bool
+                     => Bool -- ^ Whether to emit ANSI color.
                      -> (Exp Ann -> m String) -- ^ Preserving-case renderer (for inputs).
                      -> (Exp Ann -> m String) -- ^ Nominative renderer (for outputs).
                      -> Exp Ann               -- ^ Final evaluated expression.
-                     -> [TraceStep]
+                     -> [TraceStep]           -- ^ Recorded evaluation steps to replay.
                      -> (String -> m ())      -- ^ Output sink (e.g. @outputStrLn@).
-                     -> m ()
+                     -> m ()                  -- ^ Writes each formatted step to the sink.
 formatStepsStreaming useColor renderInput renderOutput finalExp steps emit = do
   let truncated = length steps >= 1000
   mLastLine <- formatStepsReplayStreaming useColor renderInput renderOutput steps emit
@@ -66,7 +68,10 @@ formatStepsStreaming useColor renderInput renderOutput finalExp steps emit = do
 
 -- | Check whether a :steps expression is an infinitive reference.
 -- Such expressions should not be stepped or evaluated in :steps mode.
-shouldSkipInfinitiveSteps :: RenderCache -> FSM -> Exp Ann -> IO Bool
+shouldSkipInfinitiveSteps :: RenderCache -- ^ Memoized morphological renderings.
+                          -> FSM -- ^ Morphological analyzer.
+                          -> Exp Ann -- ^ Expression given to @:steps@.
+                          -> IO Bool -- ^ 'True' when it is a bare infinitive reference.
 shouldSkipInfinitiveSteps cache fsm = go
   where
     go exp' =
@@ -90,12 +95,12 @@ shouldSkipInfinitiveSteps cache fsm = go
 
 -- | Stream replayed trace transitions and return the last emitted line.
 formatStepsReplayStreaming :: Monad m
-                           => Bool
-                           -> (Exp Ann -> m String)
-                           -> (Exp Ann -> m String)
-                           -> [TraceStep]
-                           -> (String -> m ())
-                           -> m (Maybe String)
+                           => Bool -- ^ Whether to emit ANSI color.
+                           -> (Exp Ann -> m String) -- ^ Renderer for intermediate expressions.
+                           -> (Exp Ann -> m String) -- ^ Renderer for final output values.
+                           -> [TraceStep] -- ^ Recorded evaluation steps to replay.
+                           -> (String -> m ()) -- ^ Sink each formatted line is written to.
+                           -> m (Maybe String) -- ^ The last line emitted, if any.
 formatStepsReplayStreaming _ _ _ [] _ = return Nothing
 formatStepsReplayStreaming useColor renderInput renderOutput steps emit = do
   let arrow = if useColor then dim "⇝ " else "⇝ "
@@ -126,12 +131,15 @@ formatStepsReplayStreaming useColor renderInput renderOutput steps emit = do
       s : _ -> replay (tsInput s) steps
 
 -- | Remove ANSI escape sequences for robust string comparisons.
-stripAnsiForCompare :: String -> String
+stripAnsiForCompare :: String -- ^ Text that may contain ANSI escapes.
+                    -> String -- ^ The same text with escape sequences removed.
 stripAnsiForCompare [] = []
 stripAnsiForCompare ('\ESC':'[':xs) = stripAnsiForCompare (dropAnsiCode xs)
 stripAnsiForCompare (x:xs) = x : stripAnsiForCompare xs
 
-dropAnsiCode :: String -> String
+-- | Drop one ANSI escape sequence from the front of a string.
+dropAnsiCode :: String -- ^ Text beginning with an escape sequence.
+             -> String -- ^ Text following that sequence.
 dropAnsiCode [] = []
 dropAnsiCode (y:ys)
   | isAsciiLetter y = ys
@@ -144,15 +152,17 @@ dropAnsiCode (y:ys)
 -- Emits each newly formatted line immediately and keeps only minimal state
 -- needed to continue replaying transitions.
 replayUntilFixedPointStreaming :: Monad m
-                               => Bool
-                               -> String
-                               -> String
-                               -> (Exp Ann -> m String)
-                               -> (Exp Ann -> m String)
+                               => Bool -- ^ Whether to emit ANSI color.
+                               -> String -- ^ Prefix printed before each emitted line.
+                               -> String -- ^ Indentation applied to continuation lines.
+                               -> (Exp Ann -> m String) -- ^ Renderer for intermediate expressions.
+                               -> (Exp Ann -> m String) -- ^ Renderer for final output values.
                                -> (Exp Ann, String, String)
-                               -> [TraceStep]
-                               -> (String -> m ())
+                               -- ^ Current expression with its rendered and comparison texts.
+                               -> [TraceStep] -- ^ Steps still available to apply.
+                               -> (String -> m ()) -- ^ Sink each formatted line is written to.
                                -> m (Exp Ann, String, String)
+                               -- ^ Final expression with its rendered and comparison texts.
 replayUntilFixedPointStreaming _ _ _ _ _ state [] _ = return state
 replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOutput (current, currentText, lastLine) steps emit =
   case reduceBooleanMatchFirst current of
@@ -256,7 +266,11 @@ replayUntilFixedPointStreaming useColor arrow pointerIndent renderInput renderOu
 -- This is a more lenient matching strategy used as a fallback.
 --
 -- Returns (old sub-expression, new sub-expression, updated parent expression).
-substituteFirstByHead :: Exp Ann -> Exp Ann -> Exp Ann -> Maybe (Exp Ann, Exp Ann, Exp Ann)
+substituteFirstByHead :: Exp Ann -- ^ Sub-expression to replace, matched by application head.
+                      -> Exp Ann -- ^ Replacement sub-expression.
+                      -> Exp Ann -- ^ Parent expression to rewrite.
+                      -> Maybe (Exp Ann, Exp Ann, Exp Ann)
+                      -- ^ The matched sub-expression, its replacement, and the rewritten parent.
 substituteFirstByHead from to = go False
   where
     go allowRoot cur
@@ -321,9 +335,10 @@ substituteFirstByHead from to = go False
 --
 -- Indexes are tracked explicitly with strict recursion to avoid allocation from
 -- zipped index lists in the hot replay loop.
-pickStep :: Exp Ann
-         -> [TraceStep]
+pickStep :: Exp Ann -- ^ Current expression.
+         -> [TraceStep] -- ^ Steps still available to apply.
          -> Maybe (Int, TraceStep, Exp Ann)
+         -- ^ Index of the applicable step, the step, and the expression after it.
 pickStep current steps =
   case reduceTopBooleanMatch current of
     Just (_, nextTop) -> findMatchingNextTop 0 nextTop steps
@@ -347,7 +362,9 @@ pickStep current steps =
 --
 -- This stays as one `splitAt` + concatenation because replay step lists are
 -- typically short; keeping behavior simple here was faster to validate.
-removeAt :: Int -> [a] -> [a]
+removeAt :: Int -- ^ Zero-based index to drop.
+         -> [a] -- ^ List to shorten.
+         -> [a] -- ^ List without that element.
 removeAt idx xs =
   let (pref, rest) = splitAt idx xs
   in case rest of
@@ -362,7 +379,9 @@ removeAt idx xs =
 
 -- | Reduce the first boolean conditional match found in pre-order traversal.
 -- Returns (old expression, new expression, updated parent expression).
-reduceBooleanMatchFirst :: Exp Ann -> Maybe (Exp Ann, Exp Ann, Exp Ann)
+reduceBooleanMatchFirst :: Exp Ann -- ^ Expression to search.
+                        -> Maybe (Exp Ann, Exp Ann, Exp Ann)
+                        -- ^ The reduced sub-expression, its result, and the rewritten parent.
 reduceBooleanMatchFirst expr =
   case expr of
     Match ann scr clauses ->
@@ -409,7 +428,9 @@ reduceBooleanMatchFirst expr =
 
 -- | Choose a clause body when scrutinee is a boolean constructor.
 -- Matches patterns against doğru (true) or yanlış (false).
-pickBoolClause :: Exp Ann -> [Clause Ann] -> Maybe (Exp Ann)
+pickBoolClause :: Exp Ann -- ^ Scrutinee, expected to be a boolean constructor.
+               -> [Clause Ann] -- ^ Clauses, tried in order.
+               -> Maybe (Exp Ann) -- ^ Body of the first clause that matches.
 pickBoolClause scr clauses = do
   b <- boolValue scr
   let matchClause [] = Nothing
@@ -418,7 +439,8 @@ pickBoolClause scr clauses = do
   matchClause clauses
 
 -- | Extract boolean value from an expression if it's a boolean constructor.
-boolValue :: Exp Ann -> Maybe Bool
+boolValue :: Exp Ann -- ^ Expression to classify.
+          -> Maybe Bool -- ^ Its boolean value, when it is a boolean constructor.
 boolValue exp' =
   case exp' of
     Var _ varName cands ->
@@ -432,7 +454,9 @@ boolValue exp' =
 
 -- | Check if a pattern matches a boolean value.
 -- Wildcards and variables match anything; constructor patterns must match.
-patMatchesBool :: Bool -> Pat Ann -> Bool
+patMatchesBool :: Bool -- ^ Boolean value being matched.
+               -> Pat Ann -- ^ Pattern to test.
+               -> Bool -- ^ 'True' when the pattern accepts that value.
 patMatchesBool _ (PWildcard _) = True
 patMatchesBool _ (PVar _ _) = True
 patMatchesBool b (PCtor (ctor, _) _) =
@@ -440,16 +464,19 @@ patMatchesBool b (PCtor (ctor, _) _) =
 patMatchesBool _ _ = False
 
 -- | Check if an identifier is "doğru" (true).
-isTrueIdent :: Identifier -> Bool
+isTrueIdent :: Identifier -- ^ Constructor name to classify.
+            -> Bool -- ^ 'True' for the boolean true constructor.
 isTrueIdent (_, w) = w == T.pack "doğru"
 
 -- | Check if an identifier is "yanlış" (false).
-isFalseIdent :: Identifier -> Bool
+isFalseIdent :: Identifier -- ^ Constructor name to classify.
+             -> Bool -- ^ 'True' for the boolean false constructor.
 isFalseIdent (_, w) = w == T.pack "yanlış"
 
 -- | Reduce a boolean match only if the entire expression is a conditional.
 -- This is more conservative than reduceBooleanMatchFirst.
-reduceTopBooleanMatch :: Exp Ann -> Maybe (Exp Ann, Exp Ann)
+reduceTopBooleanMatch :: Exp Ann -- ^ Expression, reduced only if it is itself a conditional.
+                      -> Maybe (Exp Ann, Exp Ann) -- ^ The original expression and its result.
 reduceTopBooleanMatch exp' =
   case exp' of
     Match _ scr clauses -> do
@@ -465,7 +492,8 @@ reduceTopBooleanMatch exp' =
 -- into the continuation body.
 
 -- | Check if an expression is a fully-evaluated trace value.
-isTraceValue :: Exp Ann -> Bool
+isTraceValue :: Exp Ann -- ^ Expression to classify.
+             -> Bool -- ^ 'True' when it needs no further reduction.
 isTraceValue (IntLit _ _)   = True
 isTraceValue (FloatLit _ _) = True
 isTraceValue (StrLit _ _)   = True
@@ -476,7 +504,10 @@ isTraceValue _              = False
 -- | Substitute a single bind variable in an expression.
 -- Replaces occurrences of @name@ with @value@, preserving the variable's
 -- case annotation on the substituted value.
-substituteBindVar :: Identifier -> Exp Ann -> Exp Ann -> Exp Ann
+substituteBindVar :: Identifier -- ^ Bound name to replace.
+                  -> Exp Ann -- ^ Value substituted for it.
+                  -> Exp Ann -- ^ Expression to rewrite.
+                  -> Exp Ann -- ^ Expression with the name replaced, keeping each site's case.
 substituteBindVar name value = go
   where
     go expr = case expr of
@@ -501,7 +532,9 @@ substituteBindVar name value = go
 --      → substitute @x → value@ in @body@
 --   2. @Seq first second@ where @first@ is a trace value (e.g. bitimlik)
 --      → @second@
-reduceSeqFirst :: Exp Ann -> Maybe (Exp Ann, Exp Ann, Exp Ann)
+reduceSeqFirst :: Exp Ann -- ^ Expression to search.
+               -> Maybe (Exp Ann, Exp Ann, Exp Ann)
+               -- ^ The reduced sequence, its result, and the rewritten parent.
 reduceSeqFirst expr =
   case expr of
     Seq _ (Bind _ bName _ bExp) second
@@ -550,7 +583,9 @@ reduceSeqFirst expr =
 
 -- | Collapse a top-level sequence once after a regular step replay.
 -- Returns (collapsed expression, render collapsed step with output renderer).
-collapseSeqAfterStep :: Exp Ann -> (Exp Ann, Bool)
+collapseSeqAfterStep :: Exp Ann -- ^ Expression after a replayed step.
+                     -> (Exp Ann, Bool) -- ^ The collapsed expression, and whether it should be
+                     -- rendered with the output renderer.
 collapseSeqAfterStep expr =
   case expr of
     Seq _ (Bind _ _ _ bindExp) _ | isTraceValue bindExp ->
@@ -576,7 +611,10 @@ collapseSeqAfterStep expr =
 -- - Collects all words and makes a single upsCachedBatch call
 -- - Checks cache first, only fetches uncached words
 -- - Works with String, only converts to Text at TRmorph boundary
-stripStepsCopulaTRmorph :: RenderCache -> FSM -> String -> IO String
+stripStepsCopulaTRmorph :: RenderCache -- ^ Memoized morphological analyses.
+                        -> FSM -- ^ Morphological analyzer.
+                        -> String -- ^ Rendered trace line.
+                        -> IO String -- ^ The same line with copula suffixes removed.
 stripStepsCopulaTRmorph cache fsm s = do
   let segments = segmentTextStr s
       words = [w | (True, w) <- segments]
@@ -631,7 +669,9 @@ stripStepsCopulaTRmorph cache fsm s = do
 
 -- | Find the starting position of a substring in a string.
 -- Returns Nothing if the substring is not found.
-findSubstring :: String -> String -> Maybe Int
+findSubstring :: String -- ^ Substring to search for.
+              -> String -- ^ String to search in.
+              -> Maybe Int -- ^ Zero-based index of the first occurrence.
 findSubstring sub = go 0
   where
     go _ [] = Nothing
@@ -649,7 +689,12 @@ findSubstring sub = go 0
 -- When color is enabled:
 --   - Underline characters (└─┘) are rendered in dim gray
 --   - Result text is rendered in blue
-pointerLinesForColored :: Bool -> String -> String -> String -> String -> [String]
+pointerLinesForColored :: Bool -- ^ Whether to emit ANSI color.
+                       -> String -- ^ Prefix printed before each line.
+                       -> String -- ^ Full rendered expression.
+                       -> String -- ^ Rendered sub-expression to underline.
+                       -> String -- ^ Rendered result of reducing it.
+                       -> [String] -- ^ Underline line and result line.
 pointerLinesForColored useColor pointerIndent wholeText subText resultText =
   case findNeedlePosition of
     Nothing -> []
@@ -694,7 +739,10 @@ pointerLinesForColored useColor pointerIndent wholeText subText resultText =
 -- | Highlight a substring in blue within a larger text, if found.
 -- Used to keep evaluated sub-expressions highlighted when they appear
 -- in the next evaluation step.
-highlightSubstring :: Bool -> String -> String -> String
+highlightSubstring :: Bool -- ^ Whether to emit ANSI color.
+                   -> String -- ^ Substring to highlight.
+                   -> String -- ^ Text to highlight within.
+                   -> String -- ^ Text with the first occurrence colored, if present.
 highlightSubstring useColor needle haystack
   | not useColor = haystack
   | otherwise =
@@ -715,7 +763,10 @@ highlightSubstring useColor needle haystack
 -- Returns (changed flag, updated expression).
 --
 -- The 'changed' flag indicates whether a substitution was made.
-substituteFirstChild :: Exp Ann -> Exp Ann -> Exp Ann -> (Bool, Exp Ann)
+substituteFirstChild :: Exp Ann -- ^ Sub-expression to replace.
+                     -> Exp Ann -- ^ Replacement sub-expression.
+                     -> Exp Ann -- ^ Expression to rewrite.
+                     -> (Bool, Exp Ann) -- ^ Whether a replacement happened, and the result.
 substituteFirstChild from to expr
   | eqTraceExp from expr = (True, copyCase expr to)
   | otherwise =
@@ -772,7 +823,9 @@ substituteFirstChild from to expr
 
 -- | Find the first child expression matching via 'eqTraceExp'.
 -- Returns the child from the parent tree so its case annotation is preserved.
-findFirstChild :: Exp Ann -> Exp Ann -> Maybe (Exp Ann)
+findFirstChild :: Exp Ann -- ^ Sub-expression to look for.
+               -> Exp Ann -- ^ Expression to search.
+               -> Maybe (Exp Ann) -- ^ The matching child as it appears in the parent.
 findFirstChild from expr
   | eqTraceExp from expr = Just expr
   | otherwise = case expr of
@@ -796,7 +849,9 @@ findFirstChild from expr
 --
 -- This is important because the same logical expression may appear with
 -- different case markings (nominative, accusative, etc.) in different contexts.
-eqTraceExp :: Exp Ann -> Exp Ann -> Bool
+eqTraceExp :: Exp Ann -- ^ First expression.
+           -> Exp Ann -- ^ Second expression.
+           -> Bool -- ^ 'True' when they are equal ignoring annotations and case.
 eqTraceExp a b =
   case (a, b) of
     (Var _ n1 c1, Var _ n2 c2) ->
@@ -831,7 +886,8 @@ eqTraceExp a b =
 --
 -- Example: if evaluating "f x" in instrumental case produces "5",
 -- the result should be "5" in nominative, not "5" in instrumental.
-setTopCaseNom :: Exp Ann -> Exp Ann
+setTopCaseNom :: Exp Ann -- ^ Expression whose outermost annotation is reset.
+              -> Exp Ann -- ^ The same expression in the nominative case.
 setTopCaseNom e = case e of
   Var ann n c       -> Var (setAnnCase ann Nom) n c
   App ann f a       -> App (setAnnCase ann Nom) f a
@@ -847,7 +903,9 @@ setTopCaseNom e = case e of
 
 -- | Copy the case annotation from one expression to another.
 -- Preserves the grammatical case context when substituting expressions.
-copyCase :: Exp Ann -> Exp Ann -> Exp Ann
+copyCase :: Exp Ann -- ^ Expression supplying the case.
+         -> Exp Ann -- ^ Expression to re-annotate.
+         -> Exp Ann -- ^ The second expression carrying the first one's case.
 copyCase from to =
   let cas = annCase (annExp from)
   in case to of

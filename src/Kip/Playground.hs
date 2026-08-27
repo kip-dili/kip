@@ -53,9 +53,11 @@ import Kip.TypeCheck
 -- | Supported execution modes for a single playground request.
 data PlaygroundMode
   = PlaygroundExec
+  -- ^ Parse, type-check, and evaluate the input files.
   | PlaygroundBuild
-  -- | Currently supports @\"js\"@.
+  -- ^ Parse and type-check only, without evaluating expression statements.
   | PlaygroundCodegen Text
+  -- ^ Emit code for the named target. Currently supports @\"js\"@.
   deriving (Eq, Show)
 
 {- |
@@ -86,8 +88,12 @@ data PlaygroundOutput
   | PlaygroundTextOutput Text
   deriving (Eq, Show)
 
+-- | Accumulated code generation state: typed statements tagged with the file
+-- they came from, parser and typechecker state, and the set of loaded files.
 type CodegenState = ([(FilePath, Stmt Ann)], ParserState, TCState, Set FilePath)
 
+-- | Optional callbacks invoked when a module starts and finishes compiling,
+-- used to report progress from long code generation runs.
 type CodegenProgressHooks = Maybe (FilePath -> IO (), FilePath -> IO ())
 
 {- |
@@ -102,7 +108,8 @@ Execution steps:
 
 This function does /not/ persist user definitions across invocations by design.
 -}
-runPlaygroundRequest :: PlaygroundRequest -> IO PlaygroundOutput
+runPlaygroundRequest :: PlaygroundRequest -- ^ Request describing the mode, inputs, and options.
+                     -> IO PlaygroundOutput -- ^ Text payload for code generation, otherwise no output.
 runPlaygroundRequest req = do
   progressEnabled <- isPlaygroundProgressEnabled
   let reportProgress pct label =
@@ -183,11 +190,14 @@ runPlaygroundRequest req = do
         _ ->
           die . T.unpack =<< runReaderT (renderMsg (MsgUnknownCodegenTarget target)) renderCtx
 
-isCodegenMode :: PlaygroundMode -> Bool
+-- | Check whether a mode requests code generation.
+isCodegenMode :: PlaygroundMode -- ^ Mode to classify.
+              -> Bool -- ^ 'True' for 'PlaygroundCodegen'.
 isCodegenMode (PlaygroundCodegen _) = True
 isCodegenMode _ = False
 
-isPlaygroundProgressEnabled :: IO Bool
+-- | Read @KIP_PLAYGROUND_PROGRESS@ to decide whether to emit progress lines.
+isPlaygroundProgressEnabled :: IO Bool -- ^ 'True' unless the variable is unset or a falsey value.
 isPlaygroundProgressEnabled = do
   mVal <- lookupEnv "KIP_PLAYGROUND_PROGRESS"
   return $
@@ -195,12 +205,16 @@ isPlaygroundProgressEnabled = do
       Nothing -> False
       Just val -> val `notElem` ["", "0", "false", "no"]
 
-emitPlaygroundProgress :: Int -> Text -> IO ()
+-- | Write one machine-readable progress line to standard error.
+emitPlaygroundProgress :: Int -- ^ Completion percentage.
+                       -> Text -- ^ Label naming the current phase.
+                       -> IO () -- ^ Writes a @KIP_PROGRESS:@ line to standard error.
 emitPlaygroundProgress pct label =
   TIO.hPutStrLn stderr ("KIP_PROGRESS:" <> T.pack (show pct) <> ":" <> label)
 
 -- | Locate @trmorph.fst@ path with data-dir fallback behavior.
-locateTrmorph :: Lang -> IO FilePath
+locateTrmorph :: Lang -- ^ Diagnostic language used if the file is missing.
+              -> IO FilePath -- ^ Path to the transducer; exits the process when absent.
 locateTrmorph lang = do
   path <- locateDataFile "vendor/trmorph.fst"
   exists <- doesFileExist path
@@ -209,7 +223,8 @@ locateTrmorph lang = do
     else die . T.unpack $ missingDataFileMessage lang "vendor/trmorph.fst"
 
 -- | Locate stdlib root (@lib/temel.kip@) with data-dir fallback behavior.
-locateLibDir :: Lang -> IO FilePath
+locateLibDir :: Lang -- ^ Diagnostic language used if the library is missing.
+             -> IO FilePath -- ^ Directory holding the standard library; exits the process when absent.
 locateLibDir lang = do
   path <- locateDataFile "lib/temel.kip"
   exists <- doesFileExist path
@@ -223,13 +238,12 @@ Generate one JS program text from entry files and transitive dependencies.
 This intentionally starts from @giriş@ to mirror the runtime prelude that
 normal execution uses.
 -}
-emitJsFilesWithDeps ::
-  [FilePath] ->
-  ParserState ->
-  TCState ->
-  [FilePath] ->
-  CodegenProgressHooks ->
-  RenderM Text
+emitJsFilesWithDeps :: [FilePath] -- ^ Directories searched when resolving imports.
+                    -> ParserState -- ^ Initial parser state.
+                    -> TCState -- ^ Initial typechecker state.
+                    -> [FilePath] -- ^ Entry files to compile.
+                    -> CodegenProgressHooks -- ^ Optional per-module progress callbacks.
+                    -> RenderM Text -- ^ Complete JavaScript program text.
 emitJsFilesWithDeps moduleDirs basePst baseTC files progressHooks = do
   preludePath <- resolveModulePath moduleDirs [] ([], T.pack "giriş")
   preludeAbs <- liftIO (canonicalizePathCached preludePath)
@@ -248,12 +262,11 @@ Parse/typecheck one file and recursively include dependencies for codegen.
 Unlike runtime execution, this path accumulates typed statements and then emits
 a single JS program.
 -}
-emitJsFileWithDeps ::
-  [FilePath] ->
-  CodegenProgressHooks ->
-  CodegenState ->
-  FilePath ->
-  RenderM CodegenState
+emitJsFileWithDeps :: [FilePath] -- ^ Directories searched when resolving imports.
+                   -> CodegenProgressHooks -- ^ Optional per-module progress callbacks.
+                   -> CodegenState -- ^ State accumulated from files compiled so far.
+                   -> FilePath -- ^ File to compile.
+                   -> RenderM CodegenState -- ^ State including this file and its dependencies.
 emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
   exists <- liftIO (doesFileExist path)
   unless exists $ do
@@ -292,17 +305,17 @@ emitJsFileWithDeps moduleDirs progressHooks (acc, pst, tcSt, loaded) path = do
                     return (acc ++ depStmts ++ taggedStmts, pst'', tcSt'', loaded'')
 
 -- | Check whether a statement is @Load@.
-isLoadStmt :: Stmt Ann -> Bool
+isLoadStmt :: Stmt Ann -- ^ Statement to classify.
+           -> Bool -- ^ 'True' for a module import.
 isLoadStmt (Load _ _) = True
 isLoadStmt _ = False
 
 -- | Load one dependency module for JS code generation.
-emitJsLoad ::
-  [FilePath] ->
-  CodegenProgressHooks ->
-  CodegenState ->
-  ([Text], Identifier) ->
-  RenderM CodegenState
+emitJsLoad :: [FilePath] -- ^ Directories searched when resolving imports.
+           -> CodegenProgressHooks -- ^ Optional per-module progress callbacks.
+           -> CodegenState -- ^ State accumulated from files compiled so far.
+           -> ([Text], Identifier) -- ^ Directory segments and name of the imported module.
+           -> RenderM CodegenState -- ^ State including the loaded module.
 emitJsLoad moduleDirs progressHooks (acc, pst, tcSt, loaded) (dirPath, name) = do
   path <- resolveModulePath moduleDirs dirPath name
   absPath <- liftIO (canonicalizePathCached path)

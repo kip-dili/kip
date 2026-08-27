@@ -83,17 +83,22 @@ import Kip.Util (stableNub)
 -- | Diagnostic language selection.
 data Lang
   = LangTr
+  -- ^ Turkish diagnostics.
   | LangEn
+  -- ^ English diagnostics.
   deriving (Eq, Show)
 
 -- | Parse a diagnostic language flag.
-parseLang :: String -> Either String Lang
+parseLang :: String -- ^ Flag value, @\"tr\"@ or @\"en\"@.
+          -> Either String Lang -- ^ Selected language, or an error message.
 parseLang "tr" = Right LangTr
 parseLang "en" = Right LangEn
 parseLang _ = Left "LANG must be 'tr' or 'en'"
 
 -- | Render a missing packaged-data-file diagnostic.
-missingDataFileMessage :: Lang -> FilePath -> Text
+missingDataFileMessage :: Lang -- ^ Diagnostic language.
+                       -> FilePath -- ^ Path of the data file that was not found.
+                       -> Text -- ^ Localized "not found" message.
 missingDataFileMessage lang path =
   T.pack path <>
     case lang of
@@ -103,9 +108,9 @@ missingDataFileMessage lang path =
 -- | Rendering context for diagnostics.
 data RenderCtx =
   RenderCtx
-    { rcLang :: Lang
-    , rcCache :: RenderCache
-    , rcFsm :: FSM
+    { rcLang :: Lang -- ^ Language diagnostics are rendered in.
+    , rcCache :: RenderCache -- ^ Memoized morphological renderings.
+    , rcFsm :: FSM -- ^ Morphological analyzer used to inflect Turkish words.
     }
 
 -- | Parser, typechecker, evaluator, and loaded-module state for file execution.
@@ -114,31 +119,53 @@ type CompilerState = (ParserState, TCState, EvalState, Set FilePath)
 -- | Messages emitted by the runner.
 data CompilerMsg
   = MsgNeedFile
+  -- ^ The command requires at least one input file.
   | MsgNeedFileOrDir
+  -- ^ The command requires at least one input file or directory.
   | MsgTrmorphMissing
+  -- ^ The packaged TRmorph morphology transducer could not be located.
   | MsgLibMissing
+  -- ^ The packaged standard library could not be located.
   | MsgFileNotFound FilePath
+  -- ^ The named source file does not exist.
   | MsgModuleNotFound [Text] Identifier
+  -- ^ An imported module could not be resolved: directory segments and module name.
   | MsgUnknownCodegenTarget Text
+  -- ^ The requested code generation target is not supported.
   | MsgParseError (ParseErrorBundle Text ParserError)
+  -- ^ Parsing failed with this error bundle.
   | MsgRunFailed
+  -- ^ Trailing message noting that the file could not be executed.
   | MsgTCError TCError (Maybe Text) [Identifier] [(Identifier, [Identifier])]
+  -- ^ Type checking failed: the error, the source text for snippets when
+  -- available, type constructors taking parameters, and per-type module paths.
   | MsgEvalError EvalError
+  -- ^ Evaluation failed with this error.
 
 -- | A file-runner failure before presentation or process termination.
 data RunFailure
   = RunFileNotFound FilePath
+  -- ^ The source file to run does not exist.
   | RunParseFailure (ParseErrorBundle Text ParserError)
+  -- ^ The source file failed to parse.
   | RunTCFailure TCError (Maybe Text) [Identifier] [(Identifier, [Identifier])]
+  -- ^ Type checking failed, with the same payload as 'MsgTCError'.
   | RunEvalFailure EvalError
+  -- ^ Evaluation failed.
   | RunModuleNotFound [Text] Identifier
+  -- ^ An imported module could not be resolved: directory segments and module name.
 
 -- | Presentation hooks around the shared parsing/typechecking/evaluation core.
 data RunHooks =
   RunHooks
     { runFailure :: RunFailure -> RenderM Void
+      -- ^ Present a failure and abort; never returns.
     , runStatementStatus :: Maybe ([Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Stmt Ann -> RenderM ())
+      -- ^ Optional per-statement reporter, given the parameterized type
+      -- constructors, per-type module paths, references to non-infinitive
+      -- names, and the statement itself.
     , runLoadStatus :: Maybe (Identifier -> RenderM ())
+      -- ^ Optional reporter called with each module name as it is loaded.
     }
 
 -- | Rendering helper context.
@@ -161,7 +188,9 @@ instance ShowErrorComponent ParserErrorEn where
 -- | Output target for parse error rendering.
 data ParseErrorRenderTarget
   = ParseErrorForCli
+  -- ^ Terminal output, where multi-line snippets and captions are useful.
   | ParseErrorForLsp
+  -- ^ Editor diagnostics, where the message must stay compact.
   deriving (Eq, Show)
 
 {- | Render evaluation errors with proper localization.
@@ -172,7 +201,9 @@ Evaluation errors occur at runtime and include:
 - NoMatchingClause: Pattern match with no matching clause
 - Unknown: Unexpected evaluation failure
 -}
-renderEvalError :: Lang -> EvalError -> Text
+renderEvalError :: Lang -- ^ Diagnostic language.
+                -> EvalError -- ^ Evaluation failure to describe.
+                -> Text -- ^ Localized diagnostic text.
 renderEvalError lang evalErr =
   case lang of
     LangTr ->
@@ -201,7 +232,8 @@ Lookup order:
 4. Relative to the executable parent directory
 5. Relative path in current working directory
 -}
-locateDataFile :: FilePath -> IO FilePath
+locateDataFile :: FilePath -- ^ Path of the data file relative to the package root.
+               -> IO FilePath -- ^ First candidate that exists, or the Cabal path as a fallback.
 locateDataFile rel = do
   mEnv <- lookupEnv "KIP_DATADIR"
   cabalPath <- getDataFileName rel
@@ -224,7 +256,8 @@ locateDataFile rel = do
     [] -> return cabalPath
 
 -- | Render a compiler message to text.
-renderMsg :: CompilerMsg -> RenderM Text
+renderMsg :: CompilerMsg -- ^ Message to describe.
+          -> RenderM Text -- ^ Message text in the context's language.
 renderMsg msg = do
   ctx <- ask
   case msg of
@@ -273,7 +306,9 @@ renderMsg msg = do
         Just source -> renderTCErrorWithSource paramTyCons tyMods source tcErr
 
 -- | Emit a message using a concrete render context in IO.
-emitMsgIO :: RenderCtx -> CompilerMsg -> IO ()
+emitMsgIO :: RenderCtx -- ^ Rendering context to use.
+          -> CompilerMsg -- ^ Message to print.
+          -> IO () -- ^ Writes the rendered message to standard output.
 emitMsgIO ctx msg = do
   rendered <- runReaderT (renderMsg msg) ctx
   TIO.putStrLn rendered
@@ -288,7 +323,8 @@ defaultRunHooks =
     }
 
 -- | Render and terminate for a shared runner failure.
-defaultRunFailure :: RunFailure -> RenderM Void
+defaultRunFailure :: RunFailure -- ^ Failure to present.
+                  -> RenderM Void -- ^ Never returns; terminates the process.
 defaultRunFailure failure =
   case failure of
     RunFileNotFound path -> do
@@ -305,27 +341,36 @@ defaultRunFailure failure =
       dieRunnerMsg (MsgModuleNotFound dirPath name)
 
 -- | Emit one runner message in the current context.
-emitRunnerMsg :: CompilerMsg -> RenderM ()
+emitRunnerMsg :: CompilerMsg -- ^ Message to print.
+              -> RenderM () -- ^ Writes the rendered message to standard output.
 emitRunnerMsg msg = do
   ctx <- ask
   liftIO (emitMsgIO ctx msg)
 
 -- | Render a runner message and terminate the process.
-dieRunnerMsg :: CompilerMsg -> RenderM Void
+dieRunnerMsg :: CompilerMsg -- ^ Message to print before exiting.
+             -> RenderM Void -- ^ Never returns; terminates the process.
 dieRunnerMsg msg = do
   rendered <- renderMsg msg
   liftIO (die (T.unpack rendered))
 
 -- | Invoke a failure hook that cannot return.
-abortRun :: RunHooks -> RunFailure -> RenderM a
+abortRun :: RunHooks -- ^ Hooks supplying the failure presenter.
+         -> RunFailure -- ^ Failure to present.
+         -> RenderM a -- ^ Never returns, so it fits any result type.
 abortRun hooks failure = runFailure hooks failure >>= absurd
 
 -- | Render a parse error bundle in the requested language.
-renderParseError :: Lang -> ParseErrorBundle Text ParserError -> Text
+renderParseError :: Lang -- ^ Diagnostic language.
+                 -> ParseErrorBundle Text ParserError -- ^ Errors reported by the parser.
+                 -> Text -- ^ Diagnostic text formatted for the terminal.
 renderParseError = renderParseErrorFor ParseErrorForCli
 
 -- | Render a parse error bundle for a concrete output target.
-renderParseErrorFor :: ParseErrorRenderTarget -> Lang -> ParseErrorBundle Text ParserError -> Text
+renderParseErrorFor :: ParseErrorRenderTarget -- ^ Consumer the output is formatted for.
+                    -> Lang -- ^ Diagnostic language.
+                    -> ParseErrorBundle Text ParserError -- ^ Errors reported by the parser.
+                    -> Text -- ^ Diagnostic text.
 renderParseErrorFor target lang err =
   case findPatternBinderRepeatedError err of
     Just (ident, sp, source) ->
@@ -380,7 +425,9 @@ renderParseErrorFor target lang err =
                   in "Syntax error:\n" <> compactPretty target pretty
 
 -- | Remove location/snippet gutter emitted by Megaparsec pretty printer.
-compactPretty :: ParseErrorRenderTarget -> Text -> Text
+compactPretty :: ParseErrorRenderTarget -- ^ Consumer of the diagnostic.
+              -> Text -- ^ Megaparsec's pretty-printed error text.
+              -> Text -- ^ Original text for the CLI, or message lines only for the LSP.
 compactPretty target txt =
   case target of
     ParseErrorForCli -> txt
@@ -411,7 +458,9 @@ compactPretty target txt =
           in not (T.null marker) && T.all (== '^') marker
 
 -- | Find the custom repeated-pattern-binder parser error, if present.
-findPatternBinderRepeatedError :: ParseErrorBundle Text ParserError -> Maybe (Identifier, Span, Text)
+findPatternBinderRepeatedError :: ParseErrorBundle Text ParserError -- ^ Errors reported by the parser.
+                               -> Maybe (Identifier, Span, Text)
+                               -- ^ Repeated binder, its span, and the source text, when present.
 findPatternBinderRepeatedError (ParseErrorBundle errs posState) = do
   (ident, sp) <- listToMaybe (concatMap extract (NE.toList errs))
   return (ident, sp, pstateInput posState)
@@ -426,7 +475,10 @@ findPatternBinderRepeatedError (ParseErrorBundle errs posState) = do
         _ -> []
 
 -- | Find the custom unrecognized-word parser error, if present.
-findUnrecognizedWordError :: ParseErrorBundle Text ParserError -> Maybe (Text, Span, [Text], Text)
+findUnrecognizedWordError :: ParseErrorBundle Text ParserError -- ^ Errors reported by the parser.
+                          -> Maybe (Text, Span, [Text], Text)
+                          -- ^ Unrecognized word, its span, spelling suggestions, and the
+                          -- source text, when present.
 findUnrecognizedWordError (ParseErrorBundle errs posState) = do
   (w, sp, suggestions) <- listToMaybe (concatMap extract (NE.toList errs))
   return (w, sp, suggestions, pstateInput posState)
@@ -441,7 +493,9 @@ findUnrecognizedWordError (ParseErrorBundle errs posState) = do
         _ -> []
 
 -- | Find the custom ambiguous bare-application parser error, if present.
-findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -> Maybe (ParserError, Span, Text)
+findAmbiguousBareApplicationError :: ParseErrorBundle Text ParserError -- ^ Errors reported by the parser.
+                                  -> Maybe (ParserError, Span, Text)
+                                  -- ^ The ambiguity error, its span, and the source text, when present.
 findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
   (errComp, sp) <- listToMaybe (concatMap extract (NE.toList errs))
   return (errComp, sp, pstateInput posState)
@@ -460,7 +514,9 @@ findAmbiguousBareApplicationError (ParseErrorBundle errs posState) = do
 
 -- | Map custom error components inside a parse error bundle.
 mapParseErrorBundle :: Ord e'
-                    => (e -> e') -> ParseErrorBundle s e -> ParseErrorBundle s e'
+                    => (e -> e') -- ^ Conversion applied to each custom error component.
+                    -> ParseErrorBundle s e -- ^ Bundle to convert.
+                    -> ParseErrorBundle s e' -- ^ Bundle with converted components.
 mapParseErrorBundle f (ParseErrorBundle errs posState) =
   ParseErrorBundle (NE.map (mapParseError f) errs) posState
   where
@@ -477,7 +533,8 @@ mapParseErrorBundle f (ParseErrorBundle errs posState) =
         ErrorIndentation o r lvl -> ErrorIndentation o r lvl
 
 -- | Translate parse error text into Turkish labels.
-turkifyParseError :: String -> String
+turkifyParseError :: String -- ^ Megaparsec diagnostic with English labels.
+                  -> String -- ^ Same diagnostic with the labels translated to Turkish.
 turkifyParseError =
   replace "unexpected end of input" "beklenmeyen girişin sonu"
   . replace "unexpected" "beklenmeyen"
@@ -487,18 +544,26 @@ turkifyParseError =
   . replace "column" "sütun"
 
 -- | Replace all occurrences of a substring.
-replace :: String -> String -> String -> String
+replace :: String -- ^ Substring to search for.
+        -> String -- ^ Replacement substring.
+        -> String -- ^ String to rewrite.
+        -> String -- ^ String with every occurrence replaced.
 replace old new = intercalate new . splitOn old
 
 -- | Split a string on a substring.
-splitOn :: String -> String -> [String]
+splitOn :: String -- ^ Separator to split on.
+        -> String -- ^ String to split.
+        -> [String] -- ^ Segments between separators.
 splitOn pat s =
   case breakOn pat s of
     Nothing -> [s]
     Just (before, after) -> before : splitOn pat after
 
 -- | Break a string on the first occurrence of a substring.
-breakOn :: String -> String -> Maybe (String, String)
+breakOn :: String -- ^ Substring to search for.
+        -> String -- ^ String to break.
+        -> Maybe (String, String) -- ^ Text before and after the first occurrence,
+        -- or 'Nothing' when the substring is absent.
 breakOn pat s =
   case findIndex (isPrefixOf pat) (tails s) of
     Nothing -> Nothing
@@ -508,7 +573,10 @@ breakOn pat s =
       in Just (before, after)
 
 -- | Render a type checker error without source context.
-renderTCError :: [Identifier] -> [(Identifier, [Identifier])] -> TCError -> RenderM Text
+renderTCError :: [Identifier] -- ^ Type constructors that take parameters.
+              -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+              -> TCError -- ^ Type checking failure to describe.
+              -> RenderM Text -- ^ Localized diagnostic text.
 renderTCError paramTyCons tyMods tcErr = do
   ctx <- ask
   case rcLang ctx of
@@ -665,7 +733,11 @@ renderTCError paramTyCons tyMods tcErr = do
           in return ("Type error: return type must be nominative or possessive. Found " <> caseEn <> "." <> renderSpan (rcLang ctx) sp)
 
 -- | Render a type checker error with a source snippet.
-renderTCErrorWithSource :: [Identifier] -> [(Identifier, [Identifier])] -> Text -> TCError -> RenderM Text
+renderTCErrorWithSource :: [Identifier] -- ^ Type constructors that take parameters.
+                        -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+                        -> Text -- ^ Source text the snippets are taken from.
+                        -> TCError -- ^ Type checking failure to describe.
+                        -> RenderM Text -- ^ Diagnostic text followed by caret snippets.
 renderTCErrorWithSource paramTyCons tyMods source tcErr = do
   ctx <- ask
   msg <- renderTCError paramTyCons tyMods tcErr
@@ -690,7 +762,8 @@ renderTCErrorWithSource paramTyCons tyMods source tcErr = do
     _ -> return withPrimary
 
 -- | User-facing guidance for using effectful forms in the right context.
-effectBoundaryHint :: Lang -> Text
+effectBoundaryHint :: Lang -- ^ Diagnostic language.
+                   -> Text -- ^ Multi-line explanation and suggested fixes.
 effectBoundaryHint lang =
   case lang of
     LangTr ->
@@ -709,7 +782,8 @@ effectBoundaryHint lang =
         ]
 
 -- | Extract a span from a type checker error when present.
-tcErrSpan :: TCError -> Maybe Span
+tcErrSpan :: TCError -- ^ Type checking failure to inspect.
+          -> Maybe Span -- ^ Primary span of the error, when it carries one.
 tcErrSpan tcErr =
   case tcErr of
     NoType sp -> Just sp
@@ -730,7 +804,8 @@ tcErrSpan tcErr =
 -- We use the expected type annotation span when available so REPL users can
 -- see a distant but relevant location (for example, a declared parameter type
 -- that conflicts with the call site).
-tcErrRelatedSpan :: TCError -> Maybe Span
+tcErrRelatedSpan :: TCError -- ^ Type checking failure to inspect.
+                 -> Maybe Span -- ^ Secondary span worth showing alongside the primary one.
 tcErrRelatedSpan tcErr =
   case tcErr of
     ArgTypeMismatch expectedTy _ _ -> nonNoSpan (annSpan (annTy expectedTy))
@@ -743,12 +818,16 @@ tcErrRelatedSpan tcErr =
         _ -> Just sp
 
 -- | Check whether two spans refer to the same source file path.
-sameSpanPath :: Span -> Span -> Bool
+sameSpanPath :: Span -- ^ First span.
+             -> Span -- ^ Second span.
+             -> Bool -- ^ 'True' when both are located spans in the same file.
 sameSpanPath (Span _ _ p1) (Span _ _ p2) = p1 == p2
 sameSpanPath _ _ = False
 
 -- | Render missing patterns for error messages.
-renderMissingPatterns :: Lang -> [Pat Ann] -> RenderM Text
+renderMissingPatterns :: Lang -- ^ Diagnostic language.
+                      -> [Pat Ann] -- ^ Patterns left uncovered by a match.
+                      -> RenderM Text -- ^ Sentence listing the uncovered patterns.
 renderMissingPatterns lang pats = do
   patTexts <- mapM (renderPatText False) pats
   let listed = T.intercalate ", " patTexts
@@ -776,7 +855,9 @@ renderMissingPatterns lang pats = do
               else txt
 
 -- | Render a caret snippet for a source span.
-renderSpanSnippet :: Text -> Span -> Text
+renderSpanSnippet :: Text -- ^ Full source text.
+                  -> Span -- ^ Span to highlight.
+                  -> Text -- ^ Source lines with a caret underline, or empty for 'NoSpan'.
 renderSpanSnippet source sp =
   case sp of
     NoSpan -> ""
@@ -806,7 +887,10 @@ renderSpanSnippet source sp =
       | otherwise = Just (vec V.! i)
 
 -- | Render a span snippet with Megaparsec-style location and gutter lines.
-renderLocatedSpanSnippet :: Text -> Text -> Span -> Text
+renderLocatedSpanSnippet :: Text -- ^ File name shown in the location header.
+                         -> Text -- ^ Full source text.
+                         -> Span -- ^ Span to highlight.
+                         -> Text -- ^ Location header, gutter, and caret snippet.
 renderLocatedSpanSnippet sourceName source sp =
   case sp of
     NoSpan -> ""
@@ -826,7 +910,9 @@ renderLocatedSpanSnippet sourceName source sp =
            _ -> renderSpanSnippet source sp
 
 -- | Render a span into human-readable text.
-renderSpan :: Lang -> Span -> Text
+renderSpan :: Lang -- ^ Diagnostic language.
+           -> Span -- ^ Span to describe.
+           -> Text -- ^ Line/column suffix, or a file location when the span has a path.
 renderSpan lang sp =
   case sp of
     NoSpan -> ""
@@ -862,7 +948,10 @@ renderSpan lang sp =
           "\n" <> T.pack p <> ":" <> T.pack (show (unPos (sourceLine start))) <> ":" <> T.pack (show (unPos (sourceColumn start))) <> "-" <> T.pack (show (unPos (sourceLine end))) <> ":" <> T.pack (show (unPos (sourceColumn end)))
 
 -- | Render an optional type for diagnostics.
-renderTyOpt :: [Identifier] -> [(Identifier, [Identifier])] -> Maybe (Ty Ann) -> RenderM Text
+renderTyOpt :: [Identifier] -- ^ Type constructors that take parameters.
+            -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+            -> Maybe (Ty Ann) -- ^ Type to render, when one is known.
+            -> RenderM Text -- ^ Rendered type, or a localized "unknown" placeholder.
 renderTyOpt paramTyCons tyMods mty = do
   ctx <- ask
   case mty of
@@ -882,20 +971,44 @@ requireCacheFsm = do
   return (rcCache ctx, rcFsm ctx)
 
 -- | Run multiple files through parsing, type checking, and evaluation.
-runFiles :: Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM CompilerState
+runFiles :: Bool -- ^ Build only: skip evaluating top-level expression statements.
+         -> ParserState -- ^ Initial parser state.
+         -> TCState -- ^ Initial typechecker state.
+         -> EvalState -- ^ Initial evaluator state.
+         -> [FilePath] -- ^ Directories searched when resolving imports.
+         -> Set FilePath -- ^ Files already loaded, which are not run again.
+         -> [FilePath] -- ^ Files to run, in order.
+         -> RenderM CompilerState -- ^ State after every file has been run.
 runFiles = runFilesWithHooks defaultRunHooks
 
 -- | Run multiple files with caller-provided diagnostic and status hooks.
-runFilesWithHooks :: RunHooks -> Bool -> ParserState -> TCState -> EvalState -> [FilePath] -> Set FilePath -> [FilePath] -> RenderM CompilerState
+runFilesWithHooks :: RunHooks -- ^ Failure and status presentation.
+                  -> Bool -- ^ Build only: skip evaluating top-level expression statements.
+                  -> ParserState -- ^ Initial parser state.
+                  -> TCState -- ^ Initial typechecker state.
+                  -> EvalState -- ^ Initial evaluator state.
+                  -> [FilePath] -- ^ Directories searched when resolving imports.
+                  -> Set FilePath -- ^ Files already loaded, which are not run again.
+                  -> [FilePath] -- ^ Files to run, in order.
+                  -> RenderM CompilerState -- ^ State after every file has been run.
 runFilesWithHooks hooks buildOnly basePst baseTC baseEval moduleDirs loaded =
   foldM' (runFileWithHooks hooks buildOnly moduleDirs) (basePst, baseTC, baseEval, loaded)
 
 -- | Run a single file and update all states.
-runFile :: Bool -> [FilePath] -> CompilerState -> FilePath -> RenderM CompilerState
+runFile :: Bool -- ^ Build only: skip evaluating top-level expression statements.
+        -> [FilePath] -- ^ Directories searched when resolving imports.
+        -> CompilerState -- ^ State before the file is run.
+        -> FilePath -- ^ File to run.
+        -> RenderM CompilerState -- ^ State after the file has been run.
 runFile = runFileWithHooks defaultRunHooks
 
 -- | Run one file with caller-provided diagnostic and status hooks.
-runFileWithHooks :: RunHooks -> Bool -> [FilePath] -> CompilerState -> FilePath -> RenderM CompilerState
+runFileWithHooks :: RunHooks -- ^ Failure and status presentation.
+                 -> Bool -- ^ Build only: skip evaluating top-level expression statements.
+                 -> [FilePath] -- ^ Directories searched when resolving imports.
+                 -> CompilerState -- ^ State before the file is run.
+                 -> FilePath -- ^ File to run.
+                 -> RenderM CompilerState -- ^ State after the file has been run.
 runFileWithHooks hooks buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = do
   exists <- liftIO (doesFileExist path)
   unless exists (abortRun hooks (RunFileNotFound path))
@@ -976,11 +1089,18 @@ runFileWithHooks hooks buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = d
 -- Cached entries are preferred for overlapping keys so that overloaded
 -- signature order stays stable with the source module that produced the
 -- cache. Current-state entries are retained for keys not present in cache.
-mergeTCState :: TCState -> TCState -> TCState
+mergeTCState :: TCState -- ^ State restored from a module cache, which wins on conflicts.
+             -> TCState -- ^ Current state, which supplies keys the cache lacks.
+             -> TCState -- ^ Combined state.
 mergeTCState = mergeCachedTCState
 
 -- | Evaluate a file statement, omitting expression statements in build mode.
-evalFileStmt :: RunHooks -> Bool -> FilePath -> EvalState -> Stmt Ann -> RenderM EvalState
+evalFileStmt :: RunHooks -- ^ Failure presentation.
+             -> Bool -- ^ Build only: skip expression statements.
+             -> FilePath -- ^ Path of the file the statement came from.
+             -> EvalState -- ^ Evaluator state before the statement.
+             -> Stmt Ann -- ^ Statement to evaluate.
+             -> RenderM EvalState -- ^ Evaluator state after the statement.
 evalFileStmt hooks buildOnly currentPath evalSt stmt =
   case stmt of
     ExpStmt _ | buildOnly -> return evalSt
@@ -992,8 +1112,14 @@ evalFileStmt hooks buildOnly currentPath evalSt stmt =
 
 -- | Load a dependency statement and retain its resolved path for caching.
 runLoadStmt ::
-  RunHooks -> Bool -> [FilePath] -> CompilerState -> [Text] -> Identifier ->
-  RenderM (CompilerState, FilePath)
+  RunHooks -- ^ Failure and status presentation.
+  -> Bool -- ^ Build only: skip evaluating top-level expression statements.
+  -> [FilePath] -- ^ Directories searched when resolving imports.
+  -> CompilerState -- ^ State before the dependency is loaded.
+  -> [Text] -- ^ Directory segments of the imported module.
+  -> Identifier -- ^ Name of the imported module.
+  -> RenderM (CompilerState, FilePath)
+  -- ^ State after loading, and the resolved path recorded for cache invalidation.
 runLoadStmt hooks buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath name = do
   path <- resolveModulePathWithHooks hooks moduleDirs dirPath name
   absPath <- liftIO (canonicalizePathCached path)
@@ -1009,7 +1135,16 @@ runLoadStmt hooks buildOnly moduleDirs state@(pst, tcSt, evalSt, loaded) dirPath
 -- This path is used when a valid module cache is loaded. It avoids
 -- re-running 'tcStmt' and any forward-declaration pre-pass by assuming the
 -- incoming statement list is already type-checked ('cachedTypedStmts').
-runTypedStmt :: RunHooks -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> CompilerState -> Stmt Ann -> RenderM CompilerState
+runTypedStmt :: RunHooks -- ^ Failure and status presentation.
+             -> Bool -- ^ Build only: skip evaluating top-level expression statements.
+             -> [FilePath] -- ^ Directories searched when resolving imports.
+             -> FilePath -- ^ Path of the file the statement came from.
+             -> [Identifier] -- ^ Type constructors that take parameters.
+             -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+             -> [Identifier] -- ^ Non-infinitive primitive references, for status reporting.
+             -> CompilerState -- ^ State before the statement.
+             -> Stmt Ann -- ^ Already type-checked statement to run.
+             -> RenderM CompilerState -- ^ State after the statement.
 runTypedStmt hooks buildOnly moduleDirs currentPath paramTyCons tyMods primRefs (pst, tcSt, evalSt, loaded) stmt =
   case stmt of
     Load dirPath name -> do
@@ -1024,7 +1159,20 @@ runTypedStmt hooks buildOnly moduleDirs currentPath paramTyCons tyMods primRefs 
 --
 -- Both typed statements and dependency paths are accumulated in reverse and
 -- normalized once per file, avoiding repeated append allocation.
-runStmtCollect :: RunHooks -> Bool -> [FilePath] -> FilePath -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Text -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath]) -> Stmt Ann -> RenderM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath])
+runStmtCollect :: RunHooks -- ^ Failure and status presentation.
+               -> Bool -- ^ Build only: skip evaluating top-level expression statements.
+               -> [FilePath] -- ^ Directories searched when resolving imports.
+               -> FilePath -- ^ Path of the file the statement came from.
+               -> [Identifier] -- ^ Type constructors that take parameters.
+               -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+               -> [Identifier] -- ^ Non-infinitive primitive references, for status reporting.
+               -> Text -- ^ Source text, used for error snippets.
+               -> (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath])
+               -- ^ Compiler state plus reversed accumulators for typed statements
+               -- and dependency paths.
+               -> Stmt Ann -- ^ Statement to type-check and run.
+               -> RenderM (ParserState, TCState, EvalState, Set FilePath, [Stmt Ann], [FilePath])
+               -- ^ Updated state and accumulators.
 runStmtCollect hooks buildOnly moduleDirs currentPath paramTyCons tyMods primRefs source (pst, tcSt, evalSt, loaded, typedAcc, depPathsAcc) stmt =
   case stmt of
     Load dirPath name -> do
@@ -1041,7 +1189,12 @@ runStmtCollect hooks buildOnly moduleDirs currentPath paramTyCons tyMods primRef
           return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
 
 -- | Emit optional per-statement status without coupling the runner to a UI.
-notifyStatement :: RunHooks -> [Identifier] -> [(Identifier, [Identifier])] -> [Identifier] -> Stmt Ann -> RenderM ()
+notifyStatement :: RunHooks -- ^ Hooks supplying the optional status reporter.
+                -> [Identifier] -- ^ Type constructors that take parameters.
+                -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+                -> [Identifier] -- ^ Non-infinitive primitive references.
+                -> Stmt Ann -- ^ Statement that was just run.
+                -> RenderM () -- ^ Calls the reporter when one is configured.
 notifyStatement hooks paramTyCons tyMods primRefs stmt =
   forM_ (runStatementStatus hooks) (\notify -> notify paramTyCons tyMods primRefs stmt)
 
@@ -1049,7 +1202,8 @@ notifyStatement hooks paramTyCons tyMods primRefs stmt =
 --
 -- Uses a strict set accumulator through the AST walk instead of list
 -- concatenation and end-of-pass dedupe.
-collectNonInfinitiveRefs :: [Stmt Ann] -> [Identifier]
+collectNonInfinitiveRefs :: [Stmt Ann] -- ^ Statements to walk.
+                         -> [Identifier] -- ^ Referenced names that are not locally bound.
 collectNonInfinitiveRefs stmts =
   Set.toList (foldl' stmtRefs Set.empty stmts)
   where
@@ -1091,11 +1245,18 @@ collectNonInfinitiveRefs stmts =
         _ -> acc
 
 -- | Resolve a module name to a file path.
-resolveModulePath :: [FilePath] -> [Text] -> Identifier -> RenderM FilePath
+resolveModulePath :: [FilePath] -- ^ Directories searched, in priority order.
+                  -> [Text] -- ^ Directory segments of the imported module.
+                  -> Identifier -- ^ Name of the imported module.
+                  -> RenderM FilePath -- ^ Canonical path of the module's source file.
 resolveModulePath = resolveModulePathWithHooks defaultRunHooks
 
 -- | Resolve a module path with caller-provided failure presentation.
-resolveModulePathWithHooks :: RunHooks -> [FilePath] -> [Text] -> Identifier -> RenderM FilePath
+resolveModulePathWithHooks :: RunHooks -- ^ Failure presentation for unresolvable modules.
+                           -> [FilePath] -- ^ Directories searched, in priority order.
+                           -> [Text] -- ^ Directory segments of the imported module.
+                           -> Identifier -- ^ Name of the imported module.
+                           -> RenderM FilePath -- ^ Canonical path of the module's source file.
 resolveModulePathWithHooks hooks dirs dirPath name@(xs, x) = do
   let dirComponents = map T.unpack dirPath
       parts = map T.unpack xs
@@ -1112,7 +1273,8 @@ resolveModulePathWithHooks hooks dirs dirPath name@(xs, x) = do
 --
 -- Performs path expansion and uniqueness filtering in one fold, avoiding
 -- temporary flattened lists and quadratic @nub@ work.
-resolveBuildTargets :: [FilePath] -> IO [FilePath]
+resolveBuildTargets :: [FilePath] -- ^ File and directory arguments given on the command line.
+                    -> IO [FilePath] -- ^ Source files to build, deduplicated and in argument order.
 resolveBuildTargets paths = do
   (_, accRev) <- foldM collectPath (Set.empty, []) paths
   return (reverse accRev)
@@ -1135,11 +1297,14 @@ resolveBuildTargets paths = do
         else return [p]
 
 -- | Recursively list .kip files in a directory tree.
-listKipFilesRecursive :: FilePath -> IO [FilePath]
+listKipFilesRecursive :: FilePath -- ^ Directory to walk.
+                      -> IO [FilePath] -- ^ Every @.kip@ file beneath it, or empty if not a directory.
 listKipFilesRecursive = listKipFilesRecursiveSkipping Set.empty
 
 -- | Recursively list @.kip@ files while ignoring named directories.
-listKipFilesRecursiveSkipping :: Set FilePath -> FilePath -> IO [FilePath]
+listKipFilesRecursiveSkipping :: Set FilePath -- ^ Directory names to skip, matched without their path.
+                              -> FilePath -- ^ Directory to walk.
+                              -> IO [FilePath] -- ^ Every @.kip@ file beneath it, or empty if not a directory.
 listKipFilesRecursiveSkipping skipped root = do
   isDir <- doesDirectoryExist root
   if not isDir
@@ -1159,23 +1324,45 @@ listKipFilesRecursiveSkipping skipped root = do
 --
 -- Set-backed dedupe preserves deterministic output ordering while avoiding
 -- the O(n^2) behavior of repeated list scans.
-uniquePreserve :: Ord a => [a] -> [a]
+uniquePreserve :: Ord a
+               => [a] -- ^ Values that may contain duplicates.
+               -> [a] -- ^ First occurrence of each value in original order.
 uniquePreserve = stableNub
 
 -- | Load the prelude module into parser/type/eval states unless disabled.
-loadPreludeState :: Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState
+loadPreludeState :: Bool -- ^ Skip the prelude and return empty states.
+                 -> [FilePath] -- ^ Directories searched when resolving imports.
+                 -> RenderCache -- ^ Memoized morphological renderings.
+                 -> FSM -- ^ Morphological analyzer.
+                 -> RenderM CompilerState -- ^ State with the prelude loaded.
 loadPreludeState = loadPreludeStateWithHooks defaultRunHooks
 
 -- | Load the runtime prelude with caller-provided failure presentation.
-loadPreludeStateWithHooks :: RunHooks -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState
+loadPreludeStateWithHooks :: RunHooks -- ^ Failure presentation.
+                          -> Bool -- ^ Skip the prelude and return empty states.
+                          -> [FilePath] -- ^ Directories searched when resolving imports.
+                          -> RenderCache -- ^ Memoized morphological renderings.
+                          -> FSM -- ^ Morphological analyzer.
+                          -> RenderM CompilerState -- ^ State with the prelude loaded.
 loadPreludeStateWithHooks hooks = loadPreludeStateWithModeAndHooks hooks TCOutputRuntime
 
 -- | Load the prelude with resolution output appropriate for the consumer.
-loadPreludeStateWithMode :: TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState
+loadPreludeStateWithMode :: TCOutputMode -- ^ Resolution detail the consumer needs.
+                         -> Bool -- ^ Skip the prelude and return empty states.
+                         -> [FilePath] -- ^ Directories searched when resolving imports.
+                         -> RenderCache -- ^ Memoized morphological renderings.
+                         -> FSM -- ^ Morphological analyzer.
+                         -> RenderM CompilerState -- ^ State with the prelude loaded.
 loadPreludeStateWithMode = loadPreludeStateWithModeAndHooks defaultRunHooks
 
 -- | Load the prelude for a consumer mode with custom failure presentation.
-loadPreludeStateWithModeAndHooks :: RunHooks -> TCOutputMode -> Bool -> [FilePath] -> RenderCache -> FSM -> RenderM CompilerState
+loadPreludeStateWithModeAndHooks :: RunHooks -- ^ Failure presentation.
+                                 -> TCOutputMode -- ^ Resolution detail the consumer needs.
+                                 -> Bool -- ^ Skip the prelude and return empty states.
+                                 -> [FilePath] -- ^ Directories searched when resolving imports.
+                                 -> RenderCache -- ^ Memoized morphological renderings.
+                                 -> FSM -- ^ Morphological analyzer.
+                                 -> RenderM CompilerState -- ^ State with the prelude loaded.
 loadPreludeStateWithModeAndHooks hooks outputMode noPrelude moduleDirs cache fsm = do
   let pst = newParserStateWithCaches fsm Nothing cache
       tcSt = setTCOutputMode outputMode emptyTCState
@@ -1200,17 +1387,19 @@ loadPreludeStateWithModeAndHooks hooks outputMode noPrelude moduleDirs cache fsm
           return state'
 
 -- | Build an evaluator state wired to the render cache.
-mkEvalState :: RenderCache -> FSM -> EvalState
+mkEvalState :: RenderCache -- ^ Memoized morphological renderings.
+            -> FSM -- ^ Morphological analyzer.
+            -> EvalState -- ^ Empty evaluator state whose printer uses the cache and analyzer.
 mkEvalState cache fsm =
   emptyEvalState { evalRender = renderExpValue cache fsm }
 
 -- | Strict monadic left fold to avoid building thunks on large inputs.
 foldM' :: forall m b a.
           Monad m
-       => (b -> a -> m b)
-       -> b
-       -> [a]
-       -> m b
+       => (b -> a -> m b) -- ^ Step function combining the accumulator with one element.
+       -> b -- ^ Initial accumulator.
+       -> [a] -- ^ Elements to fold over.
+       -> m b -- ^ Final accumulator, forced at every step.
 foldM' f = go
   where
     go :: b -> [a] -> m b

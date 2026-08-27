@@ -36,16 +36,22 @@ main = return ()
 -- | Reactor run mode decoded from host-provided integers.
 data ReactorMode
   = ReactorExec
+  -- ^ Run @\/main.kip@ and report its exit status.
   | ReactorCodegenJs
+  -- ^ Compile @\/main.kip@ to JavaScript and write it to standard output.
   deriving (Eq, Show)
 
 -- | Structured reactor-level failures.
 data ReactorError
   = UnknownReactorMode CInt
+  -- ^ The host passed a mode integer that does not decode.
   | ReactorRuntimeFailure Text
+  -- ^ The request threw an exception, described by this message.
 
 -- | Render reactor failures in the selected language.
-renderReactorError :: Lang -> ReactorError -> Text
+renderReactorError :: Lang -- ^ Diagnostic language.
+                   -> ReactorError -- ^ Failure to describe.
+                   -> Text -- ^ Localized message for standard error.
 renderReactorError lang err =
   case (lang, err) of
     (LangTr, UnknownReactorMode n) -> "Bilinmeyen reaktör kipi: " <> T.pack (show n)
@@ -54,7 +60,8 @@ renderReactorError lang err =
     (LangEn, ReactorRuntimeFailure msg) -> "Reactor runtime failure: " <> msg
 
 -- | Decode host mode integer into 'ReactorMode'.
-decodeMode :: CInt -> Either ReactorError ReactorMode
+decodeMode :: CInt -- ^ Mode integer supplied by the host.
+           -> Either ReactorError ReactorMode -- ^ Decoded mode, or a failure for unknown values.
 decodeMode n =
   case n of
     0 -> Right ReactorExec
@@ -62,14 +69,17 @@ decodeMode n =
     _ -> Left (UnknownReactorMode n)
 
 -- | Decode host language integer into runner language.
-decodeLang :: CInt -> Lang
+decodeLang :: CInt -- ^ Language integer supplied by the host; 1 selects English.
+           -> Lang -- ^ Decoded language, defaulting to Turkish.
 decodeLang n =
   case n of
     1 -> LangEn
     _ -> LangTr
 
 -- | Build a single isolated playground request for one reactor call.
-mkRequest :: ReactorMode -> Lang -> PlaygroundRequest
+mkRequest :: ReactorMode -- ^ What this call should do.
+          -> Lang -- ^ Language diagnostics are reported in.
+          -> PlaygroundRequest -- ^ Request over the fixed virtual entry file.
 mkRequest mode lang =
   PlaygroundRequest
     { prMode =
@@ -88,7 +98,9 @@ Execute one call from the host.
 Each call delegates to 'runPlaygroundRequest', which guarantees fresh runtime
 state and therefore prevents user-definition leakage between consecutive calls.
 -}
-kipRun :: CInt -> CInt -> IO CInt
+kipRun :: CInt -- ^ Mode integer supplied by the host.
+       -> CInt -- ^ Language integer supplied by the host.
+       -> IO CInt -- ^ Process-style status: 0 on success, 2 for an unknown mode.
 kipRun modeRaw langRaw =
   let lang = decodeLang langRaw
       emitReactorError :: ReactorError -> IO ()
@@ -122,5 +134,9 @@ kipRun modeRaw langRaw =
             return 0
 
 foreign export ccall kip_run :: CInt -> CInt -> IO CInt
-kip_run :: CInt -> CInt -> IO CInt
+
+-- | C entry point exported to the WASM host; see 'kipRun'.
+kip_run :: CInt -- ^ Mode integer supplied by the host.
+        -> CInt -- ^ Language integer supplied by the host.
+        -> IO CInt -- ^ Process-style status code.
 kip_run = kipRun

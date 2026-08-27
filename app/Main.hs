@@ -68,52 +68,82 @@ import Data.Version (showVersion)
 data ReplState =
   ReplState
     { replParserState :: ParserState
+      -- ^ Parser state accumulated across REPL inputs.
     , replTCState :: TCState
+      -- ^ Typechecker state accumulated across REPL inputs.
     , replEvalState :: EvalState
+      -- ^ Evaluator state holding user definitions and bindings.
     , replModuleDirs :: [FilePath]
+      -- ^ Directories searched when resolving imports.
     , replLoaded :: Set FilePath
+      -- ^ Files already loaded, which are not run again.
     , replPreludeLoaded :: Bool
+      -- ^ Whether the prelude has been merged into this state.
     , replAutoPrelude :: Bool
+      -- ^ Whether the prelude should be loaded on first use.
     , replPreludeFuture :: Maybe (MVar (Either Text CompilerState))
+      -- ^ Background prelude load, awaited the first time its definitions are needed.
     }
 
-replCtx :: ReplState -> Set.Set Identifier
+-- | Names currently in scope.
+replCtx :: ReplState -- ^ Current REPL state.
+        -> Set.Set Identifier -- ^ Names the parser knows about.
 replCtx = parserCtx . replParserState
 
-replCtors :: ReplState -> [Identifier]
+-- | Constructor names currently in scope.
+replCtors :: ReplState -- ^ Current REPL state.
+          -> [Identifier] -- ^ Known constructor names.
 replCtors = parserCtors . replParserState
 
-replTyParams :: ReplState -> [Identifier]
+-- | Type parameter names currently in scope.
+replTyParams :: ReplState -- ^ Current REPL state.
+             -> [Identifier] -- ^ Known type parameter names.
 replTyParams = parserTyParams . replParserState
 
-replTyCons :: ReplState -> [(Identifier, Int)]
+-- | Type constructors currently in scope, with their arities.
+replTyCons :: ReplState -- ^ Current REPL state.
+           -> [(Identifier, Int)] -- ^ Type constructor names and how many parameters each takes.
 replTyCons = parserTyCons . replParserState
 
-replTyMods :: ReplState -> [(Identifier, [Identifier])]
+-- | Module path each known type name was declared in.
+replTyMods :: ReplState -- ^ Current REPL state.
+           -> [(Identifier, [Identifier])] -- ^ Type names with their declaring module paths.
 replTyMods = parserTyMods . replParserState
 
-replPrimTypes :: ReplState -> [Identifier]
+-- | Built-in type names currently in scope.
+replPrimTypes :: ReplState -- ^ Current REPL state.
+              -> [Identifier] -- ^ Known primitive type names.
 replPrimTypes = parserPrimTypes . replParserState
 
-replFuncArities :: ReplState -> Map.Map Identifier (Set.Set Int)
+-- | Arities each known function is defined at.
+replFuncArities :: ReplState -- ^ Current REPL state.
+                -> Map.Map Identifier (Set.Set Int) -- ^ Argument counts per function name.
 replFuncArities = parserFuncArities . replParserState
 
 -- | Reset invocation-specific parser metadata while retaining REPL context.
-replParserFor :: Maybe FilePath -> ReplState -> ParserState
+replParserFor :: Maybe FilePath -- ^ Path of the file being parsed, if any.
+              -> ReplState -- ^ Current REPL state.
+              -> ParserState -- ^ Parser state with definition spans cleared and the path set.
 replParserFor path rs =
   (replParserState rs) { parserDefSpans = Map.empty, parserFilePath = path }
 
 -- | Supported CLI modes.
 data CliMode
   = ModeRepl
+  -- ^ Start the interactive read-eval-print loop.
   | ModeTest
+  -- ^ Run the given files as tests.
   | ModeExec
+  -- ^ Run the given files and exit.
   | ModeBuild
+  -- ^ Build cache files for the given files or directories.
   | ModeCodegen Text
+  -- ^ Generate code for the named target, such as @js@.
   deriving (Eq, Show)
 
 -- | Decide whether REPL input should be parsed as a statement.
-isStatementInput :: String -> Bool
+isStatementInput :: String -- ^ Line typed at the REPL prompt.
+                 -> Bool -- ^ 'True' when it ends in a period and is therefore a statement.
 isStatementInput input =
   case dropWhile (== ' ') (reverse input) of
     '.' : _ -> True
@@ -122,19 +152,32 @@ isStatementInput input =
 -- | Parsed REPL input, separating command syntax from command execution.
 data ReplCommand
   = ReplNoop
+  -- ^ Empty input; do nothing.
   | ReplQuit
+  -- ^ Leave the REPL.
   | ReplShowModules
+  -- ^ List the loaded modules.
   | ReplShowFunctions
+  -- ^ List the functions in scope.
   | ReplShowTypes
+  -- ^ List the types in scope.
   | ReplMorphUp String
+  -- ^ Show the morphological analyses of a surface word.
   | ReplMorphDown String
+  -- ^ Generate the surface forms of a morphological analysis.
   | ReplTypeOf String
+  -- ^ Report the type of an expression without evaluating it.
   | ReplParse String
+  -- ^ Show the parse tree of an expression.
   | ReplSteps String
+  -- ^ Evaluate an expression, printing each reduction step.
   | ReplSource String
+  -- ^ Ordinary Kip source to parse and run.
   deriving (Eq, Show)
 
-parseReplCommand :: String -> ReplCommand
+-- | Classify one line of REPL input as a command or as Kip source.
+parseReplCommand :: String -- ^ Line typed at the REPL prompt.
+                 -> ReplCommand -- ^ The command it denotes.
 parseReplCommand input
   | null input = ReplNoop
   | input == ":çık" || input == ":quit" = ReplQuit
@@ -152,51 +195,88 @@ parseReplCommand input
 data CliOptions =
   CliOptions
     { optMode :: CliMode
+      -- ^ What the invocation should do.
     , optFiles :: [FilePath]
+      -- ^ Input files or directories.
     , optIncludeDirs :: [FilePath]
+      -- ^ Extra directories searched when resolving imports.
     , optOutDir :: Maybe FilePath
+      -- ^ Directory generated code is written to.
     , optLang :: Lang
+      -- ^ Language diagnostics are reported in.
     , optNoPrelude :: Bool
+      -- ^ Whether to skip loading the implicit prelude.
     }
 
 -- | Renderable compiler and REPL messages.
 data CompilerMsg
   = MsgHeader Text
+  -- ^ A boxed section heading with this title.
   | MsgSeparator Text
+  -- ^ A horizontal rule sized to this title.
   | MsgCtrlC
+  -- ^ Notice shown when the user interrupts with Ctrl-C.
   | MsgNeedFile
+  -- ^ The command requires at least one input file.
   | MsgNeedFileOrDir
+  -- ^ The command requires at least one input file or directory.
   | MsgTrmorphMissing
+  -- ^ The packaged TRmorph morphology transducer could not be located.
   | MsgLibMissing
+  -- ^ The packaged standard library could not be located.
   | MsgFileNotFound FilePath
+  -- ^ The named source file does not exist.
   | MsgModuleNotFound [Text] Identifier
+  -- ^ An imported module could not be resolved: directory segments and module name.
   | MsgUnknownCodegenTarget Text
+  -- ^ The requested code generation target is not supported.
   | MsgParseError (ParseErrorBundle Text ParserError)
+  -- ^ Parsing failed with this error bundle.
   | MsgRunFailed
+  -- ^ Trailing message noting that the file could not be executed.
   | MsgTCError TCError (Maybe Text) [Identifier] [(Identifier, [Identifier])]
+  -- ^ Type checking failed: the error, the source text for snippets when
+  -- available, type constructors taking parameters, and per-type module paths.
   | MsgEvalError EvalError
+  -- ^ Evaluation failed with this error.
   | MsgTypeInferFailed
+  -- ^ @:t@ could not infer a type for the expression.
   | MsgTypeOf [(String, Bool)]
+  -- ^ Result of @:t@: rendered type fragments, each flagged as emphasized or not.
   | MsgLoaded Identifier
+  -- ^ A module finished loading.
   | MsgDefnAdded Identifier
+  -- ^ A value definition was added to the session.
   | MsgFuncAdded Identifier [Arg Ann] Bool [Identifier] [(Identifier, [Identifier])]
+  -- ^ A function was defined: name, arguments, whether it is an infinitive,
+  -- parameterized type constructors, and per-type module paths.
   | MsgFuncLoaded Identifier [Arg Ann] Bool [Identifier] [(Identifier, [Identifier])]
+  -- ^ A function came from a loaded module, with the same payload as 'MsgFuncAdded'.
   | MsgPrimFuncAdded Identifier [Arg Ann] Bool [Identifier] [(Identifier, [Identifier])]
+  -- ^ A built-in function was declared, with the same payload as 'MsgFuncAdded'.
   | MsgTypeAdded Identifier
+  -- ^ A data type was declared.
   | MsgPrimTypeAdded Identifier
+  -- ^ A built-in type was declared.
 
 -- | Internal renderer-context failures that indicate a programming bug.
 data InternalRenderError
   = MissingRenderCacheAndFsm
+  -- ^ The context has neither a render cache nor a morphological analyzer.
   | MissingFsmOnly
+  -- ^ The context has a render cache but no morphological analyzer.
 
 -- | Rendering context for diagnostics and output.
 data RenderCtx =
   RenderCtx
     { rcLang :: Lang
+      -- ^ Language diagnostics are rendered in.
     , rcUseColor :: Bool
+      -- ^ Whether output may contain ANSI color.
     , rcCache :: Maybe RenderCache
+      -- ^ Memoized morphological renderings, absent before initialization.
     , rcFsm :: Maybe FSM
+      -- ^ Morphological analyzer, absent before initialization.
     }
 
 -- | Typeclass for rendering structured messages.
@@ -211,15 +291,20 @@ newtype RenderParseError = RenderParseError (ParseErrorBundle Text ParserError)
 data RenderTCError =
   RenderTCError
     { rteErr :: TCError
+      -- ^ The type checking failure.
     , rteSource :: Maybe Text
+      -- ^ Source text, when available, used to render caret snippets.
     , rteParamTyCons :: [Identifier]
+      -- ^ Type constructors that take parameters.
     , rteTyMods :: [(Identifier, [Identifier])]
+      -- ^ Module path each type name was declared in.
     }
 
 -- | REPL Reader context stacked on InputT.
 type ReplM = ReaderT RenderCtx (InputT IO)
 -- | Application and rendering context.
 type RenderM = ReaderT RenderCtx IO
+-- | A statement together with the source file it came from.
 type TaggedStmt = (FilePath, Stmt Ann)
 
 -- | Compute the width of a header box for a title.
@@ -332,6 +417,8 @@ runApp action = do
   ctx <- ask
   liftIO (runReaderT action ctx)
 
+-- | Render a message that needs no morphology, aborting if it turns out to
+-- require the analyzer.
 renderCompilerMsgBasicOrDie :: CompilerMsg -- ^ Message to render.
                             -> RenderM Text -- ^ Rendered text.
 renderCompilerMsgBasicOrDie msg = do
@@ -352,7 +439,8 @@ isExplicitRetTy ty =
   annSpan (annTy ty) /= NoSpan
 
 -- | Supply the CLI's concrete morphology resources to a shared diagnostic.
-runSharedDiagnostic :: Runner.RenderM Text -> RenderM Text
+runSharedDiagnostic :: Runner.RenderM Text -- ^ Diagnostic action from the shared runner.
+                    -> RenderM Text -- ^ The same action run against the CLI's render context.
 runSharedDiagnostic diagnostic = do
   ctx <- ask
   (cache, fsm) <- requireCacheFsm
@@ -361,9 +449,14 @@ runSharedDiagnostic diagnostic = do
       (Runner.RenderCtx (rcLang ctx) cache fsm))
 
 -- | Render a function signature followed by a localized status suffix.
-renderFunctionStatus ::
-  Text -> Text -> Identifier -> [Arg Ann] -> Bool -> [Identifier] ->
-  [(Identifier, [Identifier])] -> RenderM Text
+renderFunctionStatus :: Text -- ^ Suffix appended in Turkish.
+                     -> Text -- ^ Suffix appended in English.
+                     -> Identifier -- ^ Function name.
+                     -> [Arg Ann] -- ^ Declared arguments.
+                     -> Bool -- ^ Whether the function is an infinitive.
+                     -> [Identifier] -- ^ Type constructors that take parameters.
+                     -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+                     -> RenderM Text -- ^ Signature followed by the localized suffix.
 renderFunctionStatus suffixTr suffixEn name args isInfinitive paramTyCons tyMods = do
   ctx <- ask
   (cache, fsm) <- requireCacheFsm
@@ -386,7 +479,11 @@ renderFunctionStatus suffixTr suffixEn name args isInfinitive paramTyCons tyMods
   return (renderDefnLine (rcUseColor ctx) (base <> suffix))
 
 -- | Render a named definition followed by a localized status suffix.
-renderNamedStatus :: RenderCtx -> Text -> Text -> Identifier -> Text
+renderNamedStatus :: RenderCtx -- ^ Rendering context supplying the language.
+                  -> Text -- ^ Suffix appended in Turkish.
+                  -> Text -- ^ Suffix appended in English.
+                  -> Identifier -- ^ Name being reported.
+                  -> Text -- ^ Name followed by the localized suffix.
 renderNamedStatus ctx suffixTr suffixEn name =
   let suffix = case rcLang ctx of
         LangTr -> suffixTr

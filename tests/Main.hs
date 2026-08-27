@@ -205,7 +205,11 @@ mkJsTest kipPath nodePath path =
                     actual = normalizeLines nodeOut
                 assertEqual (renderOutputMismatch expected actual) expected actual
 
-mkJsModulesTest :: FilePath -> FilePath -> FilePath -> TestTree
+-- | Build a test that runs a file through JS codegen with ES module output.
+mkJsModulesTest :: FilePath -- ^ Kip executable path.
+                -> FilePath -- ^ Node.js executable path.
+                -> FilePath -- ^ Test file path.
+                -> TestTree -- ^ Test case.
 mkJsModulesTest kipPath nodePath path =
   testCase ("js-modules:" ++ path) $ do
     inputText <- readIfExists (replaceExtension path "in")

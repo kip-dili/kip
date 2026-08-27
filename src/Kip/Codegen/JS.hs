@@ -52,23 +52,38 @@ import qualified Data.Set as Set
 import Kip.AST
 import qualified Kip.Primitive as Prim
 
+-- | Everything code generation needs to turn a name into a JavaScript symbol.
 data CodegenCtx = MkCodegenCtx
   { sectionableFns :: Set.Set Identifier
+    -- ^ Functions that may be called with one argument fixed, forming a section.
   , resolvedCallNames :: Map.Map Span Text
+    -- ^ JS name chosen by the typechecker for the call at each span.
   , overloadRegistry :: Map.Map (Identifier, [Ty Ann]) Text
+    -- ^ Mangled JS name for each overload of an overloaded function.
   , callTargetsByIdent :: Map.Map Identifier [CallTarget]
+    -- ^ Call targets indexed by full identifier.
   , callTargetsByRoot :: Map.Map Text [CallTarget]
+    -- ^ Call targets indexed by bare name, ignoring the module qualifier.
   , callTargetsByIdentArity :: Map.Map (Identifier, Int) [CallTarget]
+    -- ^ Call targets indexed by full identifier and arity.
   , callTargetsByRootArity :: Map.Map (Text, Int) [CallTarget]
+    -- ^ Call targets indexed by bare name and arity.
   , localScope :: [Identifier]
+    -- ^ Names bound by enclosing patterns and lets, which shadow globals.
   , currentFunction :: Maybe (Identifier, [Ty Ann], Text)
+    -- ^ Name, signature, and JS name of the function being emitted, so that
+    -- recursive calls resolve to it.
   }
 
+-- | One callable definition: its argument types and the JS name it is emitted as.
 type CallTarget = ([Ty Ann], Text)
 
+-- | A reference to a definition, used for reachability pruning.
 data DefRef
   = RefExact Identifier [Ty Ann]
+  -- ^ A specific overload, identified by name and argument types.
   | RefName Identifier
+  -- ^ A name whose overload could not be determined; every overload is kept.
   deriving (Eq, Ord, Show)
 
 -- | Build exact/root and exact-arity/root-arity call-target indexes.
@@ -93,7 +108,9 @@ buildCallTargetIndexes = foldl' add (Map.empty, Map.empty, Map.empty, Map.empty)
          )
 
 -- | Build codegen context from resolved call signatures and program statements.
-buildCodegenCtx :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> CodegenCtx
+buildCodegenCtx :: Map.Map Span (Identifier, [Ty Ann]) -- ^ Function and argument types the typechecker resolved at each call span.
+                -> [Stmt Ann] -- ^ Statements of the whole program.
+                -> CodegenCtx -- ^ Context with every name index populated.
 buildCodegenCtx resolvMap stmts =
   let arityMap = foldl collectArity Map.empty stmts
       sectionable =
@@ -178,21 +195,31 @@ buildCodegenCtx resolvMap stmts =
       toJsIdent ident <> "$" <> T.intercalate "$" (map tyToSuffix sig)
 
 -- | Look up the JS name for a function, using qualified name if overloaded.
-lookupOverloadName :: CodegenCtx -> Identifier -> [Ty Ann] -> Text
+lookupOverloadName :: CodegenCtx -- ^ Code generation context.
+                   -> Identifier -- ^ Function name.
+                   -> [Ty Ann] -- ^ Argument types selecting the overload.
+                   -> Text -- ^ Mangled JS name when overloaded, otherwise the plain name.
 lookupOverloadName ctx name argTys =
   case Map.lookup (name, normalizeSig argTys) (overloadRegistry ctx) of
     Just qualName -> qualName
     Nothing -> toJsIdent name
 
 -- | Look up the JS name for a call site using the resolved signature.
-lookupCallName :: CodegenCtx -> Span -> Exp Ann -> [Exp Ann] -> Text
+lookupCallName :: CodegenCtx -- ^ Code generation context.
+               -> Span -- ^ Span of the call site.
+               -> Exp Ann -- ^ Head expression, used when the span has no resolution.
+               -> [Exp Ann] -- ^ Argument expressions, used as resolution hints.
+               -> Text -- ^ JS name to call.
 lookupCallName ctx span' fallback args =
   case Map.lookup span' (resolvedCallNames ctx) of
     Just resolvedName -> resolvedName
     Nothing -> fallbackCallName ctx fallback args
 
 -- | Best-effort call target recovery when no span-based resolution exists.
-fallbackCallName :: CodegenCtx -> Exp Ann -> [Exp Ann] -> Text
+fallbackCallName :: CodegenCtx -- ^ Code generation context.
+                 -> Exp Ann -- ^ Head expression of the call.
+                 -> [Exp Ann] -- ^ Argument expressions, used as resolution hints.
+                 -> Text -- ^ Best-guess JS name to call.
 fallbackCallName ctx fallback args =
   case fallback of
     Var {varName, varCandidates} ->
@@ -209,7 +236,10 @@ fallbackCallName ctx fallback args =
     _ -> codegenExpWith ctx fallback
 
 -- | Try resolving a call to the currently-emitted function for recursion.
-resolveCurrentFunction :: CodegenCtx -> [Identifier] -> [Exp Ann] -> Maybe Text
+resolveCurrentFunction :: CodegenCtx -- ^ Code generation context.
+                       -> [Identifier] -- ^ Candidate names for the call.
+                       -> [Exp Ann] -- ^ Argument expressions, matched against arity.
+                       -> Maybe Text -- ^ JS name of the enclosing function when the call recurses into it.
 resolveCurrentFunction ctx candidates args =
   case currentFunction ctx of
     Just (ident, sig, jsName)
@@ -219,7 +249,10 @@ resolveCurrentFunction ctx candidates args =
     _ -> Nothing
 
 -- | Fallback call resolution using candidate identifiers and lightweight hints.
-resolveByCandidates :: CodegenCtx -> [Identifier] -> [Exp Ann] -> Maybe Text
+resolveByCandidates :: CodegenCtx -- ^ Code generation context.
+                    -> [Identifier] -- ^ Candidate names for the call.
+                    -> [Exp Ann] -- ^ Argument expressions, used as arity and literal hints.
+                    -> Maybe Text -- ^ JS name when exactly one target matches.
 resolveByCandidates ctx candidates args =
   let byArity = concatMap (\ident -> callTargetsForIdentAtArity ctx ident (length args)) candidates
       exact = filterByArgHints byArity args
@@ -237,7 +270,9 @@ resolveByCandidates ctx candidates args =
            else Nothing
 
 -- | Collect all possible JS targets for an identifier in the current program.
-callTargetsForIdent :: CodegenCtx -> Identifier -> [([Ty Ann], Text)]
+callTargetsForIdent :: CodegenCtx -- ^ Code generation context.
+                    -> Identifier -- ^ Name to look up.
+                    -> [([Ty Ann], Text)] -- ^ Every definition the name could refer to.
 callTargetsForIdent ctx ident@(mods, root)
   | null mods = Map.findWithDefault [] root (callTargetsByRoot ctx)
   | otherwise =
@@ -247,7 +282,10 @@ callTargetsForIdent ctx ident@(mods, root)
         )
 
 -- | Look up call targets by identifier and exact arity.
-callTargetsForIdentAtArity :: CodegenCtx -> Identifier -> Int -> [CallTarget]
+callTargetsForIdentAtArity :: CodegenCtx -- ^ Code generation context.
+                           -> Identifier -- ^ Name to look up.
+                           -> Int -- ^ Number of arguments at the call site.
+                           -> [CallTarget] -- ^ Definitions of that name taking exactly that many arguments.
 callTargetsForIdentAtArity ctx ident@(mods, root) arity
   | null mods = Map.findWithDefault [] (root, arity) (callTargetsByRootArity ctx)
   | otherwise =
@@ -257,7 +295,10 @@ callTargetsForIdentAtArity ctx ident@(mods, root) arity
         )
 
 -- | Resolve section-call targets using fixed-argument case/type hints.
-sectionTargetsForIdent :: CodegenCtx -> Exp Ann -> Identifier -> [([Ty Ann], Text)]
+sectionTargetsForIdent :: CodegenCtx -- ^ Code generation context.
+                       -> Exp Ann -- ^ The single argument supplied in the section.
+                       -> Identifier -- ^ Name to look up.
+                       -> [([Ty Ann], Text)] -- ^ Two-argument definitions consistent with that argument.
 sectionTargetsForIdent ctx fixedArg ident =
   let fixedIdx = if annCase (annExp fixedArg) == Ins then 0 else 1
       hint = inferSimpleTy fixedArg
@@ -270,17 +311,25 @@ sectionTargetsForIdent ctx fixedArg ident =
   in uniqTargets hinted
 
 -- | Filter candidate signatures by obvious literal argument hints.
-filterByArgHints :: [([Ty Ann], Text)] -> [Exp Ann] -> [([Ty Ann], Text)]
+filterByArgHints :: [([Ty Ann], Text)] -- ^ Candidate definitions.
+                 -> [Exp Ann] -- ^ Argument expressions supplying literal type hints.
+                 -> [([Ty Ann], Text)] -- ^ Candidates whose signatures agree with every hint.
 filterByArgHints targets args =
   let hints = [(ix, ty) | (ix, arg) <- zip [0 ..] args, Just ty <- [inferSimpleTy arg]]
   in case hints of
        [] -> targets
        _ -> filter (\(sig, _) -> all (uncurry (sigMatchesHint sig)) hints) targets
 
-data SimpleTy = SimpleInt | SimpleFloat | SimpleString | SimpleChar
+-- | A coarse type read directly off a literal, used to disambiguate overloads.
+data SimpleTy
+  = SimpleInt -- ^ Integer literal.
+  | SimpleFloat -- ^ Floating-point literal.
+  | SimpleString -- ^ String literal.
+  | SimpleChar -- ^ Character literal.
 
 -- | Infer a coarse type from syntax-only expression forms.
-inferSimpleTy :: Exp Ann -> Maybe SimpleTy
+inferSimpleTy :: Exp Ann -- ^ Expression to inspect.
+              -> Maybe SimpleTy -- ^ Coarse type for a literal, 'Nothing' otherwise.
 inferSimpleTy exp' =
   case exp' of
     IntLit {} -> Just SimpleInt
@@ -290,7 +339,10 @@ inferSimpleTy exp' =
     _ -> Nothing
 
 -- | Check whether a signature position matches an inferred coarse type.
-sigMatchesHint :: [Ty Ann] -> Int -> SimpleTy -> Bool
+sigMatchesHint :: [Ty Ann] -- ^ Signature to test.
+               -> Int -- ^ Argument position the hint applies to.
+               -> SimpleTy -- ^ Coarse type inferred at that position.
+               -> Bool -- ^ 'True' when the signature has that type at that position.
 sigMatchesHint sig idx hint
   | idx < 0 = False
   | otherwise =
@@ -306,7 +358,8 @@ sigMatchesHint sig idx hint
     listIndex (_:xs) n = listIndex xs (n - 1)
 
 -- | Deduplicate target pairs while preserving order.
-uniqTargets :: [([Ty Ann], Text)] -> [([Ty Ann], Text)]
+uniqTargets :: [([Ty Ann], Text)] -- ^ Targets that may contain duplicates.
+            -> [([Ty Ann], Text)] -- ^ First occurrence of each target in original order.
 uniqTargets = reverse . fst . foldl' add ([], Set.empty)
   where
     add (acc, seen) item
@@ -314,7 +367,8 @@ uniqTargets = reverse . fst . foldl' add ([], Set.empty)
       | otherwise = (item : acc, Set.insert item seen)
 
 -- | Deduplicate identifier candidates while preserving order.
-uniqIdents :: [Identifier] -> [Identifier]
+uniqIdents :: [Identifier] -- ^ Candidates that may contain duplicates.
+           -> [Identifier] -- ^ First occurrence of each candidate in original order.
 uniqIdents = reverse . fst . foldl' add ([], Set.empty)
   where
     add (acc, seen) ident
@@ -323,7 +377,9 @@ uniqIdents = reverse . fst . foldl' add ([], Set.empty)
 
 -- | Get the JS primitive name for a given function name and arg types.
 -- Falls back to the bare JS identifier if no special mapping exists.
-lookupPrimJsName :: Identifier -> [Ty Ann] -> Text
+lookupPrimJsName :: Identifier -- ^ Primitive function name.
+                 -> [Ty Ann] -- ^ Argument types, which select between container overloads.
+                 -> Text -- ^ JS runtime function name.
 lookupPrimJsName name argTys =
   case (name, argTys) of
     (([], "birleşim"), [leftTy, rightTy])
@@ -375,28 +431,32 @@ lookupPrimJsName name argTys =
     _ -> toJsIdent name
 
 -- | Detect @öğe küme'si@ types in primitive JS-name lookup.
-isSetTyForLookup :: Ty Ann -> Bool
+isSetTyForLookup :: Ty Ann -- ^ Type to classify.
+                 -> Bool -- ^ 'True' for a one-parameter set type.
 isSetTyForLookup ty =
   case ty of
     TyApp {tyCtor = TyInd {indName = ([], "küme")}, tyArgs = [_]} -> True
     _ -> False
 
 -- | Detect @öğe listesi@ types in primitive JS-name lookup.
-isListTyForLookup :: Ty Ann -> Bool
+isListTyForLookup :: Ty Ann -- ^ Type to classify.
+                  -> Bool -- ^ 'True' for a one-parameter list type.
 isListTyForLookup ty =
   case ty of
     TyApp {tyCtor = TyInd {indName = ([], "liste")}, tyArgs = [_]} -> True
     _ -> False
 
 -- | Detect @anahtar'dan değer'e sözlük@ types in primitive JS-name lookup.
-isMapTyForLookup :: Ty Ann -> Bool
+isMapTyForLookup :: Ty Ann -- ^ Type to classify.
+                 -> Bool -- ^ 'True' for a two-parameter dictionary type.
 isMapTyForLookup ty =
   case ty of
     TyApp {tyCtor = TyInd {indName = ([], "sözlük")}, tyArgs = [_, _]} -> True
     _ -> False
 
 -- | Convert a type to a suffix string for qualified overload names.
-tyToSuffix :: Ty Ann -> Text
+tyToSuffix :: Ty Ann -- ^ Argument type to encode.
+           -> Text -- ^ JS-safe suffix identifying the type in a mangled name.
 tyToSuffix ty =
   case ty of
     TyInt {} -> "tam_sayı"
@@ -411,11 +471,13 @@ tyToSuffix ty =
     Arr {} -> "fn"
 
 -- | Normalize a signature for stable map-key lookup.
-normalizeSig :: [Ty Ann] -> [Ty Ann]
+normalizeSig :: [Ty Ann] -- ^ Argument types as written.
+             -> [Ty Ann] -- ^ Same types with annotations normalized for use as a map key.
 normalizeSig = map normalizeTyForLookup
 
 -- | Normalize type annotations so equivalent types share lookup keys.
-normalizeTyForLookup :: Ty Ann -> Ty Ann
+normalizeTyForLookup :: Ty Ann -- ^ Type as written.
+                     -> Ty Ann -- ^ Type with spans and cases cleared and all variables unified.
 normalizeTyForLookup ty =
   case ty of
     TyInt {} -> TyInt (mkAnn Nom NoSpan)
@@ -434,7 +496,9 @@ normalizeTyForLookup ty =
 -- Order: primitives, then async IIFE containing:
 --   - function definitions (hoisted)
 --   - expression statements (executed)
-codegenProgram :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> Text
+codegenProgram :: Map.Map Span (Identifier, [Ty Ann]) -- ^ Function and argument types the typechecker resolved at each call span.
+               -> [Stmt Ann] -- ^ Statements of the whole program.
+               -> Text -- ^ Complete JavaScript source, runtime prelude included.
 codegenProgram resolvMap stmts =
   let ctx = buildCodegenCtx resolvMap stmts
       -- Separate function definitions from other statements
@@ -458,7 +522,8 @@ codegenProgram resolvMap stmts =
   in formatJsOutput (runtimePrelude <> "\n\n" <> wrapped)
 
 -- | Prune runtime primitive bindings that are not referenced by generated code.
-pruneJsPrimitives :: Text -> Text
+pruneJsPrimitives :: Text -- ^ Generated program body, scanned for runtime references.
+                  -> Text -- ^ Runtime prelude with unreferenced primitives removed.
 pruneJsPrimitives programText =
   let initialUsed =
         Set.fromList
@@ -476,7 +541,8 @@ pruneJsPrimitives programText =
        Prim.primitiveJsPrunableSpecs
 
 -- | Close runtime symbol usage through inter-primitive dependencies.
-closeRuntimeDeps :: Set.Set Text -> Set.Set Text
+closeRuntimeDeps :: Set.Set Text -- ^ Runtime symbols referenced directly by generated code.
+                 -> Set.Set Text -- ^ Those symbols plus everything they transitively depend on.
 closeRuntimeDeps roots = go roots (Set.toList roots)
   where
     depMap = Map.fromList [(name, deps) | (name, deps, _) <- Prim.primitiveJsPrunableSpecs]
@@ -489,7 +555,9 @@ closeRuntimeDeps roots = go roots (Set.toList roots)
       in go seen' (rest ++ newDeps)
 
 -- | Check whether an identifier occurs as a standalone token in text.
-textMentionsIdent :: Text -> Text -> Bool
+textMentionsIdent :: Text -- ^ Text to search.
+                  -> Text -- ^ Identifier to look for.
+                  -> Bool -- ^ 'True' when it occurs bounded by non-identifier characters.
 textMentionsIdent hay ident
   | T.null ident = False
   | otherwise = go hay
@@ -510,16 +578,21 @@ textMentionsIdent hay ident
     isBoundary (Just c) = not (isJsIdentChar c)
 
 -- | JS identifier-character predicate used by token-boundary checks.
-isJsIdentChar :: Char -> Bool
+isJsIdentChar :: Char -- ^ Character to classify.
+              -> Bool -- ^ 'True' when it may appear inside a JS identifier.
 isJsIdentChar c = isAlphaNum c || c == '_' || c == '$'
 
 -- | Render a statement block, skipping statements that intentionally emit no JS.
-renderStmtBlock :: CodegenCtx -> [Stmt Ann] -> Text
+renderStmtBlock :: CodegenCtx -- ^ Code generation context.
+                -> [Stmt Ann] -- ^ Statements to emit.
+                -> Text -- ^ Emitted statements, blank-line separated.
 renderStmtBlock ctx stmts =
   T.intercalate "\n\n" (mapMaybe (renderStmtMaybe ctx) stmts)
 
 -- | Render one statement when it has concrete JS output.
-renderStmtMaybe :: CodegenCtx -> Stmt Ann -> Maybe Text
+renderStmtMaybe :: CodegenCtx -- ^ Code generation context.
+                -> Stmt Ann -- ^ Statement to emit.
+                -> Maybe Text -- ^ Emitted JS, or 'Nothing' for statements with no runtime effect.
 renderStmtMaybe ctx stmt =
   let out = codegenStmtWith ctx stmt
   in if T.null out then Nothing else Just out
@@ -531,9 +604,13 @@ renderStmtMaybe ctx stmt =
 -- transitively through references.
 pruneProgramTaggedStmts ::
      Map.Map Span (Identifier, [Ty Ann])
+     -- ^ Function and argument types the typechecker resolved at each call span.
   -> (tag -> Bool)
+     -- ^ Predicate selecting the tags whose statements are roots.
   -> [(tag, Stmt Ann)]
+     -- ^ All statements, each tagged with its source file.
   -> [(tag, Stmt Ann)]
+     -- ^ Roots and everything they reach, in original order.
 pruneProgramTaggedStmts resolvMap isRoot taggedStmts =
   let indexed = zip [0 ..] taggedStmts
       idxMap = Map.fromList indexed
@@ -558,13 +635,21 @@ pruneProgramTaggedStmts resolvMap isRoot taggedStmts =
 -- | Close the dependency set for tagged statements.
 closeTaggedRefs ::
      Map.Map Span (Identifier, [Ty Ann])
+     -- ^ Function and argument types the typechecker resolved at each call span.
   -> Map.Map Int (tag, Stmt Ann)
+     -- ^ Every statement by index.
   -> Map.Map (Identifier, [Ty Ann]) [Int]
+     -- ^ Indices of statements defining each exact overload.
   -> Map.Map Identifier [Int]
+     -- ^ Indices of statements defining each name, ignoring overloads.
   -> Set.Set Int
+     -- ^ Indices kept so far.
   -> Set.Set DefRef
+     -- ^ References already followed.
   -> [DefRef]
+     -- ^ Worklist of references still to follow.
   -> Set.Set Int
+     -- ^ Indices of every reachable statement.
 closeTaggedRefs _ _ _ _ kept _ [] = kept
 closeTaggedRefs resolvMap idxMap exactDefs nameDefs kept seen (r:rs)
   | r `Set.member` seen = closeTaggedRefs resolvMap idxMap exactDefs nameDefs kept seen rs
@@ -586,14 +671,18 @@ closeTaggedRefs resolvMap idxMap exactDefs nameDefs kept seen (r:rs)
               let refs = stmtRefs resolvMap stmt
               in (Set.insert idx k, accRefs ++ refs)
 
-stmtExactDefs :: Stmt Ann -> [(Identifier, [Ty Ann])]
+-- | Overloads a statement defines, as name and argument types.
+stmtExactDefs :: Stmt Ann -- ^ Statement to inspect.
+              -> [(Identifier, [Ty Ann])] -- ^ Function overloads it defines.
 stmtExactDefs stmt =
   case stmt of
     Function name args _ _ _ -> [(name, map argType args)]
     PrimFunc name args _ _ -> [(name, map argType args)]
     _ -> []
 
-stmtNameDefs :: Stmt Ann -> [Identifier]
+-- | Names a statement introduces, including type and constructor names.
+stmtNameDefs :: Stmt Ann -- ^ Statement to inspect.
+             -> [Identifier] -- ^ Names it defines.
 stmtNameDefs stmt =
   case stmt of
     Defn name _ _ -> [name]
@@ -603,7 +692,10 @@ stmtNameDefs stmt =
     PrimType name _ -> [name]
     _ -> []
 
-stmtRefs :: Map.Map Span (Identifier, [Ty Ann]) -> Stmt Ann -> [DefRef]
+-- | Definitions a statement's body refers to.
+stmtRefs :: Map.Map Span (Identifier, [Ty Ann]) -- ^ Typechecker resolutions by call span.
+         -> Stmt Ann -- ^ Statement to inspect.
+         -> [DefRef] -- ^ References found in its body.
 stmtRefs resolvMap stmt =
   case stmt of
     Defn _ _ exp' -> expRefs resolvMap exp'
@@ -611,7 +703,10 @@ stmtRefs resolvMap stmt =
     ExpStmt exp' -> expRefs resolvMap exp'
     _ -> []
 
-expRefs :: Map.Map Span (Identifier, [Ty Ann]) -> Exp Ann -> [DefRef]
+-- | Definitions an expression refers to, preferring exact typechecker resolutions.
+expRefs :: Map.Map Span (Identifier, [Ty Ann]) -- ^ Typechecker resolutions by call span.
+        -> Exp Ann -- ^ Expression to walk.
+        -> [DefRef] -- ^ References found within it.
 expRefs resolvMap exp' =
   case exp' of
     Var {annExp, varName, varCandidates} ->
@@ -659,7 +754,10 @@ codegenRuntime =
     <> "export { " <> T.intercalate ", " runtimeExportNames <> " };\n"
 
 -- | Codegen statements using a global program context and a local subset.
-codegenStmtsInProgram :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> [Stmt Ann] -> Text
+codegenStmtsInProgram :: Map.Map Span (Identifier, [Ty Ann]) -- ^ Typechecker resolutions by call span.
+                      -> [Stmt Ann] -- ^ Statements of the whole program, used to build the context.
+                      -> [Stmt Ann] -- ^ Subset of statements to emit.
+                      -> Text -- ^ Emitted JavaScript for the subset.
 codegenStmtsInProgram resolvMap programStmts stmts =
   let ctx = buildCodegenCtx resolvMap programStmts
       merged = mergeCompatibleFunctions ctx stmts
@@ -669,7 +767,10 @@ codegenStmtsInProgram resolvMap programStmts stmts =
 --
 -- Names are deduplicated via a set while folding, avoiding a second-pass
 -- @nub@ and reducing allocation for large statement groups.
-definedJsNamesInProgram :: Map.Map Span (Identifier, [Ty Ann]) -> [Stmt Ann] -> [Stmt Ann] -> [Text]
+definedJsNamesInProgram :: Map.Map Span (Identifier, [Ty Ann]) -- ^ Typechecker resolutions by call span.
+                        -> [Stmt Ann] -- ^ Statements of the whole program, used to build the context.
+                        -> [Stmt Ann] -- ^ Subset of statements to inspect.
+                        -> [Text] -- ^ JS names the subset defines, deduplicated and in order.
 definedJsNamesInProgram resolvMap programStmts stmts =
   let ctx = buildCodegenCtx resolvMap programStmts
       merged = mergeCompatibleFunctions ctx stmts
@@ -681,7 +782,8 @@ definedJsNamesInProgram resolvMap programStmts stmts =
       | otherwise = (name : acc, Set.insert name seen)
 
 -- | Check if a statement is a function definition (including types).
-isFunctionDef :: Stmt Ann -> Bool
+isFunctionDef :: Stmt Ann -- ^ Statement to classify.
+              -> Bool -- ^ 'True' for declarations, which hoist; 'False' for expression statements.
 isFunctionDef stmt =
   case stmt of
     Function {} -> True
@@ -692,9 +794,13 @@ isFunctionDef stmt =
     Load {} -> True
     ExpStmt {} -> False
 
+-- | Identity under which two function statements may be merged into one
+-- JavaScript declaration.
 data OverloadKey = OverloadKey
   { odKeyName :: Text
+    -- ^ Emitted JS name of the function.
   , odKeyArgs :: [Identifier]
+    -- ^ Argument names, which must agree for the clauses to share a declaration.
   }
   deriving (Eq, Ord, Show)
 
@@ -706,7 +812,9 @@ data OverloadKey = OverloadKey
 --
 -- Uses an index map + sequence updates instead of repeated list splitting,
 -- reducing merge cost when many overload clauses are present.
-mergeCompatibleFunctions :: CodegenCtx -> [Stmt Ann] -> [Stmt Ann]
+mergeCompatibleFunctions :: CodegenCtx -- ^ Code generation context.
+                         -> [Stmt Ann] -- ^ Statements that may contain separable clauses of one function.
+                         -> [Stmt Ann] -- ^ Statements with such clauses combined, in original order.
 mergeCompatibleFunctions ctx stmts = F.toList (snd (foldl' step (Map.empty, Seq.empty) stmts))
   where
     step (seen, acc) stmt =
@@ -735,7 +843,7 @@ mergeCompatibleFunctions ctx stmts = F.toList (snd (foldl' step (Map.empty, Seq.
         _ -> acc
 
 -- | JavaScript implementations of Kip primitives.
--- Uses 'var' so user code can override with 'const'.
+-- Uses @var@ so user code can override with @const@.
 -- Note: Boolean constructors are defined by the library's doğruluk type,
 -- so we use a helper to get the correct constructor format at runtime.
 -- Primitives that may be overloaded in user/library code (ters, birleşim,
@@ -744,7 +852,9 @@ mergeCompatibleFunctions ctx stmts = F.toList (snd (foldl' step (Map.empty, Seq.
 -- The code is async-capable to support interactive browser I/O.
 
 -- | Extract JS names defined by one top-level statement.
-stmtDefinedNames :: CodegenCtx -> Stmt Ann -> [Text]
+stmtDefinedNames :: CodegenCtx -- ^ Code generation context.
+                 -> Stmt Ann -- ^ Statement to inspect.
+                 -> [Text] -- ^ JS names it declares.
 stmtDefinedNames ctx stmt =
   case stmt of
     Defn name _ _ ->
@@ -760,7 +870,10 @@ stmtDefinedNames ctx stmt =
     _ ->
       []
 
-codegenStmtWith :: CodegenCtx -> Stmt Ann -> Text
+-- | Emit JavaScript for one top-level statement.
+codegenStmtWith :: CodegenCtx -- ^ Code generation context.
+                -> Stmt Ann -- ^ Statement to emit.
+                -> Text -- ^ Emitted JS, empty for statements with no runtime effect.
 codegenStmtWith ctx stmt =
   case stmt of
     Defn name _ exp' ->
@@ -783,12 +896,17 @@ codegenStmtWith ctx stmt =
       codegenExpWith ctx exp' <> ";"
 
 -- | Extend local scope with newly bound identifiers.
-withLocalScope :: CodegenCtx -> [Identifier] -> CodegenCtx
+withLocalScope :: CodegenCtx -- ^ Context to extend.
+               -> [Identifier] -- ^ Newly bound names, which shadow outer bindings.
+               -> CodegenCtx -- ^ Context with those names in local scope.
 withLocalScope ctx names =
   ctx { localScope = uniqIdents (names ++ localScope ctx) }
 
 -- | Resolve a variable occurrence to a local binding when available.
-lookupLocalVar :: CodegenCtx -> Identifier -> [(Identifier, Case)] -> Maybe Identifier
+lookupLocalVar :: CodegenCtx -- ^ Code generation context.
+               -> Identifier -- ^ Name as written at the occurrence.
+               -> [(Identifier, Case)] -- ^ Alternative readings of the name from the parser.
+               -> Maybe Identifier -- ^ Matching local binding, when the name is locally bound.
 lookupLocalVar ctx varName varCandidates =
   case
     [ scopeName
@@ -799,7 +917,10 @@ lookupLocalVar ctx varName varCandidates =
     (scopeName : _) -> Just scopeName
     [] -> Nothing
 
-codegenExpWith :: CodegenCtx -> Exp Ann -> Text
+-- | Emit JavaScript for one expression.
+codegenExpWith :: CodegenCtx -- ^ Code generation context.
+               -> Exp Ann -- ^ Expression to emit.
+               -> Text -- ^ Emitted JS expression.
 codegenExpWith ctx exp' =
   case exp' of
     Var {annExp, varName, varCandidates} ->
@@ -861,7 +982,11 @@ codegenExpWith ctx exp' =
 --
 -- Uses resolved signature info when available. Otherwise falls back to candidate
 -- target discovery and picks a unique JS target if all candidates agree.
-lookupValueName :: CodegenCtx -> Ann -> Identifier -> [(Identifier, Case)] -> Maybe Text
+lookupValueName :: CodegenCtx -- ^ Code generation context.
+                -> Ann -- ^ Annotation of the occurrence, supplying its span and case.
+                -> Identifier -- ^ Name as written.
+                -> [(Identifier, Case)] -- ^ Alternative readings of the name from the parser.
+                -> Maybe Text -- ^ JS name when it resolves unambiguously.
 lookupValueName ctx annExp varName varCandidates =
   case Map.lookup (annSpan annExp) (resolvedCallNames ctx) of
     Just resolvedName -> Just resolvedName
@@ -878,7 +1003,8 @@ lookupValueName ctx annExp varName varCandidates =
            _ -> Nothing
 
 -- | Deduplicate text values while preserving order.
-uniqTexts :: [Text] -> [Text]
+uniqTexts :: [Text] -- ^ Values that may contain duplicates.
+          -> [Text] -- ^ First occurrence of each value in original order.
 uniqTexts = reverse . fst . foldl' add ([], Set.empty)
   where
     add (acc, seen) txt
@@ -886,7 +1012,11 @@ uniqTexts = reverse . fst . foldl' add ([], Set.empty)
       | otherwise = (txt : acc, Set.insert txt seen)
 
 -- | Render a Kip function using an explicit JS function name.
-renderFunctionNamed :: CodegenCtx -> Text -> [Arg Ann] -> [Clause Ann] -> Text
+renderFunctionNamed :: CodegenCtx -- ^ Code generation context, with the function in local scope.
+                    -> Text -- ^ JS name to declare.
+                    -> [Arg Ann] -- ^ Declared arguments.
+                    -> [Clause Ann] -- ^ Pattern-matching clauses, tried in order.
+                    -> Text -- ^ An @async function@ declaration.
 renderFunctionNamed ctx jsName args clauses =
   let argsText = renderArgNames args
       bodyLines =
@@ -909,11 +1039,17 @@ renderFunctionNamed ctx jsName args clauses =
 -- | Clause-chain indirection.
 --
 -- This alias keeps call sites stable if we later switch the lowering strategy.
-renderClauseChain :: CodegenCtx -> Text -> [Clause Ann] -> [Text]
+renderClauseChain :: CodegenCtx -- ^ Code generation context.
+                  -> Text -- ^ JS expression holding the value being matched.
+                  -> [Clause Ann] -- ^ Clauses, tried in order.
+                  -> [Text] -- ^ Statement lines implementing the dispatch.
 renderClauseChain = renderClauseIfChain
 
 -- | Render an if/else chain for ordered clause matching.
-renderClauseIfChain :: CodegenCtx -> Text -> [Clause Ann] -> [Text]
+renderClauseIfChain :: CodegenCtx -- ^ Code generation context.
+                    -> Text -- ^ JS expression holding the value being matched.
+                    -> [Clause Ann] -- ^ Clauses, tried in order.
+                    -> [Text] -- ^ An if/else chain ending in a no-match throw.
 renderClauseIfChain ctx scrutinee =
   go True
   where
@@ -937,7 +1073,8 @@ renderClauseIfChain ctx scrutinee =
            else block ++ go False rest
 
 -- | Collect variable names bound by a pattern.
-patBoundNames :: Pat ann -> [Identifier]
+patBoundNames :: Pat ann -- ^ Pattern to inspect.
+              -> [Identifier] -- ^ Names the pattern binds, including nested ones.
 patBoundNames pat =
   case pat of
     PWildcard _ -> []
@@ -958,7 +1095,10 @@ patBoundNames pat =
 --
 -- Bindings are right-aligned with constructor arguments to match Kip's pattern
 -- semantics for nested constructor/list patterns.
-renderPatternBindings :: Text -> [Pat Ann] -> Int -> ([Text], Int)
+renderPatternBindings :: Text -- ^ JS expression holding the constructor being destructured.
+                      -> [Pat Ann] -- ^ Argument patterns.
+                      -> Int -- ^ Argument index to start from.
+                      -> ([Text], Int) -- ^ Binding statements and the next unused index.
 renderPatternBindings scrutinee pats startIdx =
   -- Note: constructor arguments in Kip patterns are matched from the right.
   -- We keep patLen around so we can index from the end of scrutinee.args,
@@ -1007,21 +1147,31 @@ renderPatternBindings scrutinee pats startIdx =
 --
 -- The scrutinee is evaluated once and captured in @__scrut@ to avoid repeated
 -- evaluation and preserve side-effect ordering.
-renderMatch :: CodegenCtx -> Exp Ann -> [Clause Ann] -> Text
+renderMatch :: CodegenCtx -- ^ Code generation context.
+            -> Exp Ann -- ^ Scrutinee, evaluated once.
+            -> [Clause Ann] -- ^ Clauses, tried in order.
+            -> Text -- ^ An async IIFE yielding the matching clause's value.
 renderMatch ctx scrutinee clauses =
   renderIife $
     ("const __scrut = " <> codegenExpWith ctx scrutinee <> ";")
       : renderMatchClauses ctx "__scrut" clauses
 
 -- | Render match clauses with the same ordered semantics as function clauses.
-renderMatchClauses :: CodegenCtx -> Text -> [Clause Ann] -> [Text]
+renderMatchClauses :: CodegenCtx -- ^ Code generation context.
+                   -> Text -- ^ JS expression holding the value being matched.
+                   -> [Clause Ann] -- ^ Clauses, tried in order.
+                   -> [Text] -- ^ Statement lines implementing the dispatch.
 renderMatchClauses = renderClauseIfChain
 
 -- | Render both the boolean guard and binding statements for a pattern.
 --
 -- The guard determines whether the branch matches; bindings are emitted only
 -- for variables appearing in that branch.
-renderPatMatchCond :: CodegenCtx -> Text -> Pat Ann -> (Text, [Text])
+renderPatMatchCond :: CodegenCtx -- ^ Code generation context.
+                   -> Text -- ^ JS expression holding the value being matched.
+                   -> Pat Ann -- ^ Pattern to test.
+                   -> (Text, [Text]) -- ^ Guard expression (empty when the pattern always
+                   -- matches) and the binding statements for its variables.
 renderPatMatchCond ctx scrutinee pat =
   case pat of
     PWildcard _ -> ("", [])
@@ -1040,7 +1190,10 @@ renderPatMatchCond ctx scrutinee pat =
 --
 -- Constructors are matched by tag and minimum arity; literal patterns are
 -- matched by JS equality against the lowered scrutinee.
-renderPatCond :: CodegenCtx -> Text -> Pat Ann -> Text
+renderPatCond :: CodegenCtx -- ^ Code generation context.
+              -> Text -- ^ JS expression holding the value being matched.
+              -> Pat Ann -- ^ Pattern to test.
+              -> Text -- ^ JS boolean expression, @"true"@ for irrefutable patterns.
 renderPatCond ctx scrutinee pat =
   case pat of
     PWildcard _ -> "true"
@@ -1077,7 +1230,10 @@ renderPatCond ctx scrutinee pat =
 --
 -- Kip lists are represented as nested @eki(head, tail)@ constructors ending in
 -- @boş@, so this function recursively emits constructor checks for that shape.
-renderListPatCond :: CodegenCtx -> Text -> [Pat Ann] -> Text
+renderListPatCond :: CodegenCtx -- ^ Code generation context.
+                  -> Text -- ^ JS expression holding the list being matched.
+                  -> [Pat Ann] -- ^ Element patterns, matched positionally.
+                  -> Text -- ^ JS boolean expression testing shape and elements.
 renderListPatCond _ scrutinee [] =
   -- Empty list pattern matches 'boş'
   scrutinee <> ".tag === \"boş\""
@@ -1096,7 +1252,10 @@ renderListPatCond ctx scrutinee (p:ps) =
 --
 -- If @patLen == 2@ and @idx == 0@, this points to the first element of the
 -- last two constructor arguments.
-patArgAccess :: Text -> Int -> Int -> Text
+patArgAccess :: Text -- ^ JS expression holding the constructor value.
+             -> Int -- ^ Number of argument patterns, used for right alignment.
+             -> Int -- ^ Zero-based position of the pattern within them.
+             -> Text -- ^ JS expression selecting the matching constructor argument.
 patArgAccess scrutinee patLen idx =
   let idxText = T.pack (show idx)
       lenText = T.pack (show patLen)
@@ -1111,7 +1270,9 @@ patArgAccess scrutinee patLen idx =
 -- Some constructor surfaces differ only by Turkish soft-g possessive alternation
 -- (for example @varlığı@ vs @varlık@). We accept both spellings to keep
 -- pattern matching compatible with primitive option helpers.
-renderCtorTagCond :: Text -> Identifier -> Text
+renderCtorTagCond :: Text -- ^ JS expression holding the value being matched.
+                  -> Identifier -- ^ Constructor name from the pattern.
+                  -> Text -- ^ JS boolean expression accepting either spelling of the tag.
 renderCtorTagCond scrutinee (mods, name) =
   let exact = toJsIdent (mods, name)
       softened = toJsIdent (mods, stripSoftGPossessive name)
@@ -1124,7 +1285,8 @@ renderCtorTagCond scrutinee (mods, name) =
 -- | Strip Turkish possessive suffix only when preceded by soft-g.
 --
 -- Converts final @ğı/ği/ğu/ğü@ back to @k@.
-stripSoftGPossessive :: Text -> Text
+stripSoftGPossessive :: Text -- ^ Constructor root as written.
+                     -> Text -- ^ Root with a soft-g possessive undone, otherwise unchanged.
 stripSoftGPossessive txt =
   case T.unsnoc txt of
     Just (pref, c)
@@ -1138,7 +1300,9 @@ stripSoftGPossessive txt =
 --
 -- Constructors are emitted as tagged value/factory bindings. For single nullary
 -- constructors we additionally alias the type name to the constructor.
-renderNewType :: Identifier -> [Ctor Ann] -> Text
+renderNewType :: Identifier -- ^ Type name.
+              -> [Ctor Ann] -- ^ Constructors with their argument types.
+              -> Text -- ^ JS bindings for each constructor, plus a type alias for unit types.
 renderNewType name ctors =
   let ctorLines =
         [ renderCtor ctorName args
@@ -1164,7 +1328,9 @@ renderNewType name ctors =
 -- Zero-argument constructors are defined as objects (values).
 -- Constructors with arguments are defined as functions.
 -- Uses toJsIdent for both JS variable name and tag to ensure consistency.
-renderCtor :: Identifier -> [a] -> Text
+renderCtor :: Identifier -- ^ Constructor name.
+           -> [a] -- ^ Argument list, used only for its length.
+           -> Text -- ^ A tagged object for nullary constructors, a factory function otherwise.
 renderCtor ctorName args =
   let jsName = toJsIdent ctorName
   in case args of
@@ -1177,7 +1343,10 @@ renderCtor ctorName args =
 --
 -- Most calls become @(await f(...))@. Section-like partial forms are handled
 -- by 'partialSectionCall' to preserve Kip semantics.
-renderCall :: CodegenCtx -> Exp Ann -> [Exp Ann] -> Text
+renderCall :: CodegenCtx -- ^ Code generation context.
+           -> Exp Ann -- ^ Head expression of the application.
+           -> [Exp Ann] -- ^ Argument expressions.
+           -> Text -- ^ An awaited call, or a section when the application is partial.
 renderCall ctx fn args =
   let fnText =
         case fn of
@@ -1194,7 +1363,11 @@ renderCall ctx fn args =
 --
 -- Section lowering is enabled only for function names proven section-capable in
 -- 'buildCodegenCtx' (has an arity > 1 overload and no unary overload).
-partialSectionCall :: CodegenCtx -> Exp Ann -> Text -> [Exp Ann] -> Maybe Text
+partialSectionCall :: CodegenCtx -- ^ Code generation context.
+                   -> Exp Ann -- ^ Head expression of the application.
+                   -> Text -- ^ JS name the head resolves to.
+                   -> [Exp Ann] -- ^ Argument expressions.
+                   -> Maybe Text -- ^ A section closure when the call is a section, 'Nothing' otherwise.
 partialSectionCall ctx fn fnText args =
   case (fn, args) of
     (Var {annExp = annFn, varCandidates}, [arg])
@@ -1206,13 +1379,19 @@ partialSectionCall ctx fn fnText args =
 --
 -- Instrumental fixed args are treated as left sections; all other fixed-case
 -- args are treated as right sections.
-renderCaseDrivenSection :: CodegenCtx -> Text -> Exp Ann -> Text
+renderCaseDrivenSection :: CodegenCtx -- ^ Code generation context.
+                        -> Text -- ^ JS name of the binary function.
+                        -> Exp Ann -- ^ The supplied argument, whose case decides the side it fills.
+                        -> Text -- ^ A closure taking the remaining argument.
 renderCaseDrivenSection ctx fnText arg =
   if annCase (annExp arg) == Ins
     then "(async (__kip_arg0) => (await __kip_call(" <> fnText <> ", [" <> codegenExpWith ctx arg <> ", __kip_arg0])))"
     else "(async (__kip_arg0) => (await __kip_call(" <> fnText <> ", [__kip_arg0, " <> codegenExpWith ctx arg <> "])))"
 
-isSectionableCall :: CodegenCtx -> [(Identifier, Case)] -> Bool
+-- | Check whether any candidate reading of a name may form a section.
+isSectionableCall :: CodegenCtx -- ^ Code generation context.
+                  -> [(Identifier, Case)] -- ^ Candidate readings of the called name.
+                  -> Bool -- ^ 'True' when at least one candidate is section-capable.
 isSectionableCall ctx =
   any (\(ident, _) -> ident `Set.member` sectionableFns ctx)
 
@@ -1220,13 +1399,17 @@ isSectionableCall ctx =
 --
 -- This is used to detect self-referencing bindings that would hit JavaScript's
 -- temporal dead zone (TDZ) when emitted as @const x = ...x...@.
-expMentions :: Identifier -> Exp Ann -> Bool
+expMentions :: Identifier -- ^ Name to look for.
+            -> Exp Ann -- ^ Expression to walk.
+            -> Bool -- ^ 'True' when the name is referenced within it.
 expMentions name expr =
   let jsName = toJsIdent name
   in expMentionsJs jsName expr
 
 -- | Check whether a JS identifier name appears in a compiled expression.
-expMentionsJs :: Text -> Exp Ann -> Bool
+expMentionsJs :: Text -- ^ Emitted JS name to look for.
+              -> Exp Ann -- ^ Expression to walk.
+              -> Bool -- ^ 'True' when some variable in it would be emitted as that name.
 expMentionsJs jsName expr =
   case expr of
     Var {varName, varCandidates} ->
@@ -1251,7 +1434,9 @@ expMentionsJs jsName expr =
 -- Bindings become declarations; all other expressions become single statements.
 -- When a binding's name appears in its own initializer, a temporary variable is
 -- used to avoid JavaScript's temporal dead zone.
-renderExpAsStmt :: CodegenCtx -> Exp Ann -> [Text]
+renderExpAsStmt :: CodegenCtx -- ^ Code generation context.
+                -> Exp Ann -- ^ Expression in statement position.
+                -> [Text] -- ^ Statement lines, a declaration for a binding.
 renderExpAsStmt ctx exp' =
   case exp' of
     Bind {bindName, bindExp} ->
@@ -1260,7 +1445,8 @@ renderExpAsStmt ctx exp' =
       [codegenExpWith ctx exp' <> ";"]
 
 -- | Wrap a list of statements in an async IIFE expression.
-renderIife :: [Text] -> Text
+renderIife :: [Text] -- ^ Statement lines forming the body.
+           -> Text -- ^ An awaited async immediately-invoked function expression.
 renderIife lines' =
   T.intercalate "\n"
     [ "(await (async () => {"
@@ -1269,7 +1455,8 @@ renderIife lines' =
     ]
 
 -- | Normalize JS layout: avoid standalone semicolon lines and excess blank lines.
-formatJsOutput :: Text -> Text
+formatJsOutput :: Text -- ^ Generated JavaScript as emitted.
+               -> Text -- ^ Same code with layout normalized.
 formatJsOutput src =
   let ls0 = T.lines src
       ls1 = moveStandaloneSemicolons ls0
@@ -1283,7 +1470,8 @@ formatJsOutput src =
 --
 -- Uses a single strict `Seq` fold to avoid repeated list concatenation and
 -- end-of-list rewrites during formatting normalization.
-moveStandaloneSemicolons :: [Text] -> [Text]
+moveStandaloneSemicolons :: [Text] -- ^ Lines to normalize.
+                         -> [Text] -- ^ Lines with lone semicolons folded into the preceding line.
 moveStandaloneSemicolons = F.toList . foldl' step Seq.empty
   where
     step acc line
@@ -1300,7 +1488,8 @@ moveStandaloneSemicolons = F.toList . foldl' step Seq.empty
               | otherwise -> prefix Seq.|> (T.stripEnd lastLine <> ";")
 
 -- | Remove blank lines that are immediately followed by a closing brace line.
-removeBlankBeforeClose :: [Text] -> [Text]
+removeBlankBeforeClose :: [Text] -- ^ Lines to normalize.
+                       -> [Text] -- ^ Lines without blanks directly before a closing brace.
 removeBlankBeforeClose [] = []
 removeBlankBeforeClose [x] = [x]
 removeBlankBeforeClose (x:y:rest)
@@ -1309,7 +1498,8 @@ removeBlankBeforeClose (x:y:rest)
   | otherwise = x : removeBlankBeforeClose (y : rest)
 
 -- | Remove blank lines that are immediately after a line ending with @{@.
-removeBlankAfterOpen :: [Text] -> [Text]
+removeBlankAfterOpen :: [Text] -- ^ Lines to normalize.
+                     -> [Text] -- ^ Lines without blanks directly after an opening brace.
 removeBlankAfterOpen [] = []
 removeBlankAfterOpen [x] = [x]
 removeBlankAfterOpen (x:y:rest)
@@ -1321,7 +1511,8 @@ removeBlankAfterOpen (x:y:rest)
 --
 -- Tracks prior-blank state in one pass and emits directly to a sequence,
 -- avoiding multi-pass blank-run cleanup.
-collapseBlankRuns :: [Text] -> [Text]
+collapseBlankRuns :: [Text] -- ^ Lines to normalize.
+                  -> [Text] -- ^ Lines with each run of blanks reduced to one.
 collapseBlankRuns =
   F.toList . fst . foldl' step (Seq.empty, False)
   where
@@ -1332,32 +1523,38 @@ collapseBlankRuns =
            else (acc Seq.|> line, blank)
 
 -- | Trim leading and trailing blank lines.
-trimEdgeBlanks :: [Text] -> [Text]
+trimEdgeBlanks :: [Text] -- ^ Lines to normalize.
+               -> [Text] -- ^ Lines without leading or trailing blanks.
 trimEdgeBlanks =
   reverse . dropWhile (T.null . T.strip) . reverse . dropWhile (T.null . T.strip)
 
 -- | True when the line starts with a closing brace token.
-isCloseLine :: Text -> Bool
+isCloseLine :: Text -- ^ Line to classify.
+            -> Bool -- ^ 'True' when it starts with a closing brace.
 isCloseLine line = "}" `T.isPrefixOf` T.strip line
 
 -- | True when the line ends with an opening brace token.
-isOpenLine :: Text -> Bool
+isOpenLine :: Text -- ^ Line to classify.
+           -> Bool -- ^ 'True' when it ends with an opening brace.
 isOpenLine line = "{" `T.isSuffixOf` T.stripEnd line
 
 -- | Render comma-separated JavaScript argument names.
-renderArgNames :: [Arg Ann] -> Text
+renderArgNames :: [Arg Ann] -- ^ Declared arguments.
+               -> Text -- ^ Their JS names, comma separated, for a parameter list.
 renderArgNames args =
   T.intercalate ", " (map (toJsIdent . argIdent) args)
 
 -- | Extract the terminal segment of an identifier.
-identText :: Identifier -> Text
+identText :: Identifier -- ^ Possibly qualified identifier.
+          -> Text -- ^ Its final segment, without the module qualifier.
 identText (_, name) = name
 
 -- | Convert a Kip identifier into a JavaScript-safe identifier.
 --
 -- Namespace pieces are joined with underscores; dashes are rewritten to
 -- underscores; apostrophes are removed; reserved words are prefixed.
-toJsIdent :: Identifier -> Text
+toJsIdent :: Identifier -- ^ Kip identifier, possibly qualified.
+          -> Text -- ^ A valid JS identifier that is not a reserved word.
 toJsIdent ident =
   let raw = baseIdent ident
       sanitized = T.map replaceDash raw
@@ -1394,12 +1591,14 @@ jsReserved =
   ]
 
 -- | Render a JavaScript string literal with escaping.
-renderString :: Text -> Text
+renderString :: Text -- ^ String contents.
+             -> Text -- ^ A double-quoted JS string literal with escapes applied.
 renderString txt =
   "\"" <> T.concatMap escapeChar txt <> "\""
 
 -- | Escape one character in JS string context.
-escapeChar :: Char -> Text
+escapeChar :: Char -- ^ Character appearing inside a string literal.
+           -> Text -- ^ Its escape sequence, or the character itself when safe.
 escapeChar c =
   case c of
     '\\' -> "\\\\"
@@ -1410,6 +1609,8 @@ escapeChar c =
     _ -> T.singleton c
 
 -- | Indent each non-empty line by @n@ spaces.
-indent :: Int -> Text -> Text
+indent :: Int -- ^ Number of spaces to prepend.
+       -> Text -- ^ Text whose lines are indented.
+       -> Text -- ^ Indented lines, with blank lines dropped.
 indent n =
   T.unlines . map (T.replicate n " " <>) . filter (not . T.null) . T.lines

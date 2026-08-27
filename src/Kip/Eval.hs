@@ -65,10 +65,15 @@ emptyEvalState = MkEvalState Map.empty Map.empty Map.empty Map.empty Map.empty M
 -- | Evaluation errors (currently minimal).
 data EvalError =
    Unknown
+   -- ^ Failure with no more specific classification.
    | UnboundVariable Identifier
+   -- ^ A variable was referenced but is not bound in the environment.
    | NoMatchingFunction Identifier
+   -- ^ No function definition matches the applied name and arguments.
    | NoMatchingClause
+   -- ^ Every clause of the applied function failed to match its arguments.
    | RuntimeTypeErrorNonValue
+   -- ^ A primitive received an argument that did not reduce to a value.
    deriving (Show, Eq, Generic, Binary)
 -- | Evaluator monad stack.
 type EvalM = StateT EvalState (ExceptT EvalError IO)
@@ -109,8 +114,11 @@ isResolvableInAppContext varCandidates st =
 
 -- | Find a 0-arg primitive function matching one of the variable candidates.
 find0ArgPrim :: [(Identifier, Case)]
+             -- ^ Variable candidates to try in source order.
              -> Map.Map Identifier [([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))]
+             -- ^ Primitive overloads grouped by canonical identifier.
              -> Maybe ([Exp Ann] -> EvalM (Exp Ann))
+             -- ^ First zero-argument implementation that matches a candidate.
 find0ArgPrim candidates primFuncs =
   listToMaybe
     [ impl
@@ -162,11 +170,12 @@ isRuntimeValue st expr =
         Nothing -> False
 
 -- | A single evaluation step for trampolining tail calls.
--- | Done: final value.
--- | Continue: evaluate a new (env, exp) without growing the Haskell call stack.
 data EvalStep
   = Done (Exp Ann)
+  -- ^ Evaluation finished with this final value.
   | Continue (HM.HashMap Identifier (Exp Ann)) (Exp Ann)
+  -- ^ Evaluate the expression under the given environment, without growing the
+  -- Haskell call stack.
 
 -- | A single recorded evaluation step for tracing.
 data TraceStep = TraceStep
@@ -198,7 +207,8 @@ evalExpLoop localEnv e = do
     Continue env' e' -> evalExpLoop env' e'
 
 -- | Evaluate an expression and collect evaluation trace steps.
-evalExpTraced :: Exp Ann -> EvalM (Exp Ann, [TraceStep])
+evalExpTraced :: Exp Ann -- ^ Expression to evaluate from an empty local environment.
+              -> EvalM (Exp Ann, [TraceStep]) -- ^ Final value and chronological trace steps.
 evalExpTraced e = do
   ref <- liftIO (newIORef [])
   ctr <- liftIO (newIORef (0 :: Int))
@@ -210,13 +220,16 @@ evalExpTraced e = do
 traceStepLimit :: Int
 traceStepLimit = 1000
 
--- | Traced trampoline loop. Records a 'TraceStep' for each step that
+-- | Traced trampoline loop. Records a @TraceStep@ for each step that
 -- produces a different output than its input (skipping trivial literal
 -- identity steps). Falls back to the normal 'evalExpLoop' when the step
 -- counter reaches 'traceStepLimit'.
-evalExpLoopTraced :: IORef [TraceStep] -> IORef Int -> Int
-                  -> HM.HashMap Identifier (Exp Ann) -> Exp Ann
-                  -> EvalM (Exp Ann)
+evalExpLoopTraced :: IORef [TraceStep] -- ^ Reverse-ordered trace accumulator.
+                  -> IORef Int -- ^ Number of trace steps recorded so far.
+                  -> Int -- ^ Current call-stack depth for display.
+                  -> HM.HashMap Identifier (Exp Ann) -- ^ Local value environment.
+                  -> Exp Ann -- ^ Expression to evaluate.
+                  -> EvalM (Exp Ann) -- ^ Final evaluated value.
 evalExpLoopTraced ref ctr depth localEnv e = do
   count <- liftIO (readIORef ctr)
   if count >= traceStepLimit
@@ -246,14 +259,19 @@ evalExpLoopTraced ref ctr depth localEnv e = do
           evalExpLoopTraced ref ctr depth env' e'
 
 -- | Sub-evaluator for traced mode: evaluates at depth + 1.
-evalSubTraced :: IORef [TraceStep] -> IORef Int -> Int
-              -> HM.HashMap Identifier (Exp Ann) -> Exp Ann
-              -> EvalM (Exp Ann)
+evalSubTraced :: IORef [TraceStep] -- ^ Shared reverse-ordered trace accumulator.
+              -> IORef Int -- ^ Shared trace-step counter.
+              -> Int -- ^ Parent expression depth.
+              -> HM.HashMap Identifier (Exp Ann) -- ^ Local value environment.
+              -> Exp Ann -- ^ Subexpression to evaluate.
+              -> EvalM (Exp Ann) -- ^ Evaluated subexpression value.
 evalSubTraced ref ctr depth = evalExpLoopTraced ref ctr (depth + 1)
 
 -- | Substitute local environment bindings into an expression for trace display.
 -- This is only for human-readable tracing and does not affect evaluation.
-substituteTraceEnv :: HM.HashMap Identifier (Exp Ann) -> Exp Ann -> Exp Ann
+substituteTraceEnv :: HM.HashMap Identifier (Exp Ann) -- ^ Local bindings visible at the trace point.
+                   -> Exp Ann -- ^ Expression shown in the trace.
+                   -> Exp Ann -- ^ Expression with local variables expanded up to the safety limit.
 substituteTraceEnv env = go 0
   where
     maxDepth :: Int
@@ -302,7 +320,9 @@ substituteTraceEnv env = go 0
     substClause (Clause pat body) = Clause pat (go 0 body)
 
 -- | Check whether two expressions are trivially the same (literal identity).
-sameExp :: Exp Ann -> Exp Ann -> Bool
+sameExp :: Exp Ann -- ^ Expression before an evaluation step.
+        -> Exp Ann -- ^ Expression after an evaluation step.
+        -> Bool -- ^ 'True' when the pair is trivial enough to omit from a trace.
 sameExp (IntLit _ a) (IntLit _ b) = a == b
 sameExp (FloatLit _ a) (FloatLit _ b) = a == b
 sameExp (StrLit _ a) (StrLit _ b) = a == b
@@ -313,7 +333,9 @@ sameExp (Var _ n1 _) (Var _ n2 _) = n1 == n2
 sameExp _ _ = False
 
 -- | Check if two expressions are structurally equal, ignoring annotations.
-eqIgnoringAnn :: Exp Ann -> Exp Ann -> Bool
+eqIgnoringAnn :: Exp Ann -- ^ First expression to compare.
+              -> Exp Ann -- ^ Second expression to compare.
+              -> Bool -- ^ 'True' when structures agree after ignoring annotations.
 eqIgnoringAnn (Var _ n1 c1) (Var _ n2 c2) = n1 == n2 && c1 == c2
 eqIgnoringAnn (App _ f1 a1) (App _ f2 a2) =
   eqIgnoringAnn f1 f2 && length a1 == length a2 && and (zipWith eqIgnoringAnn a1 a2)
@@ -350,7 +372,9 @@ eqIgnoringAnn _ _ = False
 -- Takes a list of (original, result) pairs from the tracking sub-evaluator
 -- and recursively walks the tree, replacing any nodes that match.
 -- The case annotation from the original child position is preserved on the result.
-substituteChildren :: [(Exp Ann, Exp Ann)] -> Exp Ann -> Exp Ann
+substituteChildren :: [(Exp Ann, Exp Ann)] -- ^ Original subexpressions paired with evaluated results.
+                   -> Exp Ann -- ^ Parent expression in which replacements are made.
+                   -> Exp Ann -- ^ Parent with matching descendants replaced.
 substituteChildren subs parent =
   -- First check if the parent itself matches
   case find (\(orig, _) -> eqIgnoringAnn orig parent) subs of
@@ -780,7 +804,10 @@ matchList (p:ps) (App _ (Var _ ([], name) _) [elem, rest])
       restBinds <- matchList ps rest
       return (elemBinds ++ restBinds)
 matchList _ _ = Nothing
-isRandomCandidate :: [(Identifier, Case)] -> Bool
+
+-- | Check whether any candidate names Kip's random-integer primitive.
+isRandomCandidate :: [(Identifier, Case)] -- ^ Names and cases attached to a variable expression.
+                  -> Bool -- ^ 'True' when a random primitive is among the candidates.
 isRandomCandidate =
   any (\(ident, _) -> ident == (["sayı"], "çek") || ident == ([], "sayı-çek"))
 
@@ -798,7 +825,9 @@ applySelector idx arg fallback =
     _ -> return fallback
 
 -- | Check two list lengths in lock-step, stopping at the first mismatch.
-sameLength :: [a] -> [b] -> Bool
+sameLength :: [a] -- ^ First list to measure lazily.
+           -> [b] -- ^ Second list to measure lazily.
+           -> Bool -- ^ 'True' when both lists terminate together.
 sameLength [] [] = True
 sameLength (_:xs) (_:ys) = sameLength xs ys
 sameLength _ _ = False
@@ -806,7 +835,9 @@ sameLength _ _ = False
 -- | Reorder arguments for one-argument section applications.
 -- Instrumental fixed arguments are left sections; other fixed arguments are
 -- treated as right sections.
-reorderSectionArgs :: [Exp Ann] -> [Exp Ann] -> [Exp Ann]
+reorderSectionArgs :: [Exp Ann] -- ^ Arguments fixed by the section expression.
+                   -> [Exp Ann] -- ^ Arguments supplied when invoking the section.
+                   -> [Exp Ann] -- ^ Invocation arguments in evaluator call order.
 reorderSectionArgs preApplied args =
   case (preApplied, args) of
     ([fixed], [x, y])
@@ -949,7 +980,10 @@ typeMatchesAllowUnknownPartial tyCons mTy ty =
 -- | Reorder values for evaluator call matching.
 -- Uses shared nominative fallback and additionally allows instrumental slots
 -- to consume genitive values when no exact or nominative match exists.
-reorderByCasesForEval :: [Case] -> [Case] -> [a] -> Maybe [a]
+reorderByCasesForEval :: [Case] -- ^ Cases required by the selected signature.
+                      -> [Case] -- ^ Cases attached to supplied values.
+                      -> [a] -- ^ Values aligned with the supplied cases.
+                      -> Maybe [a] -- ^ Values reordered to signature order when alignment succeeds.
 reorderByCasesForEval expected actual xs =
   case reorderByCasesNomFallback expected actual xs of
     Just reordered -> Just reordered
@@ -1075,8 +1109,11 @@ stripCaseRoots mods word = go bareCaseSuffixes
 
 -- | Lookup by suffix fallback over all candidates in order.
 lookupByCandidateSuffixHM :: HM.HashMap Identifier a
+                          -- ^ Local environment indexed by canonical identifier.
                           -> [(Identifier, Case)]
+                          -- ^ Candidate identifiers to normalize and try.
                           -> Maybe a
+                          -- ^ First binding found by suffix fallback.
 lookupByCandidateSuffixHM env = go
   where
     go [] = Nothing
@@ -1308,7 +1345,7 @@ unifyTypes tyCons expected actual =
 --
 -- Hoisted to the top level (out of 'unifyTypes') so 'inferType' can reuse it
 -- for lazy, argument-by-argument constructor unification; see
--- 'unifyCtorArgLazy'.
+-- @unifyCtorArgsLazy@.
 unifyTypesStep :: Map.Map Identifier Int -- ^ Type constructor arities.
                -> Maybe [(Identifier, Ty Ann)] -- ^ Current substitution.
                -> (Ty Ann, Ty Ann) -- ^ Expected and actual types.
@@ -1371,8 +1408,9 @@ unifyOneTy tyCons subst e a =
 --
 -- Types are small, fixed-size expressions (a handful of nodes at most), so
 -- a plain list is cheaper here than allocating a 'Data.Set.Set' for this
--- module's only consumer, 'unifyCtorArgsLazy'.
-tyFreeVars :: Ty Ann -> [Identifier]
+-- module's only consumer, @unifyCtorArgsLazy@.
+tyFreeVars :: Ty Ann -- ^ Type tree to inspect.
+           -> [Identifier] -- ^ Free type-variable names, including duplicates in traversal order.
 tyFreeVars ty =
   case ty of
     TyVar _ name -> [name]

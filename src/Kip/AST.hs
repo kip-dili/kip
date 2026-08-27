@@ -37,28 +37,34 @@ instance Binary Pos where
 type Identifier = ([Text], Text)
 
 -- | Compare identifiers, allowing either side to omit its namespace.
-identMatches :: Identifier -> Identifier -> Bool
+identMatches :: Identifier -- ^ First identifier to compare.
+             -> Identifier -- ^ Second identifier to compare.
+             -> Bool -- ^ 'True' when names agree and namespaces are compatible.
 identMatches (mods1, name1) (mods2, name2) =
   name1 == name2 && (mods1 == mods2 || null mods1 || null mods2)
 {-# INLINE identMatches #-}
 
 -- | Recognize the canonical source-level integer type name.
-isIntIdent :: Identifier -> Bool
+isIntIdent :: Identifier -- ^ Identifier to classify.
+           -> Bool -- ^ 'True' for the canonical integer type name.
 isIntIdent (mods, name) = mods == ["tam"] && name == "sayı"
 {-# INLINE isIntIdent #-}
 
 -- | Recognize the canonical source-level floating-point type name.
-isFloatIdent :: Identifier -> Bool
+isFloatIdent :: Identifier -- ^ Identifier to classify.
+             -> Bool -- ^ 'True' for the canonical floating-point type name.
 isFloatIdent (mods, name) = mods == ["ondalık"] && name == "sayı"
 {-# INLINE isFloatIdent #-}
 
 -- | Recognize the canonical source-level string type name.
-isStringIdent :: Identifier -> Bool
+isStringIdent :: Identifier -- ^ Identifier to classify.
+              -> Bool -- ^ 'True' for the canonical string type name.
 isStringIdent (mods, name) = null mods && name == "dizge"
 {-# INLINE isStringIdent #-}
 
 -- | Recognize the canonical source-level character type name.
-isCharIdent :: Identifier -> Bool
+isCharIdent :: Identifier -- ^ Identifier to classify.
+            -> Bool -- ^ 'True' for the canonical character type name.
 isCharIdent (mods, name) = null mods && name == "karakter"
 {-# INLINE isCharIdent #-}
 
@@ -151,7 +157,9 @@ data Ty a =
   deriving (Show, Eq, Ord, Generic, Functor, Binary)
 
 -- | Set the grammatical case on every annotation in a type tree.
-setTyCases :: Case -> Ty Ann -> Ty Ann
+setTyCases :: Case -- ^ Case assigned to every annotation.
+           -> Ty Ann -- ^ Type tree to rewrite.
+           -> Ty Ann -- ^ Rewritten type tree.
 setTyCases cas ty =
   case ty of
     TyString ann -> TyString (setAnnCase ann cas)
@@ -167,7 +175,8 @@ setTyCases cas ty =
       TyApp (setAnnCase ann cas) (setTyCases cas ctor) (map (setTyCases cas) args)
 
 -- | Normalize source-level primitive aliases to canonical type constructors.
-normalizePrimTy :: Ty Ann -> Ty Ann
+normalizePrimTy :: Ty Ann -- ^ Type whose primitive aliases are normalized.
+                -> Ty Ann -- ^ Type using canonical primitive constructors.
 normalizePrimTy ty =
   case ty of
     TyInd ann name
@@ -250,15 +259,18 @@ reorderByCasesNomFallback expected actual xs
 type Arg ann = ((Identifier, ann), Ty ann)
 
 -- | Extract the identifier from an argument.
-argIdent :: Arg ann -> Identifier
+argIdent :: Arg ann -- ^ Typed function argument to inspect.
+         -> Identifier -- ^ Argument identifier.
 argIdent ((ident, _), _) = ident
 
 -- | Extract the identifier annotation (span) from an argument.
-argIdentAnn :: Arg ann -> ann
+argIdentAnn :: Arg ann -- ^ Typed function argument to inspect.
+            -> ann -- ^ Annotation attached to the argument identifier.
 argIdentAnn ((_, ann), _) = ann
 
 -- | Extract the type from an argument.
-argType :: Arg ann -> Ty ann
+argType :: Arg ann -- ^ Typed function argument to inspect.
+        -> Ty ann -- ^ Declared argument type.
 argType (_, ty) = ty
 {- | Constructor with its argument types and case annotation.
 
@@ -409,16 +421,27 @@ Statements are the top-level declarations in a Kip program.
 -}
 data Stmt ann =
     Defn Identifier (Ty ann) (Exp ann)
+    -- ^ Value definition binding a name of the given type to an expression.
   | Function Identifier [Arg ann] (Ty ann) [Clause ann] Bool
+    -- ^ Function definition: name, typed arguments, result type, pattern-matching
+    -- clauses, and whether the name is an infinitive (verb form).
   | PrimFunc Identifier [Arg ann] (Ty ann) Bool
+    -- ^ Declaration of a built-in function: name, typed arguments, result type,
+    -- and whether the name is an infinitive.
   | Load [Text] Identifier
+    -- ^ Module import: directory path segments and the module identifier.
   | NewType Identifier [Ty ann] [Ctor ann]
+    -- ^ Algebraic data type declaration: type name, type parameters as
+    -- case-annotated type variables, and constructors.
   | PrimType Identifier [Ty ann]
+    -- ^ Declaration of a built-in type: type name and its type parameters.
   | ExpStmt (Exp ann)
+    -- ^ Top-level expression to evaluate and print.
   deriving (Show, Eq, Generic, Functor, Binary)
 
 -- | Names introduced by a sequence of statements.
-stmtDeclarationNames :: [Stmt Ann] -> [Identifier]
+stmtDeclarationNames :: [Stmt Ann] -- ^ Statements to scan for declarations.
+                     -> [Identifier] -- ^ Type, constructor, value, and function names introduced.
 stmtDeclarationNames = concatMap names
   where
     names stmt =
@@ -431,7 +454,8 @@ stmtDeclarationNames = concatMap names
         _ -> []
 
 -- | Select the most recently recorded span for each identifier.
-latestDefSpans :: Map.Map Identifier [Span] -> Map.Map Identifier Span
+latestDefSpans :: Map.Map Identifier [Span] -- ^ Definition spans accumulated in source order.
+               -> Map.Map Identifier Span -- ^ Most recent span for each identifier.
 latestDefSpans =
   Map.mapMaybe (\spans -> case reverse spans of
     span' : _ -> Just span'
@@ -439,16 +463,22 @@ latestDefSpans =
 
 -- | Filter definition spans to names introduced by the given statements.
 defSpansFromStmts :: [Stmt Ann]
+                  -- ^ Statements whose declaration names are retained.
                   -> Map.Map Identifier [Span]
+                  -- ^ All known definition spans.
                   -> Map.Map Identifier Span
+                  -- ^ Latest span for each name declared by the statements.
 defSpansFromStmts stmts defSpans =
   let allowed = Set.fromList (stmtDeclarationNames stmts)
   in Map.filterWithKey (\ident _ -> Set.member ident allowed) (latestDefSpans defSpans)
 
 -- | Pair function signatures with their corresponding definition spans.
 funcSigSpansFromStmts :: [Stmt Ann]
+                      -- ^ Statements containing function signatures.
                       -> Map.Map Identifier [Span]
+                      -- ^ Definition spans grouped by function name.
                       -> Map.Map (Identifier, [Ty Ann]) Span
+                      -- ^ Source span keyed by canonical overload signature.
 funcSigSpansFromStmts stmts defSpans =
   fst (foldl' step (Map.empty, defSpans) stmts)
   where
@@ -523,7 +553,9 @@ prettyExp (Ascribe _ ty e) =
     prettyTySimple _ = "..."
 
 -- | Pretty-print an expression as an indented tree for debugging.
-ppExp :: Int -> Exp a -> String
+ppExp :: Int -- ^ Initial indentation width.
+      -> Exp a -- ^ Expression to display.
+      -> String -- ^ Multiline debugging representation.
 ppExp n e = indent n ++ case e of
   Var _ name _ -> "Var " ++ ppIdent name
   StrLit _ s -> "StrLit " ++ show s
@@ -550,12 +582,15 @@ ppExp n e = indent n ++ case e of
     indent i = replicate i ' '
 
 -- | Pretty-print a clause.
-ppClause :: Int -> Clause a -> String
+ppClause :: Int -- ^ Initial indentation width.
+         -> Clause a -- ^ Clause to display.
+         -> String -- ^ Multiline debugging representation.
 ppClause n (Clause pat body) =
   replicate n ' ' ++ ppPat pat ++ " =>\n" ++ ppExp (n+2) body
 
 -- | Pretty-print a pattern.
-ppPat :: Pat a -> String
+ppPat :: Pat a -- ^ Pattern to display.
+      -> String -- ^ Compact debugging representation.
 ppPat (PWildcard _) = "_"
 ppPat (PVar name _) = ppIdent name
 ppPat (PCtor (name, _) pats) =
@@ -567,11 +602,13 @@ ppPat (PCharLit c _) = show c
 ppPat (PListLit pats) = "[" ++ intercalate ", " (map ppPat pats) ++ "]"
 
 -- | Pretty-print an identifier.
-ppIdent :: Identifier -> String
+ppIdent :: Identifier -- ^ Identifier to display.
+        -> String -- ^ Dot-separated debugging representation.
 ppIdent (mods, name) = T.unpack (T.intercalate "." (mods ++ [name]))
 
 -- | Pretty-print a type (simple form).
-ppTy :: Ty a -> String
+ppTy :: Ty a -- ^ Type to display.
+     -> String -- ^ Compact debugging representation.
 ppTy (TyString _) = "dizge"
 ppTy (TyInt _) = "tam-sayı"
 ppTy (TyFloat _) = "ondalık-sayı"
@@ -583,7 +620,8 @@ ppTy (Arr _ d i) = "(" ++ ppTy d ++ " -> " ++ ppTy i ++ ")"
 ppTy (TyApp _ c args) = ppTy c ++ "(" ++ intercalate ", " (map ppTy args) ++ ")"
 
 -- | Pretty-print a statement as an indented tree.
-ppStmt :: Stmt a -> String
+ppStmt :: Stmt a -- ^ Statement to display.
+       -> String -- ^ Multiline debugging representation.
 ppStmt stmt = case stmt of
   Defn name ty body ->
     "Defn " ++ ppIdent name ++ " : " ++ ppTy ty ++ "\n" ++ ppExp 2 body

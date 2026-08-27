@@ -127,14 +127,19 @@ import Kip.Parser (stripBareCaseSuffix, stripCopulaSuffix)
 -- | Extra source-resolution information retained by a typechecking pass.
 data TCOutputMode
   = TCOutputRuntime
+  -- ^ Least detail: only what the evaluator needs.
   | TCOutputCodegen
+  -- ^ Detail needed to generate code from the checked program.
   | TCOutputLsp
+  -- ^ Most detail: resolved names, types, and definition locations for editor features.
   deriving (Eq, Ord, Show, Generic)
 
 instance Binary TCOutputMode
 
 -- | Change output mode, dropping information the new consumer cannot use.
-setTCOutputMode :: TCOutputMode -> TCState -> TCState
+setTCOutputMode :: TCOutputMode -- ^ Output detail required by the next consumer.
+                -> TCState -- ^ Existing typechecker state.
+                -> TCState -- ^ State with incompatible retained metadata removed.
 setTCOutputMode mode st =
   st
     { tcOutputMode = mode
@@ -146,7 +151,9 @@ setTCOutputMode mode st =
     }
 
 -- | Whether a cached typechecker state contains everything a consumer needs.
-tcOutputModeSupports :: TCOutputMode -> TCOutputMode -> Bool
+tcOutputModeSupports :: TCOutputMode -- ^ Detail present in a cached state.
+                     -> TCOutputMode -- ^ Detail required by a consumer.
+                     -> Bool -- ^ 'True' when the cached state is sufficient.
 tcOutputModeSupports actual required =
   case required of
     TCOutputRuntime -> True
@@ -154,18 +161,27 @@ tcOutputModeSupports actual required =
     TCOutputLsp -> actual >= TCOutputLsp
 
 -- | Record a resolved name at a source span (most-recent wins).
-recordResolvedName :: Span -> Identifier -> TCM ()
+recordResolvedName :: Span -- ^ Span of the resolved variable reference.
+                   -> Identifier -- ^ Canonical identifier selected for the reference.
+                   -> TCM () -- ^ Typechecker action that records LSP metadata when enabled.
 recordResolvedName sp ident =
   modify (\s ->
     if tcOutputMode s >= TCOutputLsp
       then s { tcResolvedNames = (sp, ident) : tcResolvedNames s }
       else s)
 
-recordResolvedSig :: Span -> Identifier -> [Ty Ann] -> TCM ()
+-- | Record the resolved overload signature selected at a source span.
+recordResolvedSig :: Span -- ^ Span of the resolved reference.
+                  -> Identifier -- ^ Canonical function identifier.
+                  -> [Ty Ann] -- ^ Argument types identifying the overload.
+                  -> TCM () -- ^ Typechecker action that updates resolution metadata.
 recordResolvedSig sp ident tys =
   modify (\s -> s { tcResolvedSigs = (sp, (ident, tys)) : tcResolvedSigs s })
 
-recordResolvedType :: Span -> Ty Ann -> TCM ()
+-- | Record the inferred type associated with a source span for LSP queries.
+recordResolvedType :: Span -- ^ Span whose expression was inferred.
+                   -> Ty Ann -- ^ Inferred expression type.
+                   -> TCM () -- ^ Typechecker action that updates LSP metadata.
 recordResolvedType sp ty =
   modify (\s ->
     if tcOutputMode s >= TCOutputLsp
@@ -173,14 +189,19 @@ recordResolvedType sp ty =
       else s)
 
 -- | Merge definition locations from a file (latest wins).
-recordDefLocations :: FilePath -> Map.Map Identifier Span -> TCM ()
+recordDefLocations :: FilePath -- ^ Source file containing the definitions.
+                   -> Map.Map Identifier Span -- ^ Definition spans by canonical identifier.
+                   -> TCM () -- ^ Typechecker action that merges LSP locations when enabled.
 recordDefLocations path defs =
   modify (\s ->
     if tcOutputMode s >= TCOutputLsp
       then s { tcDefLocations = Map.union (Map.map (path,) defs) (tcDefLocations s) }
       else s)
 
-recordFuncSigLocations :: FilePath -> Map.Map (Identifier, [Ty Ann]) Span -> TCM ()
+-- | Merge function-overload definition locations from a source file.
+recordFuncSigLocations :: FilePath -- ^ Source file containing the definitions.
+                       -> Map.Map (Identifier, [Ty Ann]) Span -- ^ Signature keys and their source spans.
+                       -> TCM () -- ^ Typechecker action that updates LSP metadata.
 recordFuncSigLocations path defs =
   modify (\s ->
     if tcOutputMode s >= TCOutputLsp
@@ -195,7 +216,10 @@ recordFuncSigLocations path defs =
 -- uncommon case whose type depends on declarations introduced later.
 data TCValueSummary
   = KnownValueType !(Ty Ann)
+  -- ^ The definition's type was determined when it was checked.
   | DeferredValueExp !(Exp Ann)
+  -- ^ The type depends on later declarations, so the expression is retained
+  -- for re-inference.
   deriving (Eq, Generic)
 
 instance Binary TCValueSummary
@@ -284,7 +308,11 @@ emptyTCState = MkTCState Set.empty Map.empty HM.empty Map.empty HM.empty Map.emp
 --
 -- Replaces @Data.MultiMap.insert@ with the same prepend semantics.
 -- Used for overloadable bindings ('tcFuncs', 'tcFuncSigs').
-mmInsert :: Ord k => k -> v -> Map.Map k [v] -> Map.Map k [v]
+mmInsert :: Ord k
+         => k -- ^ Key whose list is extended.
+         -> v -- ^ Value to prepend.
+         -> Map.Map k [v] -- ^ Map to update.
+         -> Map.Map k [v] -- ^ Map with the value prepended under the key.
 mmInsert k v = Map.insertWith (++) k [v]
 
 -- | Build an exact-arity index for function signatures.
@@ -292,7 +320,9 @@ mmInsert k v = Map.insertWith (++) k [v]
 -- This is rebuilt when loading cached state and then maintained
 -- incrementally by 'insertFuncSig'.
 buildFuncSigsByArity :: Map.Map Identifier [[Arg Ann]]
+                    -- ^ All known signatures, grouped by function name.
                     -> HM.HashMap (Identifier, Int) [[Arg Ann]]
+                    -- ^ Signatures indexed by (function name, arity).
 buildFuncSigsByArity sigs =
   HM.fromListWith (++)
     [ ((name, length args), [args])
@@ -302,7 +332,9 @@ buildFuncSigsByArity sigs =
 
 -- | Build a function-name grouped index for return types.
 buildFuncRetByName :: Map.Map (Identifier, [Ty Ann]) (Ty Ann)
+                  -- ^ Return types keyed by (function name, argument types).
                   -> HM.HashMap Identifier (Map.Map [Ty Ann] (Ty Ann))
+                  -- ^ Return types grouped by function name.
 buildFuncRetByName sigRets =
   HM.fromListWith Map.union
     [ (name, Map.singleton argTys retTy)
@@ -310,7 +342,11 @@ buildFuncRetByName sigRets =
     ]
 
 -- | Insert one function return type into both return-type indices.
-insertFuncRet :: Identifier -> [Ty Ann] -> Ty Ann -> TCState -> TCState
+insertFuncRet :: Identifier -- ^ Function name.
+              -> [Ty Ann] -- ^ Argument types of this overload.
+              -> Ty Ann -- ^ Return type of this overload.
+              -> TCState -- ^ State to update.
+              -> TCState -- ^ State with both return-type indices extended.
 insertFuncRet name argTys retTy st =
   st
     { tcFuncSigRets = Map.insert (name, argTys) retTy (tcFuncSigRets st)
@@ -321,7 +357,10 @@ insertFuncRet name argTys retTy st =
 --
 -- Keeping both maps synchronized is cheaper than rebuilding the arity index
 -- after every declaration.
-insertFuncSig :: Identifier -> [Arg Ann] -> TCState -> TCState
+insertFuncSig :: Identifier -- ^ Function name.
+              -> [Arg Ann] -- ^ Argument signature of this overload.
+              -> TCState -- ^ State to update.
+              -> TCState -- ^ State with both signature indices extended.
 insertFuncSig name args st =
   let argsNorm = map (Bifunctor.second normalizePrimTy) args
   in st
@@ -334,7 +373,10 @@ insertFuncSig name args st =
 -- Function declarations update three maps in tandem ('tcFuncs',
 -- 'tcFuncSigs', 'tcFuncSigsByArity'). Updating them through a single helper
 -- reduces intermediate state allocations on stdlib bootstrap paths.
-insertFuncDecl :: Identifier -> [Arg Ann] -> TCState -> TCState
+insertFuncDecl :: Identifier -- ^ Declared function name.
+               -> [Arg Ann] -- ^ Declared arguments.
+               -> TCState -- ^ State to update.
+               -> TCState -- ^ State with arity, signature, and name indices extended.
 insertFuncDecl name args st =
   let st' = insertFuncSig name args st
       arity = length args
@@ -343,7 +385,11 @@ insertFuncDecl name args st =
   in st' { tcFuncs = funcs', tcFuncNamesByArity = namesByArity' }
 
 -- | Mark one function declaration as effectful/non-effectful by exact arity.
-insertFuncEffect :: Identifier -> [Arg Ann] -> Bool -> TCState -> TCState
+insertFuncEffect :: Identifier -- ^ Declared function name.
+                 -> [Arg Ann] -- ^ Declared arguments, used for the arity key.
+                 -> Bool -- ^ Whether this overload is effectful.
+                 -> TCState -- ^ State to update.
+                 -> TCState -- ^ State with the effect flag recorded when effectful.
 insertFuncEffect name args isEffectful st
   | isEffectful =
       st { tcFuncEffectsByArity = HM.insert (name, length args) True (tcFuncEffectsByArity st) }
@@ -352,17 +398,38 @@ insertFuncEffect name args isEffectful st
 -- | Type checker errors.
 data TCError =
    Unknown
+   -- ^ Failure with no more specific classification.
  | NoType Span
+   -- ^ No type could be inferred for the expression at this span.
  | EffectfulExprInPureCtx Identifier Span
+   -- ^ An effectful function was called from a pure context: the function and the call span.
  | Ambiguity Span
+   -- ^ The expression at this span has more than one valid typing.
  | UnknownName Identifier Span
+   -- ^ A name is not in scope: the name and its reference span.
  | NoMatchingOverload Identifier [Maybe (Ty Ann)] [(Identifier, [Arg Ann])] Span
+   -- ^ No overload of the function accepts the given arguments: the name, the
+   -- inferred argument types (@Nothing@ where inference failed), the candidate
+   -- signatures, and the call span.
  | NoMatchingCtor Identifier [Maybe (Ty Ann)] [Ty Ann] Span
- | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) [Identifier] Span  -- ctor, expected (ctor result), actual (scrutinee), available ctors
- | ArgTypeMismatch (Ty Ann) (Ty Ann) Span -- expected argument type, actual argument type
+   -- ^ No constructor matches the application: the name, the inferred argument
+   -- types, the constructor's declared argument types, and the span.
+ | PatternTypeMismatch Identifier (Ty Ann) (Ty Ann) [Identifier] Span
+   -- ^ A pattern's constructor does not belong to the scrutinee's type: the
+   -- constructor, its result type, the scrutinee type, the constructors that
+   -- are available, and the pattern span.
+ | ArgTypeMismatch (Ty Ann) (Ty Ann) Span
+   -- ^ An argument has the wrong type: expected type, actual type, and the
+   -- argument's span.
  | NonExhaustivePattern [Identifier] [Pat Ann] Span
+   -- ^ A match does not cover every constructor: the uncovered constructors,
+   -- the patterns that were given, and the match span.
  | UnimplementedPrimitive Identifier [Arg Ann] Span
+   -- ^ A primitive was declared but has no implementation: the name, its
+   -- declared arguments, and the declaration span.
  | InvalidReturnCase Case Span
+   -- ^ A function's result is annotated with a grammatical case that is not
+   -- allowed in return position: the case and its span.
   deriving (Show, Ord, Eq, Generic)
 
 -- | Binary instance for type checker errors.
@@ -805,10 +872,11 @@ applyTypeCase cas exp =
       CharLit (setAnnCase ann cas) c
     _ -> exp
 
+-- | Cardinality of matching unused signature positions during case alignment.
 data UniqueMatch
-  = NoMatch
-  | OneMatch !Int
-  | ManyMatches
+  = NoMatch -- ^ No signature position matches.
+  | OneMatch !Int -- ^ Exactly one position matches, identified by its index.
+  | ManyMatches -- ^ More than one position matches, so alignment is ambiguous.
 
 -- | Match provided argument cases to expected signature cases for partial application.
 -- Returns expected argument indices matched by each provided argument, in order.
@@ -817,7 +885,10 @@ data UniqueMatch
 -- with an integer bitset of used indices, avoiding tree nodes and intermediate
 -- candidate lists. 'Integer' remains correct for arbitrary arity while using
 -- a single limb for ordinary signatures.
-matchPartialCaseIndices :: [Case] -> [Case] -> Maybe [Int]
+matchPartialCaseIndices :: [Case] -- ^ Cases expected by the signature, in declaration order.
+                        -> [Case] -- ^ Cases of the provided arguments, in source order.
+                        -> Maybe [Int] -- ^ Index of the expected argument each provided
+                        -- argument matches, or 'Nothing' if any match is absent or ambiguous.
 matchPartialCaseIndices expectedCases = go 0
   where
     go :: Integer -> [Case] -> Maybe [Int]
@@ -1029,7 +1100,8 @@ withCtx idents m = do
 -- because morphology can currently resolve some possessive-looking forms
 -- ambiguously as accusative in return-type positions.  Keeping 'Acc' here
 -- avoids widespread false positives while that ambiguity is being resolved.
-isAllowedReturnCase :: Case -> Bool
+isAllowedReturnCase :: Case -- ^ Case annotating a return type.
+                    -> Bool -- ^ 'True' when the case is valid in return position.
 isAllowedReturnCase cas = cas == Nom || cas == P3s || cas == Acc
 
 -- | Type-check a statement and update the checker state.
@@ -1205,7 +1277,8 @@ reorderByCases expected actual xs
     pick cas = lookup cas mapping
 
 -- | Encode a grammatical case as one bit in a compact mask.
-caseBit :: Case -> Word16
+caseBit :: Case -- ^ Case to encode.
+        -> Word16 -- ^ Mask with exactly the bit for this case set.
 caseBit cas =
   case cas of
     Nom -> bit 0
@@ -1219,7 +1292,8 @@ caseBit cas =
     P3s -> bit 8
 
 -- | Build a case mask and report whether every case occurred at most once.
-caseSetMask :: [Case] -> (Word16, Bool)
+caseSetMask :: [Case] -- ^ Cases to summarize.
+            -> (Word16, Bool) -- ^ Mask of the cases present, and 'True' when no case repeats.
 caseSetMask = foldl' step (0, True)
   where
     step (!mask, !unique) cas =
@@ -1339,8 +1413,13 @@ lookupFuncRetMap tyCons env candidates argTys =
 -- | When an arg's inferred type is a TyVar referencing a 0-arg function,
 -- replace it with that function's return type for better overload resolution.
 enhanceWith0ArgRet :: Map.Map Identifier [[Arg Ann]]
+                   -- ^ Known function signatures, used to find nullary functions.
                    -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
-                   -> Exp Ann -> Maybe (Ty Ann) -> Maybe (Ty Ann)
+                   -- ^ Return types keyed by (function name, argument types).
+                   -> Exp Ann -- ^ Argument expression whose type is being refined.
+                   -> Maybe (Ty Ann) -- ^ Type inferred for the argument so far.
+                   -> Maybe (Ty Ann) -- ^ Nullary function's return type when one applies,
+                   -- otherwise the original inferred type.
 enhanceWith0ArgRet sigs retMap arg mTy =
   case nullaryFunctionRetType sigs retMap (expNullaryCandidates arg) of
     Just retTy -> Just retTy
@@ -1349,12 +1428,16 @@ enhanceWith0ArgRet sigs retMap arg mTy =
         Just (TyVar _ ident) -> nullaryFunctionRetTypeForNames sigs retMap [ident]
         _ -> mTy
 
-joinIdent :: Identifier -> Identifier
+-- | Join a qualified identifier into the parser's hyphenated fallback spelling.
+joinIdent :: Identifier -- ^ Possibly qualified identifier.
+          -> Identifier -- ^ Unqualified hyphen-joined spelling, when qualified.
 joinIdent (mods, root)
   | null mods = (mods, root)
   | otherwise = ([], T.intercalate (T.pack "-") (mods ++ [root]))
 
-identNameVariants :: Identifier -> [Identifier]
+-- | Enumerate normalized spellings that can refer to an identifier.
+identNameVariants :: Identifier -- ^ Identifier whose spellings are required.
+                  -> [Identifier] -- ^ Stable, duplicate-free spelling variants.
 identNameVariants ident@(mods, root) =
   nub
     ( [ident, joinIdent ident]
@@ -1376,21 +1459,25 @@ identNameVariants ident@(mods, root) =
       ]
     )
 
-candidateNameVariants :: [(Identifier, Case)] -> [Identifier]
+-- | Expand parser candidates into every identifier spelling used for lookup.
+candidateNameVariants :: [(Identifier, Case)] -- ^ Candidate names and grammatical cases.
+                      -> [Identifier] -- ^ Stable, duplicate-free lookup names.
 candidateNameVariants =
   nub . concatMap (identNameVariants . fst)
 
-nullaryFunctionRetType :: Map.Map Identifier [[Arg Ann]]
-                       -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
-                       -> [(Identifier, Case)]
-                       -> Maybe (Ty Ann)
+-- | Find the return type of a zero-argument function among parser candidates.
+nullaryFunctionRetType :: Map.Map Identifier [[Arg Ann]] -- ^ Function signatures grouped by name.
+                       -> Map.Map (Identifier, [Ty Ann]) (Ty Ann) -- ^ Return types keyed by overload signature.
+                       -> [(Identifier, Case)] -- ^ Candidate names for the expression.
+                       -> Maybe (Ty Ann) -- ^ Return type of the first matching nullary overload.
 nullaryFunctionRetType sigs retMap candidates =
   nullaryFunctionRetTypeForNames sigs retMap (candidateNameVariants candidates)
 
-nullaryFunctionRetTypeForNames :: Map.Map Identifier [[Arg Ann]]
-                               -> Map.Map (Identifier, [Ty Ann]) (Ty Ann)
-                               -> [Identifier]
-                               -> Maybe (Ty Ann)
+-- | Find a zero-argument function return type for an explicit list of names.
+nullaryFunctionRetTypeForNames :: Map.Map Identifier [[Arg Ann]] -- ^ Function signatures grouped by name.
+                               -> Map.Map (Identifier, [Ty Ann]) (Ty Ann) -- ^ Return types keyed by overload signature.
+                               -> [Identifier] -- ^ Function names to try in order.
+                               -> Maybe (Ty Ann) -- ^ Return type of the first matching nullary overload.
 nullaryFunctionRetTypeForNames sigs retMap names =
   listToMaybe
     [ retTy
@@ -1399,7 +1486,9 @@ nullaryFunctionRetTypeForNames sigs retMap names =
     , Just retTy <- [Map.lookup (ident, []) retMap]
     ]
 
-expNullaryCandidates :: Exp Ann -> [(Identifier, Case)]
+-- | Extract candidate names when an expression can denote a nullary function.
+expNullaryCandidates :: Exp Ann -- ^ Expression to inspect.
+                     -> [(Identifier, Case)] -- ^ Variable candidates, or none for other expressions.
 expNullaryCandidates exp' =
   case exp' of
     Var {varCandidates} -> varCandidates
@@ -1595,9 +1684,10 @@ inferType e = inferTypeUncached
             fmap (buildFunctionType argTys) (Map.lookup (name, argTys) retMap)
       in listToMaybe (mapMaybe fromEntry sigEntries)
 
-inferFunctionValueSig :: [(Identifier, Case)]
-                      -> Maybe (Ty Ann)
-                      -> TCM (Maybe (Identifier, [Ty Ann]))
+-- | Resolve an inferred function value to one unique declared overload.
+inferFunctionValueSig :: [(Identifier, Case)] -- ^ Candidate function names.
+                      -> Maybe (Ty Ann) -- ^ Inferred value type, when available.
+                      -> TCM (Maybe (Identifier, [Ty Ann])) -- ^ Unique function name and argument types, if found.
 inferFunctionValueSig _ Nothing = return Nothing
 inferFunctionValueSig candidates (Just inferredTy) = do
   MkTCState{tcTyCons, tcFuncSigs, tcFuncSigRets} <- get
@@ -1785,7 +1875,8 @@ inferPatTypes pat args = do
 --
 -- Pattern matching should compare ADT identity/shape; surface case
 -- inflections on type names are not semantically relevant here.
-stripTyCaseForMatch :: Ty Ann -> Ty Ann
+stripTyCaseForMatch :: Ty Ann -- ^ Type carrying surface case inflections.
+                    -> Ty Ann -- ^ Same type with every annotation set to 'Nom'.
 stripTyCaseForMatch = setTyCases Nom
 
 -- | Extract the element type from a list type.
@@ -1825,19 +1916,26 @@ checkExhaustivePatterns scrutTy clauses ann = do
 -- | Constructor info for exhaustiveness checking.
 data CtorInfo = CtorInfo
   { ctorName :: Identifier
+    -- ^ Canonical constructor name.
   , ctorArgs :: [Ty Ann]
+    -- ^ Constructor argument types.
   }
 
 -- | Match constructor spellings, including Turkish possessive softening.
 {-# INLINE coverageCtorMatches #-}
-coverageCtorMatches :: Identifier -> Identifier -> Bool
+coverageCtorMatches :: Identifier -- ^ Constructor name from a pattern.
+                    -> Identifier -- ^ Constructor name from the type declaration.
+                    -> Bool -- ^ 'True' when the names denote the same constructor,
+                    -- allowing for Turkish possessive consonant softening.
 coverageCtorMatches left@(leftMods, leftRoot) right@(rightMods, rightRoot) =
   identMatches left right
     || ((leftMods == rightMods || null leftMods || null rightMods)
           && not (null (coverageRoots leftRoot `intersect` coverageRoots rightRoot)))
 
 {-# INLINE coverageRoots #-}
-coverageRoots :: T.Text -> [T.Text]
+-- | Generate root spellings used to compare softened Turkish constructors.
+coverageRoots :: T.Text -- ^ Constructor root from source text.
+              -> [T.Text] -- ^ Original root and any valid unsoftened alternative.
 coverageRoots root =
   case dropCoverageVowel root >>= softenCoverageG of
     Just alternative | alternative /= root -> [root, alternative]
@@ -2098,7 +2196,11 @@ tyMatchesRigid tyCons inferred declared =
 -- This is used by 'tyMatchesRigid' so that a declared polymorphic return type
 -- like @a olasılığı@ matches an inferred @x olasılığı@ regardless of the
 -- variable names chosen by the programmer vs. the type-checker.
-canonicalizeTypeVars :: Map.Map Identifier Int -> Ty Ann -> Ty Ann
+canonicalizeTypeVars :: Map.Map Identifier Int -- ^ Type constructor arities, used to tell
+                     -- defined type names apart from type variables.
+                     -> Ty Ann -- ^ Type whose variables are renamed.
+                     -> Ty Ann -- ^ Type with variables renamed to canonical names in order
+                     -- of first occurrence.
 canonicalizeTypeVars tyCons ty =
   let (ty', _, _) = go Map.empty 0 ty
   in ty'
@@ -2209,7 +2311,7 @@ type Subst = Map.Map Identifier (Ty Ann)
 --
 -- * UF operations (find/union/bind) can now index contiguous vectors by `Int`
 --   instead of repeatedly traversing tree maps keyed by 'Identifier'.
--- * Equality short-circuits in 'unifyOne' become cheaper because `ITyVar`
+-- * Equality short-circuits in @unifyOne@ become cheaper because @ITyVar@
 --   compares by machine integers.
 data ITy
   -- | Built-in integer type.
@@ -2232,6 +2334,7 @@ data ITy
   | ITyApp !Ann !ITy ![ITy]
   deriving (Eq)
 
+-- | Unify corresponding expected and actual types into one substitution.
 unifyTypes :: Map.Map Identifier Int -- ^ Type constructor arities.
            -> [Ty Ann] -- ^ Expected types.
            -> [Ty Ann] -- ^ Actual types.
@@ -2810,7 +2913,9 @@ registerForwardDecls stmts = do
         _ -> return ()
 -- | Build a function-name index grouped by function arity.
 buildFuncNamesByArity :: Map.Map Identifier [Int]
+                     -- ^ Arities each function name is defined at.
                      -> HM.HashMap Int (Set.Set Identifier)
+                     -- ^ Function names grouped by arity.
 buildFuncNamesByArity =
   Map.foldlWithKey'
     (\acc ident arities ->

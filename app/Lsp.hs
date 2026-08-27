@@ -112,7 +112,9 @@ data LspState = LspState
 -- | A cancellable document-analysis worker.
 data AnalysisJob = AnalysisJob
   { ajId :: !Int
+    -- ^ Monotonic job identifier, so a stale worker can tell it has been superseded.
   , ajThread :: !ThreadId
+    -- ^ Thread running the analysis, killed when the job is cancelled.
   }
 
 -- | Per-document cached state.
@@ -223,13 +225,19 @@ handlers = mconcat
   , requestHandler SMethod_TextDocumentDocumentHighlight onDocumentHighlight
   ]
 
-onInitialized :: TNotificationMessage 'Method_Initialized -> LspM Config ()
+-- | Handle the client's @initialized@ notification; nothing to do.
+onInitialized :: TNotificationMessage 'Method_Initialized -- ^ Notification from the client.
+              -> LspM Config () -- ^ No effect.
 onInitialized _ = return ()
 
-onSetTrace :: TNotificationMessage 'Method_SetTrace -> LspM Config ()
+-- | Handle a trace-level change; trace output is not implemented.
+onSetTrace :: TNotificationMessage 'Method_SetTrace -- ^ Notification from the client.
+           -> LspM Config () -- ^ No effect.
 onSetTrace _ = return ()
 
-onDidChangeWatchedFiles :: TNotificationMessage 'Method_WorkspaceDidChangeWatchedFiles -> LspM Config ()
+-- | Invalidate the workspace definition index when watched files change.
+onDidChangeWatchedFiles :: TNotificationMessage 'Method_WorkspaceDidChangeWatchedFiles -- ^ Notification from the client.
+                        -> LspM Config () -- ^ Marks the definition index as needing a rebuild.
 onDidChangeWatchedFiles _ =
   withState $ \s -> return (s { lsDefIndexComplete = False }, ())
 
@@ -239,7 +247,8 @@ onCancelRequest _ = return ()
 --
 -- All mutations of 'LspState' should go through this helper to keep MVar
 -- usage consistent.
-withState :: (LspState -> IO (LspState, a)) -> LspM Config a
+withState :: (LspState -> IO (LspState, a)) -- ^ Update producing the new state and a result.
+          -> LspM Config a -- ^ The result, with the state replaced atomically.
 withState f = do
   Config var <- getConfig
   liftIO (modifyMVar var f)
@@ -280,7 +289,8 @@ initState = do
     }
 
 -- | Handlers
-onDidOpen :: TNotificationMessage 'Method_TextDocumentDidOpen -> LspM Config ()
+onDidOpen :: TNotificationMessage 'Method_TextDocumentDidOpen -- ^ Notification carrying the document's initial text.
+          -> LspM Config () -- ^ Records the text and schedules analysis.
 onDidOpen msg = do
   let doc = msg ^. L.params . L.textDocument
       uri = doc ^. L.uri
@@ -290,7 +300,9 @@ onDidOpen msg = do
     return (s { lsLatestText = Map.insert uri text (lsLatestText s) }, ())
   scheduleDocumentAnalysis uri text (Just version) True False
 
-onDidChange :: TNotificationMessage 'Method_TextDocumentDidChange -> LspM Config ()
+-- | Apply incoming edits to the document and re-analyze it.
+onDidChange :: TNotificationMessage 'Method_TextDocumentDidChange -- ^ Notification carrying content changes.
+            -> LspM Config () -- ^ Records the new text and schedules analysis.
 onDidChange msg = do
   st <- readState
   let params = msg ^. L.params
@@ -306,7 +318,9 @@ onDidChange msg = do
     return (s { lsLatestText = Map.insert uri newText (lsLatestText s) }, ())
   scheduleDocumentAnalysis uri newText (Just version) True True
 
-onDidClose :: TNotificationMessage 'Method_TextDocumentDidClose -> LspM Config ()
+-- | Drop all state for a closed document and cancel its analysis worker.
+onDidClose :: TNotificationMessage 'Method_TextDocumentDidClose -- ^ Notification naming the closed document.
+           -> LspM Config () -- ^ Forgets the document and kills any running worker.
 onDidClose msg = do
   let uri = msg ^. L.params . L.textDocument . L.uri
   mWorker <- withState $ \s ->
@@ -320,7 +334,9 @@ onDidClose msg = do
       )
   liftIO (mapM_ killThread mWorker)
 
-onDidSave :: TNotificationMessage 'Method_TextDocumentDidSave -> LspM Config ()
+-- | Persist the analyzed document to the on-disk module cache.
+onDidSave :: TNotificationMessage 'Method_TextDocumentDidSave -- ^ Notification naming the saved document.
+          -> LspM Config () -- ^ Writes the cache entry when analysis has completed.
 onDidSave msg = do
   let uri = msg ^. L.params . L.textDocument . L.uri
   st <- readState
@@ -330,24 +346,34 @@ onDidSave msg = do
       _ <- liftIO (writeCacheForDoc st uri doc)
       return ()
 
-stripTrailingVowel :: Identifier -> Maybe Identifier
+-- | Drop a final Turkish narrow vowel, recovering an infinitive root.
+stripTrailingVowel :: Identifier -- ^ Name as written.
+                   -> Maybe Identifier -- ^ Name without its final vowel, when it has one.
 stripTrailingVowel (mods, word) =
   case T.unsnoc word of
     Just (pref, c) | c `elem` ['i', 'ı', 'u', 'ü'] -> Just (mods, pref)
     _ -> Nothing
 
-infinitiveCandidates :: [Identifier] -> [Identifier]
+-- | Extend candidate names with their vowel-stripped infinitive forms.
+infinitiveCandidates :: [Identifier] -- ^ Candidate readings of a name.
+                     -> [Identifier] -- ^ Those candidates plus their infinitive roots, deduplicated.
 infinitiveCandidates candidates =
   uniquePreserve (candidates ++ mapMaybe stripTrailingVowel candidates)
 
-findInfinitiveDef :: [Identifier] -> [Stmt Ann] -> Maybe Identifier
+-- | Find which of several candidate names is defined as an infinitive.
+findInfinitiveDef :: [Identifier] -- ^ Candidate names.
+                  -> [Stmt Ann] -- ^ Statements to search.
+                  -> Maybe Identifier -- ^ The candidate declared infinitive, if any.
 findInfinitiveDef names stmts =
   listToMaybe [n | Function n _ _ _ True <- stmts, n `elem` names]
     <|> listToMaybe [n | PrimFunc n _ _ True <- stmts, n `elem` names]
 
 -- | Find a function definition by name in statements.
 -- Returns the function name, arguments (if any), return type, and infinitive flag.
-findFunctionStmt :: Identifier -> [Stmt Ann] -> Maybe (Identifier, [Arg Ann], Ty Ann, Bool)
+findFunctionStmt :: Identifier -- ^ Name to find.
+                 -> [Stmt Ann] -- ^ Statements to search.
+                 -> Maybe (Identifier, [Arg Ann], Ty Ann, Bool)
+                 -- ^ Name, arguments, return type, and whether it is an infinitive.
 findFunctionStmt name stmts =
   listToMaybe $
     -- First try Function statements
@@ -359,12 +385,17 @@ findFunctionStmt name stmts =
 
 -- | Find a function definition by name in statements.
 -- Returns the function name, arguments (if any), and return type.
-findFunctionDef :: Identifier -> [Stmt Ann] -> Maybe (Identifier, [Arg Ann], Ty Ann)
+findFunctionDef :: Identifier -- ^ Name to find.
+                -> [Stmt Ann] -- ^ Statements to search.
+                -> Maybe (Identifier, [Arg Ann], Ty Ann) -- ^ Name, arguments, and return type.
 findFunctionDef name stmts =
   (\(n, args, retTy, _) -> (n, args, retTy)) <$> findFunctionStmt name stmts
 
 -- | Inflect the last word of a string with a given case.
-inflectLastWord :: RenderCache -> FSM -> String -> IO String
+inflectLastWord :: RenderCache -- ^ Memoized morphological renderings.
+                -> FSM -- ^ Morphological analyzer.
+                -> String -- ^ Phrase whose final word is inflected.
+                -> IO String -- ^ Phrase with its final word in the possessive case.
 inflectLastWord cache fsm s =
   case words s of
     [] -> return s
@@ -382,7 +413,16 @@ inflectLastWord cache fsm s =
 -- * Chooses nominative or infinitive form for the function name.
 -- * Normalizes return type for infinitive functions (e.g. “bitim”).
 -- * Applies P3s inflection to the final return type word to match REPL output.
-renderHoverSignature :: Identifier -> [Arg Ann] -> Ty Ann -> Bool -> Set.Set Identifier -> RenderCache -> FSM -> [Identifier] -> [(Identifier, [Identifier])] -> IO Text
+renderHoverSignature :: Identifier -- ^ Function name.
+                     -> [Arg Ann] -- ^ Declared arguments.
+                     -> Ty Ann -- ^ Return type.
+                     -> Bool -- ^ Whether the function is an infinitive.
+                     -> Set.Set Identifier -- ^ Known infinitive names, used to normalize the return type.
+                     -> RenderCache -- ^ Memoized morphological renderings.
+                     -> FSM -- ^ Morphological analyzer.
+                     -> [Identifier] -- ^ Type constructors that take parameters.
+                     -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+                     -> IO Text -- ^ Signature text for the hover popup.
 renderHoverSignature fnName args retTy isInfinitive infinitives cache fsm paramTyCons tyMods = do
   -- Use renderFunctionSignatureParts if infinitive, otherwise regular renderFunctionSignature
   if isInfinitive
@@ -429,6 +469,8 @@ renderHoverSignature fnName args retTy isInfinitive infinitives cache fsm paramT
         TyApp {} -> True
         Arr {} -> True
 
+-- | Everything the server could resolve at one cursor position, gathered once
+-- and shared by the hover, definition, and highlight handlers.
 data ResolvedAt = ResolvedAt
   { -- | Expression under the cursor (if any).
     raExp :: Maybe (Exp Ann)
@@ -446,9 +488,12 @@ data ResolvedAt = ResolvedAt
   , raResolvedType :: Maybe (Ty Ann)
   }
 
+-- | The source token under the cursor.
 data TokenAtPosition
   = TokenKeyword Text
+  -- ^ A language keyword, which carries no symbol information.
   | TokenIdent Text
+  -- ^ An identifier that may resolve to a definition.
   deriving (Eq, Show)
 
 -- | Resolve all symbol-related information for a cursor position.
@@ -460,7 +505,9 @@ data TokenAtPosition
 -- * Pattern variables and constructor patterns.
 --
 -- The result is a compact bundle used by hover/definition handlers.
-resolveAtPosition :: Position -> DocState -> ResolvedAt
+resolveAtPosition :: Position -- ^ Cursor position.
+                  -> DocState -- ^ Analyzed state of the document.
+                  -> ResolvedAt -- ^ Everything resolvable at that position.
 resolveAtPosition pos doc =
   let mSpanInfo = spanInfoAtPosition pos (dsSpanIndex doc)
       mResolvedType = siType =<< mSpanInfo
@@ -475,7 +522,9 @@ resolveAtPosition pos doc =
     , raResolvedType = mResolvedType
     }
 
-normalizeTyForRender :: Ty Ann -> Ty Ann
+-- | Clear spans from a type so that equal types share a render-cache key.
+normalizeTyForRender :: Ty Ann -- ^ Type as inferred.
+                     -> Ty Ann -- ^ Same type with spans removed and cases preserved.
 normalizeTyForRender ty =
   let ann = mkAnn (annCase (annTy ty)) NoSpan
   in case ty of
@@ -489,22 +538,25 @@ normalizeTyForRender ty =
     TySkolem _ name -> TySkolem ann name
     TyApp _ ctor args -> TyApp ann (normalizeTyForRender ctor) (map normalizeTyForRender args)
 
--- | Render a type in nominative case with a per-document cache.
---
--- This is a hot path during hover. We normalize annotations to eliminate
--- span noise and cache the rendered text for the lifetime of the document
--- version.
---
--- The cache is a hash table because it is read-heavy and should be O(1)
--- on average; this keeps hover latency low even with many repeated types.
 -- | Render cache key for a type.
 --
 -- We normalize spans and then use the 'Show' instance as a stable key.
-tyCacheKey :: Ty Ann -> Text
+tyCacheKey :: Ty Ann -- ^ Type to key.
+           -> Text -- ^ Stable key ignoring source spans.
 tyCacheKey =
   T.pack . show . normalizeTyForRender
 
-renderTyNomTextCached :: DocState -> RenderCache -> FSM -> [Identifier] -> [(Identifier, [Identifier])] -> Ty Ann -> IO Text
+-- | Render a type in the nominative case, memoized per document version.
+--
+-- This is a hot path during hover, so rendered text is cached for the
+-- lifetime of the document version in a hash table.
+renderTyNomTextCached :: DocState -- ^ Document supplying the render cache.
+                      -> RenderCache -- ^ Memoized morphological renderings.
+                      -> FSM -- ^ Morphological analyzer.
+                      -> [Identifier] -- ^ Type constructors that take parameters.
+                      -> [(Identifier, [Identifier])] -- ^ Module path each type name was declared in.
+                      -> Ty Ann -- ^ Type to render.
+                      -> IO Text -- ^ Rendered type text.
 renderTyNomTextCached doc cache fsm paramTyCons tyMods ty = do
   let key = tyCacheKey ty
   existing <- HT.lookup (dsTyRenderCache doc) key
@@ -515,7 +567,6 @@ renderTyNomTextCached doc cache fsm paramTyCons tyMods ty = do
       HT.insert (dsTyRenderCache doc) key t
       return t
 
-onHover :: TRequestMessage 'Method_TextDocumentHover -> (Either (TResponseError 'Method_TextDocumentHover) (MessageResult 'Method_TextDocumentHover) -> LspM Config ()) -> LspM Config ()
 -- | Handle hover requests.
 --
 -- The hover pipeline is ordered from “most specific” to “most general”:
@@ -529,6 +580,11 @@ onHover :: TRequestMessage 'Method_TextDocumentHover -> (Either (TResponseError 
 --
 -- We first short-circuit on keywords/whitespace and then use the per-document
 -- indices to avoid expensive AST walks.
+onHover :: TRequestMessage 'Method_TextDocumentHover
+           -- ^ Request from the client, carrying the document and position.
+        -> (Either (TResponseError 'Method_TextDocumentHover) (MessageResult 'Method_TextDocumentHover) -> LspM Config ())
+           -- ^ Continuation used to send back the hover popup contents, or null.
+        -> LspM Config () -- ^ Responds through the continuation.
 onHover req respond = do
   st <- readState
   let params = req ^. L.params
@@ -884,7 +940,6 @@ onHover req respond = do
         Seq _ first _ -> first
         _ -> exp'
     
-onDefinition :: TRequestMessage 'Method_TextDocumentDefinition -> (Either (TResponseError 'Method_TextDocumentDefinition) (MessageResult 'Method_TextDocumentDefinition) -> LspM Config ()) -> LspM Config ()
 -- | Handle go-to-definition requests.
 --
 -- Resolution order:
@@ -897,6 +952,11 @@ onDefinition :: TRequestMessage 'Method_TextDocumentDefinition -> (Either (TResp
 --
 -- This ordering ensures local bindings shadow global definitions while
 -- still allowing cross-file navigation.
+onDefinition :: TRequestMessage 'Method_TextDocumentDefinition
+                -- ^ Request from the client, carrying the document and position.
+             -> (Either (TResponseError 'Method_TextDocumentDefinition) (MessageResult 'Method_TextDocumentDefinition) -> LspM Config ())
+                -- ^ Continuation used to send back the definition location(s).
+             -> LspM Config () -- ^ Responds through the continuation.
 onDefinition req respond = do
   st <- readState
   let params = req ^. L.params
@@ -973,7 +1033,6 @@ onDefinition req respond = do
                     Just loc -> respondLocation loc
                     Nothing -> resolveKeys resolvedKeys respondEmptyOrTypeFallback
 
-onTypeDefinition :: TRequestMessage 'Method_TextDocumentTypeDefinition -> (Either (TResponseError 'Method_TextDocumentTypeDefinition) (MessageResult 'Method_TextDocumentTypeDefinition) -> LspM Config ()) -> LspM Config ()
 -- | Handle go-to-type-definition requests.
 --
 -- Type resolution strategy:
@@ -982,6 +1041,11 @@ onTypeDefinition :: TRequestMessage 'Method_TextDocumentTypeDefinition -> (Eithe
 -- 2. For constructor uses, use the constructor return type from TC state.
 -- 3. Fall back to token heuristics for numerics and sayı-like identifiers.
 -- 4. Resolve type constructor identifiers to locations.
+onTypeDefinition :: TRequestMessage 'Method_TextDocumentTypeDefinition
+                    -- ^ Request from the client, carrying the document and position.
+                 -> (Either (TResponseError 'Method_TextDocumentTypeDefinition) (MessageResult 'Method_TextDocumentTypeDefinition) -> LspM Config ())
+                    -- ^ Continuation used to send back the location(s) of the type's declaration.
+                 -> LspM Config () -- ^ Responds through the continuation.
 onTypeDefinition req respond = do
   st <- readState
   let params = req ^. L.params
@@ -1022,7 +1086,13 @@ onTypeDefinition req respond = do
                     then respond (Right (InL (Definition (InR (typeDefinitionLocationsByKeys st doc uri (dedupeIdents sayıLikeKeys))))))
                     else respond (Right (InL (Definition (InR []))))
             _ -> respond (Right (InL (Definition (InR []))))
-typeDefinitionLocationsByKeys :: LspState -> DocState -> Uri -> [Identifier] -> [Location]
+-- | Locate the declaration of a type, trying the document, the prelude, and
+-- finally the workspace definition index.
+typeDefinitionLocationsByKeys :: LspState -- ^ Shared server state.
+                              -> DocState -- ^ Analyzed state of the current document.
+                              -> Uri -- ^ URI of the current document.
+                              -> [Identifier] -- ^ Candidate type names, tried in order.
+                              -> [Location] -- ^ At most one location for the first name that resolves.
 typeDefinitionLocationsByKeys st doc uri keys =
   case listToMaybe (mapMaybe (\k -> defLocationFromTC k (dsTC doc) <|> defLocationFromTC k (lsBaseTC st)) keys) of
     Just loc -> [loc]
@@ -1039,7 +1109,12 @@ typeDefinitionLocationsByKeys st doc uri keys =
 -- This is used by "go to definition" when normal symbol lookup fails,
 -- so type-ascription tokens (e.g. @tam-sayı@ in @tam-sayı olarak 5@)
 -- can jump to the type definition just like "go to type definition".
-definitionTypeFallbackLocation :: LspState -> DocState -> Uri -> Maybe TokenAtPosition -> ResolvedAt -> Maybe Location
+definitionTypeFallbackLocation :: LspState -- ^ Shared server state.
+                               -> DocState -- ^ Analyzed state of the current document.
+                               -> Uri -- ^ URI of the current document.
+                               -> Maybe TokenAtPosition -- ^ Token under the cursor, when there is one.
+                               -> ResolvedAt -- ^ Information resolved at the cursor.
+                               -> Maybe Location -- ^ Location of the type's declaration, when one is found.
 definitionTypeFallbackLocation st doc uri token resolved =
   let mTyFromCtor =
         case raCtor resolved of
@@ -1077,7 +1152,8 @@ definitionTypeFallbackLocation st doc uri token resolved =
 -- Examples:
 --   @tam-sayı@ -> @([\"tam\"], \"sayı\")@
 --   @dizge@    -> @([], \"dizge\")@
-identifierFromTypeToken :: Text -> Maybe Identifier
+identifierFromTypeToken :: Text -- ^ Hyphenated type token from the source.
+                        -> Maybe Identifier -- ^ Its qualified identifier, or 'Nothing' if empty.
 identifierFromTypeToken raw =
   let stripped = T.takeWhile (\c -> c /= '\'' && c /= '’') raw
       parts = filter (not . T.null) (T.splitOn (T.pack "-") stripped)
@@ -1089,7 +1165,6 @@ identifierFromTypeToken raw =
           (name:modsRev) -> Just (reverse modsRev, name)
           [] -> Nothing
 
-onCompletion :: TRequestMessage 'Method_TextDocumentCompletion -> (Either (TResponseError 'Method_TextDocumentCompletion) (MessageResult 'Method_TextDocumentCompletion) -> LspM Config ()) -> LspM Config ()
 -- | Handle completion requests.
 --
 -- We currently return a simple, static set consisting of:
@@ -1099,6 +1174,11 @@ onCompletion :: TRequestMessage 'Method_TextDocumentCompletion -> (Either (TResp
 -- * Function names from the typechecker.
 --
 -- This is fast and conservative, trading smart ranking for responsiveness.
+onCompletion :: TRequestMessage 'Method_TextDocumentCompletion
+                -- ^ Request from the client, carrying the document and position.
+             -> (Either (TResponseError 'Method_TextDocumentCompletion) (MessageResult 'Method_TextDocumentCompletion) -> LspM Config ())
+                -- ^ Continuation used to send back the completion items.
+             -> LspM Config () -- ^ Responds through the continuation.
 onCompletion req respond = do
   st <- readState
   let uri = req ^. L.params . L.textDocument . L.uri
@@ -1113,11 +1193,15 @@ onCompletion req respond = do
           items = map completionItem candidates
       respond (Right (InL items))
 
-onFormatting :: TRequestMessage 'Method_TextDocumentFormatting -> (Either (TResponseError 'Method_TextDocumentFormatting) (MessageResult 'Method_TextDocumentFormatting) -> LspM Config ()) -> LspM Config ()
 -- | Handle formatting requests.
 --
 -- The formatter is intentionally minimal: it trims trailing whitespace and
 -- enforces a trailing newline. This keeps it safe for all code paths.
+onFormatting :: TRequestMessage 'Method_TextDocumentFormatting
+                -- ^ Request from the client, carrying the document and position.
+             -> (Either (TResponseError 'Method_TextDocumentFormatting) (MessageResult 'Method_TextDocumentFormatting) -> LspM Config ())
+                -- ^ Continuation used to send back the text edits that format the document.
+             -> LspM Config () -- ^ Responds through the continuation.
 onFormatting req respond = do
   st <- readState
   let uri = req ^. L.params . L.textDocument . L.uri
@@ -1132,12 +1216,16 @@ onFormatting req respond = do
               range = Range (Position 0 0) endPos
           respond (Right (InL [TextEdit range formatted]))
 
-onDocumentHighlight :: TRequestMessage 'Method_TextDocumentDocumentHighlight -> (Either (TResponseError 'Method_TextDocumentDocumentHighlight) (MessageResult 'Method_TextDocumentDocumentHighlight) -> LspM Config ()) -> LspM Config ()
 -- | Handle document highlight requests.
 --
 -- Highlights are computed by collecting all morphologically related names
 -- and then walking the AST to find uses and definitions. We short-circuit
 -- on keywords/whitespace and use indexed lookups for the initial symbol.
+onDocumentHighlight :: TRequestMessage 'Method_TextDocumentDocumentHighlight
+                       -- ^ Request from the client, carrying the document and position.
+                    -> (Either (TResponseError 'Method_TextDocumentDocumentHighlight) (MessageResult 'Method_TextDocumentDocumentHighlight) -> LspM Config ())
+                       -- ^ Continuation used to send back ranges to highlight for the symbol under the cursor.
+                    -> LspM Config () -- ^ Responds through the continuation.
 onDocumentHighlight req respond = do
   st <- readState
   let params = req ^. L.params
@@ -1167,7 +1255,12 @@ analysisDebounceMicros :: Int
 analysisDebounceMicros = 50000
 
 -- | Start a versioned document-analysis worker and cancel its predecessor.
-scheduleDocumentAnalysis :: Uri -> Text -> Maybe Int32 -> Bool -> Bool -> LspM Config ()
+scheduleDocumentAnalysis :: Uri -- ^ Document to analyze.
+                         -> Text -- ^ Its current text.
+                         -> Maybe Int32 -- ^ Document version reported by the client.
+                         -> Bool -- ^ Whether to publish diagnostics when analysis finishes.
+                         -> Bool -- ^ Whether to debounce, collapsing bursts of edits into one run.
+                         -> LspM Config () -- ^ Starts a worker and cancels any predecessor.
 scheduleDocumentAnalysis uri text version publish debounce = do
   env <- getLspEnv
   Config var <- getConfig
@@ -1189,7 +1282,10 @@ scheduleDocumentAnalysis uri text version publish debounce = do
   liftIO (mapM_ killThread oldWorker)
 
 -- | Remove a completed worker without deleting a newer replacement.
-clearAnalysisJob :: MVar LspState -> Uri -> Int -> IO ()
+clearAnalysisJob :: MVar LspState -- ^ Shared server state.
+                 -> Uri -- ^ Document whose job finished.
+                 -> Int -- ^ Identifier of the finished job.
+                 -> IO () -- ^ Removes the job, leaving a newer replacement untouched.
 clearAnalysisJob var uri jobId =
   modifyMVar var $ \st ->
     let jobs = lsAnalysisJobs st
@@ -1203,7 +1299,12 @@ clearAnalysisJob var uri jobId =
 -- This is the entry point for document change handling. It replaces the
 -- cached 'DocState' with the newly analyzed one and merges definition
 -- spans into the workspace index.
-processDocument :: Int -> Uri -> Text -> Maybe Int32 -> Bool -> LspM Config ()
+processDocument :: Int -- ^ Identifier of the job doing this work.
+                -> Uri -- ^ Document to analyze.
+                -> Text -- ^ Its text at the time the job was scheduled.
+                -> Maybe Int32 -- ^ Document version reported by the client.
+                -> Bool -- ^ Whether to publish diagnostics.
+                -> LspM Config () -- ^ Stores the analyzed document unless the job has been superseded.
 processDocument jobId uri text version publish = do
   st <- readState
   let current = maybe False ((== jobId) . ajId) (Map.lookup uri (lsAnalysisJobs st))
@@ -1241,7 +1342,10 @@ processDocument jobId uri text version publish = do
 -- 4. Build all resolution maps and indices for fast LSP queries.
 --
 -- Returns diagnostics so the caller can publish them.
-analyzeDocument :: LspState -> Uri -> Text -> IO (DocState, [Diagnostic])
+analyzeDocument :: LspState -- ^ Shared server state supplying prelude and caches.
+                -> Uri -- ^ Document being analyzed.
+                -> Text -- ^ Its current text.
+                -> IO (DocState, [Diagnostic]) -- ^ Analyzed document state and diagnostics to publish.
 analyzeDocument st uri text = do
   mCached <- loadCachedDoc st uri text
   case mCached of
@@ -1305,17 +1409,16 @@ analyzeDocument st uri text = do
               return (doc, diags)
 
 -- | Construct all text and lookup caches for one analyzed document.
-newDocState ::
-  Text ->
-  ParserState ->
-  TCState ->
-  [Stmt Ann] ->
-  Map.Map Identifier Range ->
-  Map.Map Span Identifier ->
-  Map.Map Span (Identifier, [Ty Ann]) ->
-  Map.Map Span (Ty Ann) ->
-  [BinderInfo] ->
-  IO DocState
+newDocState :: Text -- ^ Document text.
+            -> ParserState -- ^ Parser state after parsing the document.
+            -> TCState -- ^ Typechecker state after checking the document.
+            -> [Stmt Ann] -- ^ Type-checked statements.
+            -> Map.Map Identifier Range -- ^ Declaration range of each name defined here.
+            -> Map.Map Span Identifier -- ^ Name resolved at each span.
+            -> Map.Map Span (Identifier, [Ty Ann]) -- ^ Call signature resolved at each span.
+            -> Map.Map Span (Ty Ann) -- ^ Type inferred at each span.
+            -> [BinderInfo] -- ^ Binders declared in the document, with their scopes.
+            -> IO DocState -- ^ Document state with every index and cache built.
 newDocState text parserState tcState stmts defSpans resolved resolvedSigs resolvedTypes binderSpans = do
   let !docLines = V.fromList (T.lines text)
       !spanIndex = buildSpanIndex resolved resolvedSigs resolvedTypes binderSpans
@@ -1348,7 +1451,11 @@ newDocState text parserState tcState stmts defSpans resolved resolvedSigs resolv
 -- current in-memory text hash.
 --
 -- This enables instant LSP responses when the file is unchanged.
-loadCachedDoc :: LspState -> Uri -> Text -> IO (Maybe (ParserState, TCState, [Stmt Ann]))
+loadCachedDoc :: LspState -- ^ Shared server state supplying the base parser and typechecker.
+              -> Uri -- ^ Document to load.
+              -> Text -- ^ Its current text, whose hash must match the cache.
+              -> IO (Maybe (ParserState, TCState, [Stmt Ann]))
+              -- ^ Restored states and statements when a usable cache entry exists.
 loadCachedDoc st uri text =
   case uriToFilePath uri of
     Nothing -> return Nothing
@@ -1384,7 +1491,10 @@ loadCachedDoc st uri text =
 -- We clear the infinitive table between statements so effect restrictions
 -- never abort the LSP pass. This yields a best-effort typed state for editor
 -- features even in ill-formed code.
-typecheckStmts :: LspState -> TCState -> [Stmt Ann] -> IO (TCState, [Diagnostic])
+typecheckStmts :: LspState -- ^ Shared server state, used to render diagnostics.
+               -> TCState -- ^ Typechecker state with forward declarations registered.
+               -> [Stmt Ann] -- ^ Statements to check, in order.
+               -> IO (TCState, [Diagnostic]) -- ^ Resulting state, and the first error as a diagnostic.
 typecheckStmts st tcSt stmts = do
   -- NOTE: The LSP server should stay useful even when a file violates
   -- effect restrictions (e.g. calling an infinitive function from a pure
@@ -1420,7 +1530,10 @@ typecheckStmts st tcSt stmts = do
 -- | Write cache for a document.
 --
 -- Persists parser, typed AST, and metadata to speed up future LSP starts.
-writeCacheForDoc :: LspState -> Uri -> DocState -> IO ()
+writeCacheForDoc :: LspState -- ^ Shared server state supplying the base states to diff against.
+                 -> Uri -- ^ Document being persisted.
+                 -> DocState -- ^ Its analyzed state.
+                 -> IO () -- ^ Writes the module cache, or does nothing for a non-file URI.
 writeCacheForDoc st uri doc = do
   case uriToFilePath uri of
     Nothing -> return ()
@@ -1443,7 +1556,9 @@ writeCacheForDoc st uri doc = do
 -- | Diagnostics helpers.
 --
 -- These map parser/typechecker errors into LSP diagnostics with stable ranges.
-parseErrorToDiagnostic :: Text -> ParseErrorBundle Text ParserError -> Diagnostic
+parseErrorToDiagnostic :: Text -- ^ Document source, used to locate the error offset.
+                       -> ParseErrorBundle Text ParserError -- ^ Errors reported by the parser.
+                       -> Diagnostic -- ^ Diagnostic for the first error.
 parseErrorToDiagnostic source bundle =
   let (ParseErrorBundle errs _posState) = bundle
       err = case errs of
@@ -1463,7 +1578,9 @@ parseErrorToDiagnostic source bundle =
   in Diagnostic range (Just DiagnosticSeverity_Error) Nothing Nothing (Just "kip") msg Nothing Nothing Nothing
 
 -- | Render a typechecker error into a diagnostic using the LSP render context.
-tcErrorToDiagnostic :: LspState -> TCError -> IO Diagnostic
+tcErrorToDiagnostic :: LspState -- ^ Shared server state supplying the render context.
+                    -> TCError -- ^ Type checking failure.
+                    -> IO Diagnostic -- ^ Diagnostic at the error's span.
 tcErrorToDiagnostic st tcErr = do
   let ctx = RenderCtx LangEn (lsCache st) (lsFsm st)
   msg <- runReaderT (renderTCError [] [] tcErr) ctx
@@ -1475,21 +1592,25 @@ tcErrorToDiagnostic st tcErr = do
 -- | Range helpers.
 --
 -- These convert between Megaparsec positions and LSP positions/ranges.
-posToLsp :: SourcePos -> Position
+-- | Convert a one-based Megaparsec position to a zero-based LSP position.
+posToLsp :: SourcePos -- ^ One-based parser position.
+         -> Position -- ^ Zero-based LSP position.
 posToLsp (SourcePos _ line col) =
   let l = max 0 (unPos line - 1)
       c = max 0 (unPos col - 1)
   in Position (fromIntegral l) (fromIntegral c)
 
 -- | Convert a Kip 'Span' to an LSP 'Range'.
-spanToRange :: Span -> Range
+spanToRange :: Span -- ^ Kip source span.
+            -> Range -- ^ Equivalent LSP range; 'NoSpan' maps to the start of the document.
 spanToRange NoSpan = Range (Position 0 0) (Position 0 0)
 spanToRange (Span s e _) = Range (posToLsp s) (posToLsp e)
 
 -- | Collect all expression spans from a document's statements.
 -- We use this to filter resolved-name/signature maps because 'Span'
 -- does not encode file paths, and collisions across modules are common.
-docSpanSet :: [Stmt Ann] -> Set.Set Span
+docSpanSet :: [Stmt Ann] -- ^ Statements of one document.
+           -> Set.Set Span -- ^ Every span occurring in them.
 docSpanSet = foldl' Set.union Set.empty . map stmtSpans
   where
     stmtSpans stt =
@@ -1530,29 +1651,45 @@ docSpanSet = foldl' Set.union Set.empty . map stmtSpans
 -- | Keep only resolved entries that belong to the current document.
 --
 -- This avoids span collisions between the current file and cached modules.
-filterResolved :: Set.Set Span -> [(Span, a)] -> [(Span, a)]
+filterResolved :: Set.Set Span -- ^ Spans occurring in the current document.
+               -> [(Span, a)] -- ^ Resolved entries, possibly including other modules.
+               -> [(Span, a)] -- ^ Only the entries belonging to this document.
 filterResolved allowed = filter (\(sp, _) -> Set.member sp allowed)
 
 -- | Find expression at a position.
-findExpAt :: Position -> DocState -> Maybe (Exp Ann)
+findExpAt :: Position -- ^ Cursor position.
+          -> DocState -- ^ Analyzed document state.
+          -> Maybe (Exp Ann) -- ^ Innermost expression containing the position.
 findExpAt pos doc =
   lookupByPosition pos (dsExpIndex doc)
 
-findVarAt :: Position -> DocState -> Maybe (Identifier, [(Identifier, Case)])
+-- | Find the variable occurrence at a position.
+findVarAt :: Position -- ^ Cursor position.
+          -> DocState -- ^ Analyzed document state.
+          -> Maybe (Identifier, [(Identifier, Case)])
+          -- ^ The name as written and its candidate readings.
 findVarAt pos doc =
   lookupByPosition pos (dsVarIndex doc)
 
 -- | Find the enclosing match clause (scrutinee + pattern) for a position.
-findMatchClauseAt :: Position -> DocState -> Maybe (Exp Ann, Pat Ann)
+findMatchClauseAt :: Position -- ^ Cursor position.
+                  -> DocState -- ^ Analyzed document state.
+                  -> Maybe (Exp Ann, Pat Ann) -- ^ Scrutinee and pattern of the enclosing clause.
 findMatchClauseAt pos doc =
   lookupByPosition pos (dsMatchClauseIndex doc)
 
 -- | Find a pattern variable at a given position.
-findPatVarAt :: Position -> DocState -> Maybe Identifier
+findPatVarAt :: Position -- ^ Cursor position.
+             -> DocState -- ^ Analyzed document state.
+             -> Maybe Identifier -- ^ Pattern-bound variable at that position.
 findPatVarAt pos doc =
   lookupByPosition pos (dsPatVarIndex doc)
 
-patternBoundTypeAtIdent :: Position -> DocState -> IO (Maybe (Ty Ann))
+-- | Infer the type of the pattern-bound variable under the cursor, using the
+-- enclosing match clause or function clause to supply the pattern's type.
+patternBoundTypeAtIdent :: Position -- ^ Cursor position.
+                        -> DocState -- ^ Analyzed document state.
+                        -> IO (Maybe (Ty Ann)) -- ^ Type of the bound variable, when it can be inferred.
 patternBoundTypeAtIdent pos doc =
   case findPatVarAt pos doc of
     Nothing -> return Nothing
@@ -1583,7 +1720,10 @@ patternBoundTypeAtIdent pos doc =
 --
 -- This checks that the cursor is actually inside the clause pattern, which
 -- prevents accidentally returning a clause from another part of the file.
-findFunctionClauseAt :: Position -> DocState -> Maybe ([Arg Ann], Pat Ann)
+findFunctionClauseAt :: Position -- ^ Cursor position.
+                     -> DocState -- ^ Analyzed document state.
+                     -> Maybe ([Arg Ann], Pat Ann) -- ^ Arguments and pattern of the clause,
+                     -- only when the cursor is inside the pattern itself.
 findFunctionClauseAt pos doc =
   case lookupByPosition pos (dsFuncClauseIndex doc) of
     Just (args, pat)
@@ -1595,14 +1735,18 @@ findFunctionClauseAt pos doc =
 --
 -- This is a faster variant used when the caller already knows the cursor is
 -- inside a clause body and only needs the arguments in scope.
-findFunctionClauseAtScope :: Position -> DocState -> Maybe ([Arg Ann], Pat Ann)
+findFunctionClauseAtScope :: Position -- ^ Cursor position.
+                          -> DocState -- ^ Analyzed document state.
+                          -> Maybe ([Arg Ann], Pat Ann) -- ^ Arguments and pattern of the enclosing clause.
 findFunctionClauseAtScope pos doc =
   lookupByPosition pos (dsFuncClauseIndex doc)
 
 -- | Find function arguments for a line that contains a clause pattern.
 --
 -- Used for the special “bu” keyword hover/definition in clause heads.
-findFunctionArgsAtLine :: Position -> [Stmt Ann] -> Maybe [Arg Ann]
+findFunctionArgsAtLine :: Position -- ^ Cursor position, matched by line only.
+                       -> [Stmt Ann] -- ^ Statements to search.
+                       -> Maybe [Arg Ann] -- ^ Arguments of the function whose clause is on that line.
 findFunctionArgsAtLine pos stmts =
   listToMaybe
     [ args
@@ -1614,7 +1758,9 @@ findFunctionArgsAtLine pos stmts =
 --
 -- This is line-based to allow looking up clause arguments without requiring
 -- exact cursor placement on the pattern itself.
-patLineContains :: Position -> Clause Ann -> Bool
+patLineContains :: Position -- ^ Cursor position, matched by line only.
+                -> Clause Ann -- ^ Clause whose pattern is tested.
+                -> Bool -- ^ 'True' when the pattern covers that line.
 patLineContains pos (Clause pat _) =
   case patRootSpan pat of
     Span start end _ ->
@@ -1632,7 +1778,10 @@ patLineContains pos (Clause pat _) =
 -- * Resolved signature of a function call.
 -- * Resolved type on the scrutinee span.
 -- * In-scope function argument types.
-scrutineeTypeForExp :: Position -> Exp Ann -> DocState -> IO (Maybe (Ty Ann))
+scrutineeTypeForExp :: Position -- ^ Cursor position, used when the scrutinee has no span.
+                    -> Exp Ann -- ^ Scrutinee expression.
+                    -> DocState -- ^ Analyzed document state.
+                    -> IO (Maybe (Ty Ann)) -- ^ Type of the scrutinee, when it can be determined.
 scrutineeTypeForExp pos scrutExp doc = do
   let tcSt = dsTC doc
       scrutSpan = annSpan (annExp scrutExp)
@@ -1676,7 +1825,10 @@ scrutineeTypeForExp pos scrutExp doc = do
 --
 -- This uses the enclosing match clause and runs pattern inference against
 -- the scrutinee type, falling back to nothing if any step fails.
-patternBoundTypeAt :: Position -> Exp Ann -> DocState -> IO (Maybe (Ty Ann))
+patternBoundTypeAt :: Position -- ^ Cursor position.
+                   -> Exp Ann -- ^ Scrutinee of the enclosing match clause.
+                   -> DocState -- ^ Analyzed document state.
+                   -> IO (Maybe (Ty Ann)) -- ^ Type of the bound variable, when it can be inferred.
 patternBoundTypeAt pos varExp doc =
   case varExp of
     Var {varName = name, varCandidates = candidates} ->
@@ -1702,7 +1854,10 @@ patternBoundTypeAt pos varExp doc =
 --
 -- This is a fast scope-only lookup used to avoid full inference when
 -- the variable is a function argument.
-argTypeForVarAt :: Position -> Identifier -> DocState -> Maybe (Ty Ann)
+argTypeForVarAt :: Position -- ^ Cursor position, used to find the enclosing clause.
+                -> Identifier -- ^ Variable name to look up.
+                -> DocState -- ^ Analyzed document state.
+                -> Maybe (Ty Ann) -- ^ Declared type when the variable is a function argument.
 argTypeForVarAt pos ident doc =
   case findFunctionClauseAtScope pos doc of
     Just (args, _) ->
@@ -1716,7 +1871,9 @@ argTypeForVarAt pos ident doc =
 -- | Find function arguments in scope at a position.
 --
 -- Used to seed type inference for variables when the resolved type is absent.
-findFunctionArgsAt :: Position -> DocState -> Maybe [Arg Ann]
+findFunctionArgsAt :: Position -- ^ Cursor position.
+                   -> DocState -- ^ Analyzed document state.
+                   -> Maybe [Arg Ann] -- ^ Arguments of the enclosing function, when inside one.
 findFunctionArgsAt pos doc =
   fmap fst (findFunctionClauseAtScope pos doc)
 
@@ -1725,7 +1882,9 @@ findFunctionArgsAt pos doc =
 -- Some binder sites can overlap with enclosing expression spans whose type is
 -- not the bound value type. This fallback uses resolved identifier+type data
 -- from in-scope variable uses to recover the binder's actual type.
-binderTypeFromUses :: Position -> DocState -> Maybe (Ty Ann)
+binderTypeFromUses :: Position -- ^ Position of the binder site.
+                   -> DocState -- ^ Analyzed document state.
+                   -> Maybe (Ty Ann) -- ^ Type recovered from a resolved use within the binder's scope.
 binderTypeFromUses pos doc = do
   binder <- listToMaybe . sortOn (rangeSizeForSort . biRange) $
     [ bi | bi <- dsBinderSpans doc, positionInRange pos (biRange bi) ]
@@ -1747,7 +1906,10 @@ binderTypeFromUses pos doc = do
 --
 -- This matches only the binder name site (e.g. \"x\" in \"x için ...\")
 -- and returns the expression being bound so hover can show the binder type.
-findBindExpAt :: Position -> Maybe Text -> DocState -> Maybe (Exp Ann)
+findBindExpAt :: Position -- ^ Cursor position.
+              -> Maybe Text -- ^ Token under the cursor, which must be the binder name.
+              -> DocState -- ^ Analyzed document state.
+              -> Maybe (Exp Ann) -- ^ Expression being bound at that binder site.
 findBindExpAt pos mWord doc =
   fmap thd3 . listToMaybe . sortOn candidateSortKey . concatMap collectStmt $ dsStmts doc
   where
@@ -1799,7 +1961,9 @@ findBindExpAt pos mWord doc =
           _ -> nested
 
 -- | Check whether a cursor is inside a pattern, including nested patterns.
-posInPat :: Position -> Pat Ann -> Bool
+posInPat :: Position -- ^ Cursor position.
+         -> Pat Ann -- ^ Pattern to test.
+         -> Bool -- ^ 'True' when the position lies within it or any subpattern.
 posInPat p pat =
   case pat of
     PWildcard ann -> posInSpan p (annSpan ann)
@@ -1815,7 +1979,9 @@ posInPat p pat =
 --
 -- When the cursor is on \"bu\" in a clause head, we show the argument type
 -- rather than a keyword hover.
-hoverFunctionArgKeyword :: Position -> DocState -> LspM Config (Maybe Text)
+hoverFunctionArgKeyword :: Position -- ^ Cursor position, expected to be on the keyword.
+                        -> DocState -- ^ Analyzed document state.
+                        -> LspM Config (Maybe Text) -- ^ Hover text describing the argument it refers to.
 hoverFunctionArgKeyword pos doc = do
   token <- liftIO (tokenAtPositionIO doc pos)
   case token of
@@ -1844,7 +2010,10 @@ hoverFunctionArgKeyword pos doc = do
 -- | Go-to-definition handler for the special clause-argument keyword \"bu\".
 --
 -- Returns the argument binder location if \"bu\" refers to a clause argument.
-definitionForArgKeyword :: Uri -> Position -> DocState -> Maybe Location
+definitionForArgKeyword :: Uri -- ^ URI of the current document.
+                        -> Position -- ^ Cursor position, expected to be on the keyword.
+                        -> DocState -- ^ Analyzed document state.
+                        -> Maybe Location -- ^ Location of the argument binder it refers to.
 definitionForArgKeyword uri pos doc =
   case tokenAtPosition doc pos of
     Just (TokenIdent "bu") ->
@@ -1870,7 +2039,9 @@ keywords = ["ya", "var", "için", "olarak", "dersek"]
 -- | Classify the token at a cursor position.
 --
 -- Returns 'Nothing' for whitespace or out-of-range positions.
-tokenAtPosition :: DocState -> Position -> Maybe TokenAtPosition
+tokenAtPosition :: DocState -- ^ Analyzed document state.
+                -> Position -- ^ Cursor position.
+                -> Maybe TokenAtPosition -- ^ The token there, or 'Nothing' for whitespace.
 tokenAtPosition doc (Position line char) = do
   word <- wordAtPosition doc (fromIntegral line) (fromIntegral char)
   if word `elem` keywords
@@ -1881,7 +2052,9 @@ tokenAtPosition doc (Position line char) = do
 --
 -- This avoids repeated text slicing when hover/definition/highlight are
 -- called frequently on the same cursor position.
-tokenAtPositionIO :: DocState -> Position -> IO (Maybe TokenAtPosition)
+tokenAtPositionIO :: DocState -- ^ Analyzed document state supplying the token cache.
+                  -> Position -- ^ Cursor position.
+                  -> IO (Maybe TokenAtPosition) -- ^ The token there, memoized per position.
 tokenAtPositionIO doc pos = do
   let key = (pos ^. L.line, pos ^. L.character)
   existing <- HT.lookup (dsTokenCache doc) key
@@ -1895,7 +2068,9 @@ tokenAtPositionIO doc pos = do
 -- | Evaluate actions in order and return the first 'Just' result.
 --
 -- This supports the hover pipeline where earlier steps are more specific.
-firstJustM :: Monad m => [m (Maybe a)] -> m (Maybe a)
+firstJustM :: Monad m
+           => [m (Maybe a)] -- ^ Actions to try, most specific first.
+           -> m (Maybe a) -- ^ Result of the first action that succeeds.
 firstJustM [] = return Nothing
 firstJustM (action:rest) = do
   res <- action
@@ -1907,7 +2082,10 @@ firstJustM (action:rest) = do
 --
 -- The word definition includes letters, digits, hyphen and apostrophes to
 -- accommodate Kip’s identifiers and possessive forms.
-wordAtPosition :: DocState -> Int -> Int -> Maybe Text
+wordAtPosition :: DocState -- ^ Analyzed document state.
+               -> Int -- ^ Zero-based line number.
+               -> Int -- ^ Zero-based column number.
+               -> Maybe Text -- ^ Word spanning that column, when the position is on one.
 wordAtPosition doc lineIdx colIdx = do
   line <- safeIndexVec (dsLines doc) lineIdx
   if colIdx < 0 || colIdx > T.length line
@@ -1921,7 +2099,10 @@ wordAtPosition doc lineIdx colIdx = do
   where
     isWordChar c = isAlphaNum c || c == '-' || c == '\'' || c == '’'
 
-safeIndexVec :: V.Vector a -> Int -> Maybe a
+-- | Index a vector, returning 'Nothing' when out of bounds.
+safeIndexVec :: V.Vector a -- ^ Vector to index.
+             -> Int -- ^ Zero-based index.
+             -> Maybe a -- ^ Element at that index, when it exists.
 safeIndexVec vec i
   | i < 0 || i >= V.length vec = Nothing
   | otherwise = Just (vec V.! i)
@@ -1930,14 +2111,21 @@ safeIndexVec vec i
 --
 -- Uses the precomputed constructor index and returns the constructor name,
 -- its annotation, nested patterns, and (if known) the scrutinee expression.
-findCtorInPattern :: Position -> DocState -> Maybe (Identifier, Ann, [Pat Ann], Maybe (Exp Ann))
+findCtorInPattern :: Position -- ^ Cursor position.
+                  -> DocState -- ^ Analyzed document state.
+                  -> Maybe (Identifier, Ann, [Pat Ann], Maybe (Exp Ann))
+                  -- ^ Constructor name, its annotation, its argument patterns,
+                  -- and the scrutinee it matches when known.
 findCtorInPattern pos doc =
   lookupByPosition pos (dsCtorIndex doc)
 
 -- | Find if the cursor is on a definition by range lookup.
 --
 -- This is used for go-to-definition when no resolved symbol is available.
-findDefinitionAt :: Position -> Map.Map Identifier Range -> Maybe (Identifier, [(Identifier, Case)])
+findDefinitionAt :: Position -- ^ Cursor position.
+                 -> Map.Map Identifier Range -- ^ Declaration range of each defined name.
+                 -> Maybe (Identifier, [(Identifier, Case)])
+                 -- ^ The name declared there, with no alternative readings.
 findDefinitionAt pos =
   Map.foldrWithKey
     (\ident range acc ->
@@ -1956,7 +2144,9 @@ findDefinitionAt pos =
 --
 -- We expand related identifiers (morphological closure), then collect all
 -- variable uses and definition sites.
-findHighlights :: DocState -> [Identifier] -> [DocumentHighlight]
+findHighlights :: DocState -- ^ Analyzed document state.
+               -> [Identifier] -- ^ Target names to highlight.
+               -> [DocumentHighlight] -- ^ Ranges of every use and definition of those names.
 findHighlights doc allIdents =
   let stmts = dsStmts doc
       defSpans = dsDefSpans doc
@@ -1973,7 +2163,10 @@ findHighlights doc allIdents =
 -- | Collect all morphologically related identifiers by computing transitive closure.
 --
 -- The closure includes related AST variables and definitions that share a root.
-collectAllRelatedIdents :: [Identifier] -> [Stmt Ann] -> Map.Map Identifier Range -> [Identifier]
+collectAllRelatedIdents :: [Identifier] -- ^ Names to start from.
+                        -> [Stmt Ann] -- ^ Statements supplying variable occurrences.
+                        -> Map.Map Identifier Range -- ^ Declaration range of each defined name.
+                        -> [Identifier] -- ^ Transitive closure of names sharing a root.
 collectAllRelatedIdents initial stmts defSpans =
   let allVarData = collectAllVars stmts
       allDefIdents = Map.keys defSpans
@@ -2005,7 +2198,9 @@ collectAllRelatedIdents initial stmts defSpans =
 -- 1. They share a common prefix of at least 5 characters, OR
 -- 2. One is a prefix of the other (for base forms like "bastır" and "bastırmak"), OR
 -- 3. They share 4+ chars prefix and lengths differ by at most 4 (for infinitive variants)
-shareCommonRoot :: Identifier -> Set.Set Identifier -> Bool
+shareCommonRoot :: Identifier -- ^ Name to test.
+                -> Set.Set Identifier -- ^ Names already in the closure.
+                -> Bool -- ^ 'True' when it appears to be an inflection of one of them.
 shareCommonRoot (ns1, name1) identSet =
   let minPrefixLen = 5
       shortPrefixLen = 4
@@ -2026,7 +2221,9 @@ shareCommonRoot (ns1, name1) identSet =
 -- | Collect all Var nodes from the AST with their names and candidates.
 --
 -- This supports highlight expansion and related-identifier discovery.
-collectAllVars :: [Stmt Ann] -> [(Identifier, [(Identifier, Case)])]
+collectAllVars :: [Stmt Ann] -- ^ Statements to walk.
+               -> [(Identifier, [(Identifier, Case)])]
+               -- ^ Every variable occurrence with its candidate readings.
 collectAllVars = concatMap collectVarsInStmt
   where
     collectVarsInStmt stmt = case stmt of
@@ -2051,14 +2248,18 @@ collectAllVars = concatMap collectVarsInStmt
       in current ++ sub
 
 -- | Create a highlight for a definition if it matches our targets.
-highlightDefinition :: Set.Set Identifier -> (Identifier, Range) -> Maybe DocumentHighlight
+highlightDefinition :: Set.Set Identifier -- ^ Names being highlighted.
+                    -> (Identifier, Range) -- ^ A defined name and its declaration range.
+                    -> Maybe DocumentHighlight -- ^ A write highlight when the name is a target.
 highlightDefinition targets (ident, range) =
   if ident `Set.member` targets
     then Just (DocumentHighlight range (Just DocumentHighlightKind_Text))
     else Nothing
 
 -- | Find all highlights in a statement.
-findHighlightsInStmt :: Set.Set Identifier -> Stmt Ann -> [DocumentHighlight]
+findHighlightsInStmt :: Set.Set Identifier -- ^ Names being highlighted.
+                     -> Stmt Ann -- ^ Statement to walk.
+                     -> [DocumentHighlight] -- ^ Highlights for occurrences within it.
 findHighlightsInStmt targets stmt =
   case stmt of
     Defn _ _ e -> findHighlightsInExp targets e
@@ -2067,11 +2268,15 @@ findHighlightsInStmt targets stmt =
     _ -> []
 
 -- | Find all highlights in a clause.
-findHighlightsInClause :: Set.Set Identifier -> Clause Ann -> [DocumentHighlight]
+findHighlightsInClause :: Set.Set Identifier -- ^ Names being highlighted.
+                       -> Clause Ann -- ^ Clause to walk.
+                       -> [DocumentHighlight] -- ^ Highlights for occurrences within it.
 findHighlightsInClause targets (Clause _ body) = findHighlightsInExp targets body
 
 -- | Find all highlights in an expression.
-findHighlightsInExp :: Set.Set Identifier -> Exp Ann -> [DocumentHighlight]
+findHighlightsInExp :: Set.Set Identifier -- ^ Names being highlighted.
+                    -> Exp Ann -- ^ Expression to walk.
+                    -> [DocumentHighlight] -- ^ Highlights for occurrences within it.
 findHighlightsInExp targets e =
   let current = case e of
         Var{annExp = ann, varName = name, varCandidates = candidates} ->
@@ -2094,13 +2299,19 @@ findHighlightsInExp targets e =
 -- | Lookup the first definition range for any of the candidate identifiers.
 --
 -- Used as a local fallback when resolved symbols are unavailable.
-lookupDefRange :: [Identifier] -> Map.Map Identifier Range -> Maybe Range
+lookupDefRange :: [Identifier] -- ^ Candidate names, tried in order.
+               -> Map.Map Identifier Range -- ^ Declaration range of each defined name.
+               -> Maybe Range -- ^ Range of the first candidate that is defined.
 lookupDefRange keys m =
   listToMaybe (mapMaybe (`Map.lookup` m) keys)
 
 -- | Find the binder for a variable at a given position.
 -- Searches for binders whose scope contains the position, picking the innermost one.
-lookupBinderRange :: Position -> [Identifier] -> Maybe Span -> [BinderInfo] -> Maybe Range
+lookupBinderRange :: Position -- ^ Cursor position, which must lie in the binder's scope.
+                  -> [Identifier] -- ^ Candidate names for the variable.
+                  -> Maybe Span -- ^ Span of the occurrence, used to break ties.
+                  -> [BinderInfo] -- ^ Binders declared in the document.
+                  -> Maybe Range -- ^ Declaration range of the innermost matching binder.
 lookupBinderRange pos keys mScope binders =
   let -- Find all binders with matching identifiers
       matching = [bi | bi <- binders, biIdent bi `elem` keys]
@@ -2144,7 +2355,9 @@ lookupBinderRange pos keys mScope binders =
         _ -> False
 
 -- | Lookup the first definition location for any of the candidate identifiers.
-lookupDefLoc :: [Identifier] -> Map.Map Identifier Location -> Maybe Location
+lookupDefLoc :: [Identifier] -- ^ Candidate names, tried in order.
+             -> Map.Map Identifier Location -- ^ Workspace definition index.
+             -> Maybe Location -- ^ Location of the first candidate that is indexed.
 lookupDefLoc keys m =
   listToMaybe (mapMaybe (`Map.lookup` m) keys)
 
@@ -2152,7 +2365,10 @@ lookupDefLoc keys m =
 --
 -- This avoids jumping to local shadowed definitions when a more canonical
 -- definition exists in the standard library or another module.
-lookupDefLocPreferExternal :: Uri -> [Identifier] -> Map.Map Identifier Location -> Maybe Location
+lookupDefLocPreferExternal :: Uri -- ^ URI of the current document, whose definitions are deprioritized.
+                           -> [Identifier] -- ^ Candidate names, tried in order.
+                           -> Map.Map Identifier Location -- ^ Workspace definition index.
+                           -> Maybe Location -- ^ Location outside the current document when one exists.
 lookupDefLocPreferExternal currentUri keys m =
   case lookupDefLoc keys m of
     Just loc@(Location uri _) | uri /= currentUri -> Just loc
@@ -2164,13 +2380,15 @@ lookupDefLocPreferExternal currentUri keys m =
         _ -> Nothing
 
 -- | Remove duplicate identifiers while preserving order.
-dedupeIdents :: [Identifier] -> [Identifier]
+dedupeIdents :: [Identifier] -- ^ Names that may contain duplicates.
+             -> [Identifier] -- ^ First occurrence of each name in original order.
 dedupeIdents = uniquePreserve
 
 -- | Collect all concrete type constructor identifiers from a type.
 --
 -- We skip type variables/skolems because they do not have global definitions.
-typeConstructorsFromTy :: Ty Ann -> [Identifier]
+typeConstructorsFromTy :: Ty Ann -- ^ Type to walk.
+                       -> [Identifier] -- ^ Concrete type constructor names within it.
 typeConstructorsFromTy =
   go (128 :: Int)
   where
@@ -2191,7 +2409,9 @@ typeConstructorsFromTy =
         TyApp _ ctor args -> go (n - 1) ctor ++ concatMap (go (n - 1)) args
 
 -- | Find the smallest resolved type span that contains the given position.
-resolvedTypeAt :: Position -> Map.Map Span (Ty Ann) -> Maybe (Ty Ann)
+resolvedTypeAt :: Position -- ^ Cursor position.
+               -> Map.Map Span (Ty Ann) -- ^ Type inferred at each span.
+               -> Maybe (Ty Ann) -- ^ Type at the innermost span containing the position.
 resolvedTypeAt pos m =
   let matches = [(spanSizeForSort sp, ty) | (sp, ty) <- Map.toList m, posInSpan pos sp]
   in fmap snd (listToMaybe (sortOn fst matches))
@@ -2199,12 +2419,18 @@ resolvedTypeAt pos m =
 -- | Build a definition map directly from parser spans.
 --
 -- This filters out stdlib spans to keep local definition mapping precise.
-defSpansFromParser :: ParserState -> [Stmt Ann] -> ParserState -> Map.Map Identifier Range
+defSpansFromParser :: ParserState -- ^ Base parser state, whose prelude spans are excluded.
+                   -> [Stmt Ann] -- ^ Statements of the current document.
+                   -> ParserState -- ^ Parser state after parsing the document.
+                   -> Map.Map Identifier Range -- ^ Declaration range of each name defined here.
 defSpansFromParser base stmts pst =
   Map.map spanToRange (defSpansFromParserRaw base stmts pst)
 
 -- | Like 'defSpansFromParser', but returns raw spans instead of ranges.
-defSpansFromParserRaw :: ParserState -> [Stmt Ann] -> ParserState -> Map.Map Identifier Span
+defSpansFromParserRaw :: ParserState -- ^ Base parser state, whose prelude spans are excluded.
+                      -> [Stmt Ann] -- ^ Statements of the current document.
+                      -> ParserState -- ^ Parser state after parsing the document.
+                      -> Map.Map Identifier Span -- ^ Declaration span of each name defined here.
 defSpansFromParserRaw base stmts pst =
   let baseDefs = latestDefSpans (parserDefSpans base)
       allowed = Set.fromList (stmtDeclarationNames stmts)
@@ -2218,7 +2444,10 @@ defSpansFromParserRaw base stmts pst =
 -- | Collect per-identifier definition span lists for the current document only.
 -- We must exclude spans inherited from the base parser (prelude), otherwise
 -- overloads in the current file may be mapped to stdlib definitions.
-defSpanListsFromParser :: ParserState -> [Stmt Ann] -> ParserState -> Map.Map Identifier [Span]
+defSpanListsFromParser :: ParserState -- ^ Base parser state, whose prelude spans are excluded.
+                       -> [Stmt Ann] -- ^ Statements of the current document.
+                       -> ParserState -- ^ Parser state after parsing the document.
+                       -> Map.Map Identifier [Span] -- ^ Every declaration span of each name, for overloads.
 defSpanListsFromParser base stmts pst =
   let baseLists = parserDefSpans base
       allowed = Set.fromList (stmtDeclarationNames stmts)
@@ -2237,26 +2466,34 @@ defSpanListsFromParser base stmts pst =
 -- | Build definition spans without stripping base definitions.
 --
 -- Used when indexing the standard library itself.
-defSpansFromParserIncludeBase :: [Stmt Ann] -> ParserState -> Map.Map Identifier Range
+defSpansFromParserIncludeBase :: [Stmt Ann] -- ^ Statements of the file being indexed.
+                              -> ParserState -- ^ Parser state after parsing it.
+                              -> Map.Map Identifier Range -- ^ Declaration range of every name, prelude included.
 defSpansFromParserIncludeBase stmts pst =
   let allowed = Set.fromList (stmtDeclarationNames stmts)
       spans = Map.filterWithKey (\ident _ -> Set.member ident allowed) (latestDefSpans (parserDefSpans pst))
   in Map.map spanToRange spans
 
 -- | Convert definition ranges to locations for a specific URI.
-defLocationsForUri :: Uri -> Map.Map Identifier Range -> Map.Map Identifier Location
+defLocationsForUri :: Uri -- ^ URI the ranges belong to.
+                   -> Map.Map Identifier Range -- ^ Declaration range of each name.
+                   -> Map.Map Identifier Location -- ^ The same declarations as locations.
 defLocationsForUri uri =
   Map.map (Location uri)
 
 -- | Find a definition location from the typechecker state.
-defLocationFromTC :: Identifier -> TCState -> Maybe Location
+defLocationFromTC :: Identifier -- ^ Name to look up.
+                  -> TCState -- ^ Typechecker state carrying recorded definition locations.
+                  -> Maybe Location -- ^ Where the name was declared, when recorded.
 defLocationFromTC ident tcSt =
   case Map.lookup ident (tcDefLocations tcSt) of
     Just (path, sp) -> Just (Location (filePathToUri path) (spanToRange sp))
     Nothing -> Nothing
 
 -- | Find a definition location from a function signature.
-defLocationFromSig :: (Identifier, [Ty Ann]) -> TCState -> Maybe Location
+defLocationFromSig :: (Identifier, [Ty Ann]) -- ^ Function name and argument types selecting one overload.
+                   -> TCState -- ^ Typechecker state carrying recorded signature locations.
+                   -> Maybe Location -- ^ Where that overload was declared, when recorded.
 defLocationFromSig sig tcSt =
   case Map.lookup sig (tcFuncSigLocs tcSt) of
     Just (path, sp) -> Just (Location (filePathToUri path) (spanToRange sp))
@@ -2265,7 +2502,11 @@ defLocationFromSig sig tcSt =
 -- | Populate the workspace definition index at most once between invalidations.
 -- A completed index also represents negative lookups, so an unknown identifier
 -- does not trigger another recursive workspace scan on every request.
-ensureDefinitionIndex :: LspState -> Uri -> Map.Map Identifier Location -> LspM Config (Map.Map Identifier Location)
+ensureDefinitionIndex :: LspState -- ^ Shared server state.
+                      -> Uri -- ^ URI of the current document, used to locate the project root.
+                      -> Map.Map Identifier Location -- ^ Index built so far.
+                      -> LspM Config (Map.Map Identifier Location)
+                      -- ^ The completed index, built once per invalidation.
 ensureDefinitionIndex st uri currentDefs
   | lsDefIndexComplete st = return (lsDefIndex st)
   | otherwise = do
@@ -2287,7 +2528,10 @@ ensureDefinitionIndex st uri currentDefs
 --
 -- This scans all module roots and stores the best-definition location for
 -- each identifier, preferring closer roots and non-test files.
-buildDefinitionIndex :: LspState -> Uri -> Map.Map Identifier Location -> IO (Map.Map Identifier Location)
+buildDefinitionIndex :: LspState -- ^ Shared server state supplying module roots.
+                     -> Uri -- ^ URI of the current document, used to locate the project root.
+                     -> Map.Map Identifier Location -- ^ Index built so far, which takes precedence.
+                     -> IO (Map.Map Identifier Location) -- ^ Index covering the workspace and standard library.
 buildDefinitionIndex st uri currentDefs = do
   (roots, mRoot) <- resolveIndexRoots st uri
   files <- concat <$> mapM (listKipFilesRecursiveSkipping workspaceScanIgnoredDirs) roots
@@ -2303,7 +2547,9 @@ buildDefinitionIndex st uri currentDefs = do
       Map.insertWith (preferByScore newScore) ident loc acc
 
 -- | Resolve module roots and project root for indexing.
-resolveIndexRoots :: LspState -> Uri -> IO ([FilePath], Maybe FilePath)
+resolveIndexRoots :: LspState -- ^ Shared server state supplying module directories.
+                  -> Uri -- ^ URI of the current document.
+                  -> IO ([FilePath], Maybe FilePath) -- ^ Directories to scan, and the project root when found.
 resolveIndexRoots st uri = do
   mRoot <- case uriToFilePath uri of
     Nothing -> return Nothing
@@ -2312,7 +2558,8 @@ resolveIndexRoots st uri = do
   return (uniquePreserve roots, mRoot)
 
 -- | Walk upward from a path to find the project root.
-findProjectRoot :: FilePath -> IO (Maybe FilePath)
+findProjectRoot :: FilePath -- ^ Path to start from.
+                -> IO (Maybe FilePath) -- ^ Nearest enclosing project root, when one is found.
 findProjectRoot path = do
   let startDir = takeDirectory path
   go startDir
@@ -2336,7 +2583,9 @@ workspaceScanIgnoredDirs =
   Set.fromList [".git", ".stack-work", "dist-newstyle", "node_modules", "vendor", "playground", "dist", ".tmp"]
 
 -- | Load definition locations for a file, using cache when possible.
-loadDefsForFile :: LspState -> FilePath -> IO (Map.Map Identifier Location)
+loadDefsForFile :: LspState -- ^ Shared server state supplying the base parser.
+                -> FilePath -- ^ Source file to index.
+                -> IO (Map.Map Identifier Location) -- ^ Declaration location of each name it defines.
 loadDefsForFile st path = do
   absPath <- canonicalizePathCached path
   let normalized = addTrailingPathSeparator (normalise absPath)
@@ -2365,13 +2614,19 @@ loadDefsForFile st path = do
           in return (defLocationsForUri (filePathToUri absPath) defSpans)
 
 -- | Prefer the lower-scored location (closer root, non-test) when merging.
-preferByScore :: Int -> Location -> Location -> Location
+preferByScore :: Int -- ^ Score of the incoming location; lower is better.
+              -> Location -- ^ Incoming location.
+              -> Location -- ^ Location already in the index.
+              -> Location -- ^ Whichever location scores better.
 preferByScore newScore newLoc oldLoc =
   let oldScore = locationScore oldLoc
   in if newScore < oldScore then newLoc else oldLoc
 
 -- | Compute a score for a file path (lower is better).
-pathScore :: LspState -> Maybe FilePath -> FilePath -> Int
+pathScore :: LspState -- ^ Shared server state supplying module directories.
+          -> Maybe FilePath -- ^ Project root, when known.
+          -> FilePath -- ^ File being scored.
+          -> Int -- ^ Preference score; lower is better.
 pathScore st mRoot path =
   let normalized = addTrailingPathSeparator (normalise path)
       moduleRoots = map (addTrailingPathSeparator . normalise) (lsModuleDirs st)
@@ -2385,7 +2640,8 @@ pathScore st mRoot path =
          else 3
 
 -- | Compute a score for a location (used for tie-breaking).
-locationScore :: Location -> Int
+locationScore :: Location -- ^ Location to score.
+              -> Int -- ^ Preference score used to break ties; lower is better.
 locationScore (Location uri _) =
   case uriToFilePath uri of
     Nothing -> 3
@@ -2393,7 +2649,8 @@ locationScore (Location uri _) =
 
 
 -- | Convert an offset into (line, column) coordinates.
-offsetToPos :: Text -> (UInt, UInt)
+offsetToPos :: Text -- ^ Source text preceding the offset.
+            -> (UInt, UInt) -- ^ Zero-based line and column of the offset.
 offsetToPos prefix =
   let (!lineInt, !colInt) =
         T.foldl'
@@ -2409,7 +2666,9 @@ offsetToPos prefix =
 --
 -- We first try exact URI lookup, then normalized-URI lookup, and finally
 -- fall back to on-disk text when this is the first seen change for a URI.
-docTextForChange :: Uri -> Map.Map Uri DocState -> IO Text
+docTextForChange :: Uri -- ^ Document being changed.
+                 -> Map.Map Uri DocState -- ^ Analyzed documents known to the server.
+                 -> IO Text -- ^ Previous text, read from disk if the server has not seen it.
 docTextForChange uri docs =
   case lookupByUri uri docs of
     Just doc -> return (dsText doc)
@@ -2421,11 +2680,15 @@ docTextForChange uri docs =
           if exists then TIO.readFile path else return ""
 
 -- | Lookup the latest raw text for a URI using exact/normalized matching.
-lookupLatestTextByUri :: Uri -> LspState -> Maybe Text
+lookupLatestTextByUri :: Uri -- ^ Document to look up.
+                      -> LspState -- ^ Shared server state.
+                      -> Maybe Text -- ^ Most recent text the client sent for it.
 lookupLatestTextByUri uri st = lookupByUri uri (lsLatestText st)
 
 -- | Lookup a value by exact URI first, then by normalized URI.
-lookupByUri :: Uri -> Map.Map Uri a -> Maybe a
+lookupByUri :: Uri -- ^ Key to look up.
+            -> Map.Map Uri a -- ^ Map keyed by document URI.
+            -> Maybe a -- ^ Value stored under the exact or normalized URI.
 lookupByUri uri values =
   Map.lookup uri values <|>
     let normalized = toNormalizedUri uri
@@ -2438,7 +2701,8 @@ lookupByUri uri values =
          values
 
 -- | Convert an identifier to a completion item.
-completionItem :: Identifier -> CompletionItem
+completionItem :: Identifier -- ^ Name to offer.
+               -> CompletionItem -- ^ Completion item for it.
 completionItem ident =
   CompletionItem
     { _label = T.pack (prettyIdent ident)
@@ -2466,7 +2730,8 @@ completionItem ident =
 --
 -- This powers go-to-definition for local variables (arguments, pattern vars,
 -- let/bind bindings) by tracking the binder range and its validity scope.
-collectBinderSpans :: [Stmt Ann] -> [BinderInfo]
+collectBinderSpans :: [Stmt Ann] -- ^ Statements to walk.
+                   -> [BinderInfo] -- ^ Every local binder with its declaration range and scope.
 collectBinderSpans = concatMap stmtBinders
   where
     stmtBinders stmt =

@@ -17,18 +17,26 @@ import Kip.Playground
 -- | Supported CLI modes.
 data CliMode
   = ModeExec
+  -- ^ Run the given files and exit.
   | ModeBuild
+  -- ^ Build cache files for the given files or directories.
   | ModeCodegen Text
+  -- ^ Generate code for the named target, such as @js@.
   deriving (Eq, Show)
 
 -- | Parsed CLI options.
 data CliOptions =
   CliOptions
     { optMode :: CliMode
+      -- ^ What the invocation should do.
     , optFiles :: [FilePath]
+      -- ^ Input files or directories.
     , optIncludeDirs :: [FilePath]
+      -- ^ Extra directories searched when resolving imports.
     , optLang :: Lang
+      -- ^ Language diagnostics are reported in.
     , optNoPrelude :: Bool
+      -- ^ Whether to skip loading the implicit prelude.
     }
 
 -- | Parse CLI arguments and run one isolated playground request.
@@ -69,7 +77,9 @@ main = do
               ))
         <|> pure ModeExec
 
-toPlaygroundRequest :: CliOptions -> PlaygroundRequest
+-- | Translate parsed CLI options into a playground request.
+toPlaygroundRequest :: CliOptions -- ^ Options parsed from the command line.
+                    -> PlaygroundRequest -- ^ Equivalent request for the playground runner.
 toPlaygroundRequest opts =
   PlaygroundRequest
     { prMode = toPlaygroundMode (optMode opts)
@@ -79,7 +89,9 @@ toPlaygroundRequest opts =
     , prNoPrelude = optNoPrelude opts
     }
 
-toPlaygroundMode :: CliMode -> PlaygroundMode
+-- | Translate a CLI mode into the corresponding playground mode.
+toPlaygroundMode :: CliMode -- ^ Mode selected on the command line.
+                 -> PlaygroundMode -- ^ Equivalent playground mode.
 toPlaygroundMode mode =
   case mode of
     ModeExec -> PlaygroundExec

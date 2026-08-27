@@ -22,18 +22,25 @@ import Language.LSP.Protocol.Types
 -- The protocol allows both full-document replacements and ranged edits.
 -- Clients may send incremental edits even when full sync is requested, so
 -- both forms are handled here.
-applyContentChanges :: Text -> [TextDocumentContentChangeEvent] -> Text
+applyContentChanges :: Text -- ^ Current document text.
+                    -> [TextDocumentContentChangeEvent] -- ^ Changes to apply, in order.
+                    -> Text -- ^ Document text after every change.
 applyContentChanges = foldl' applyContentChange
 
 -- | Apply one LSP content change to document text.
-applyContentChange :: Text -> TextDocumentContentChangeEvent -> Text
+applyContentChange :: Text -- ^ Current document text.
+                   -> TextDocumentContentChangeEvent -- ^ A ranged edit or a whole-document replacement.
+                   -> Text -- ^ Document text after the change.
 applyContentChange oldText (TextDocumentContentChangeEvent change) =
   case change of
     InL (TextDocumentContentChangePartial range _ t) -> applyRangeEdit oldText range t
     InR (TextDocumentContentChangeWholeDocument t) -> t
 
 -- | Apply a ranged text edit to a UTF-16 position-based document.
-applyRangeEdit :: Text -> Range -> Text -> Text
+applyRangeEdit :: Text -- ^ Current document text.
+               -> Range -- ^ Range to replace, in UTF-16 code units.
+               -> Text -- ^ Replacement text.
+               -> Text -- ^ Document text after the edit.
 applyRangeEdit txt (Range startPos endPos) replacement =
   let (startOff, endOff) = offsetsAtRange txt startPos endPos
       prefix = T.take startOff txt
@@ -41,7 +48,10 @@ applyRangeEdit txt (Range startPos endPos) replacement =
   in prefix <> replacement <> suffix
 
 -- | Convert start/end positions to text offsets in one scan.
-offsetsAtRange :: Text -> Position -> Position -> (Int, Int)
+offsetsAtRange :: Text -- ^ Document text to scan.
+               -> Position -- ^ Start position, in UTF-16 code units.
+               -> Position -- ^ End position, in UTF-16 code units.
+               -> (Int, Int) -- ^ Character offsets of the two positions, in ascending order.
 offsetsAtRange txt startPos endPos
   | (startLine, startCol) <= (endLine, endCol) =
       go 0 0 0 Nothing Nothing txt
@@ -134,13 +144,15 @@ offsetsAtRange txt startPos endPos
     utf16Width c = if ord c > 0xFFFF then 2 else 1
 
 -- | Trim trailing whitespace and ensure a trailing newline.
-formatText :: Text -> Text
+formatText :: Text -- ^ Document text to format.
+           -> Text -- ^ Text with trailing whitespace removed and a final newline.
 formatText txt =
   let trimmed = T.unlines (map T.stripEnd (T.lines txt))
   in if T.null trimmed || T.last trimmed == '\n' then trimmed else trimmed <> "\n"
 
 -- | Compute the final position in pre-split document lines.
-documentEndPosition :: V.Vector Text -> Position
+documentEndPosition :: V.Vector Text -- ^ Document lines.
+                    -> Position -- ^ Position just past the last character.
 documentEndPosition ls =
   if V.null ls
     then Position 0 0
