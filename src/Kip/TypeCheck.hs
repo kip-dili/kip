@@ -2413,8 +2413,7 @@ unifyTypes tyCons expected actual
 
     -- | Structural unification after WHNF pruning.
     --
-    -- Variable cases are delegated to 'bindVar', while constructors/arrows/apps
-    -- recurse structurally and preserve previous semantics.
+    -- Variable cases are delegated to 'bindVar'; the rest recurse structurally.
     unifyPruned :: MUV.MVector s Int
                 -> MUV.MVector s Int
                 -> MV.MVector s (Maybe ITy)
@@ -2659,8 +2658,7 @@ unifyTypes tyCons expected actual
     -- * if its root has a concrete binding, emit that type;
     -- * otherwise emit alias-to-root entries for non-root ids only.
     --
-    -- This preserves the previous substitution behavior while using a linear
-    -- index walk without `Set`/`Map.keys` reconstruction overhead.
+    -- Uses a linear index walk without `Set`/`Map.keys` reconstruction.
     freezeSubst :: V.Vector Identifier
                 -> MUV.MVector s Int
                 -> MUV.MVector s Int

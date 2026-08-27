@@ -53,14 +53,8 @@ foreign import ccall unsafe "fomalib.h fsm_read_binary_file"
 
 -- | Read an FSM from a binary file on disk.
 --
--- @trmorph.fst@ is gzip-compressed on disk; @fsm_read_binary_file@
--- decompresses and parses it (measured ~34 ms standalone) on __every__
--- process start, even for runs whose morphology needs are fully satisfied
--- by the persisted parser cache (see @Kip.Cache@) and never touch the FSM
--- at all. We defer the actual read via 'unsafeInterleaveIO' so the cost is
--- only paid the first time some caller actually forces the returned 'FSM'
--- (i.e. the first real 'ups'/'downs' call, or never, if the process's morph
--- lookups are all cache hits).
+-- Defer decompressing and parsing the FSM until the first morphology lookup;
+-- cache-only runs never force it.
 --
 -- Safety: the deferred action only reads a file and builds a self-contained
 -- FSM value with no shared mutable state; if two threads race to force the
@@ -151,14 +145,7 @@ withApplyHandle fsm pickHandle initHandle action = do
 -- | Morphological analysis (surface form to analyses).
 -- Uses 'Text' to match the parser and avoid extra conversions.
 --
--- Previously this called the C @ups()@ entry point, which runs
--- @apply_init@ (building the FST's apply indices) on __every single call__.
--- Sampling showed this dominating warm-run time once the process-startup
--- costs were fixed, since callers still hit this single-word path for any
--- vocabulary not already covered by the persisted morphology cache. We now
--- route through 'upsBatch' (a one-element batch), which reuses the same
--- cached 'ApplyHandle' machinery already used by batch analysis, so
--- @apply_init@ only runs once per process per FSM.
+-- A one-element batch shares the cached apply handle with batched analysis.
 ups ::
   FSM -- ^ Morphology finite state machine.
   -> Text -- ^ Surface form to analyze.

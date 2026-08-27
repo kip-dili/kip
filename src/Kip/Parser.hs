@@ -327,10 +327,7 @@ data ParserState =
     , parserFuncArities :: !(M.Map Identifier (Set.Set Int))
     -- | Secondary index used by hot-path overload checks.
     --
-    -- Ambiguity detection in REPL used to scan the whole
-    -- 'parserFuncArities' map to gather all entries with matching surface
-    -- names. Keeping this precomputed name-based map makes those lookups
-    -- O(log n) and allocation-light.
+    -- Provides direct lookup of every arity for a surface name.
     , parserFuncAritiesByName :: !(M.Map Text (Set.Set Int))
     , parserDefSpans :: !(M.Map Identifier [Span])
     , parserFilePath :: !(Maybe FilePath)
@@ -631,11 +628,6 @@ identifierNotKeyword = do
   if null ss && s `elem` ["ya", "var", "için", "olarak", "dersek"]
     then customFailure ErrKeywordAsIdent
     else return ident
-
--- inCtx :: String -> KipParser Bool
--- inCtx x = do
---   MkParserState{..} <- getP
---   return $ x `elem` parserCtx
 
 -- | Detect case tags in morphology analyses.
 -- INLINE keeps this tiny classifier on the fast path.

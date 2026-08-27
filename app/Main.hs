@@ -521,9 +521,7 @@ instance Render RenderTCError where
 -- | Exit successfully, skipping the RTS's normal shutdown sequence (joining
 -- GC worker threads, returning committed memory to the OS) when possible.
 --
--- @+RTS -s@ showed ~9 ms of EXIT time per invocation for a batch-mode run
--- (near-zero CPU, mostly RTS teardown) that is pure waste for a process
--- about to terminate anyway. All output must be explicitly flushed first
+-- All output must be explicitly flushed first
 -- since @exitImmediately@ bypasses Haskell's normal handle-closing cleanup.
 -- Only safe for one-shot batch CLI modes (@--test@\/@--exec@\/@--codegen@\/
 -- @--build@) that have no further work after printing their result; the

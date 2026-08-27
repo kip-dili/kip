@@ -210,11 +210,7 @@ data Exp a =
 
 -- | Flatten nested applications into a root function and accumulated arguments.
 --
--- Uses a difference list (@[Exp a] -> [Exp a]@) to collect arguments in
--- a single pass.  The previous version built the result via
--- @prefixArgs ++ appArgs@ at each recursive step, which is O(n^2) for
--- deeply nested applications because @(++)@ traverses its left operand.
--- The difference list composes in O(1) and materializes in O(n).
+-- A difference list collects all arguments in one linear pass.
 flattenApplied :: Exp a -- ^ Expression to inspect.
               -> (Exp a, [Exp a]) -- ^ Root function and arguments in call order.
 flattenApplied = go id

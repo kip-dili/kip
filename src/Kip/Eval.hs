@@ -91,16 +91,9 @@ Variables in Kip can refer to different kinds of bindings stored in separate nam
 When evaluating a standalone Var, we only look in evalVals. If not found there,
 we check if it exists in any other namespace - if so, it's a function/constructor
 reference that will be resolved when used in an App. Otherwise, it's truly undefined.
+
+The candidates are scanned once, checking every namespace for each candidate.
 -}
--- | Check if a variable can be resolved in an application context.
---
--- Iterates the candidate list __once__, checking all namespaces per
--- candidate and short-circuiting on the first hit.  The previous
--- implementation allocated @fnCandidates = map fst varCandidates@ (1.9 %
--- alloc) and then iterated it 5 separate times (once per namespace).
--- This version eliminates the intermediate list and does at most one
--- pass.  Each per-candidate check uses 'Map.member' (O(log n) key-only)
--- for all five maps.
 isResolvableInAppContext :: [(Identifier, Case)] -- ^ Variable candidates.
                          -> EvalState -- ^ Current evaluation state.
                          -> Bool -- ^ True if resolvable in App context.
@@ -719,11 +712,7 @@ matchCtor ctor pats v =
 
     -- | Compare identifiers, allowing possessive/root normalization.
     --
-    -- 'roots' produces at most 2 candidates (@txt@ itself plus an
-    -- optional vowel-drop variant).  The previous @nub . catMaybes@
-    -- and @intersect@ on such tiny lists allocated intermediate lists
-    -- unnecessarily.  Now uses direct element comparison via
-    -- 'rootsOverlap' to avoid all list allocation.
+    -- Compare the two possible roots directly without intermediate lists.
     identMatchesPoss :: Identifier -- ^ Left identifier.
                      -> Identifier -- ^ Right identifier.
                      -> Bool -- ^ True when identifiers match loosely.
@@ -765,10 +754,8 @@ matchCtor ctor pats v =
 
     -- | Strip copula suffixes from a surface word.
     --
-    -- Uses the module-level 'copulaSuffixes' list (all 3 chars long)
-    -- instead of allocating a local list on every call.  Strips from
-    -- the original text using character count to preserve the original
-    -- casing.
+    -- Match against the shared suffix list, then strip the original text to
+    -- preserve its casing.
     stripCopulaSuffix :: Text -- ^ Surface word.
                       -> Maybe Text -- ^ Stripped word.
     stripCopulaSuffix txt =
@@ -781,17 +768,10 @@ matchCtor ctor pats v =
             then Just (T.take (T.length txt - 3) txt)
             else go rest lower
 
--- | Try resolving an ip-converb function to its base name when prim lookup fails.
--- | Recognize the random primitive in either split or dashed identifier form.
-
 -- | Match a list pattern against an expression.
 matchList :: [Pat Ann] -- ^ Element patterns.
           -> Exp Ann -- ^ Scrutinee expression.
           -> Maybe [(Identifier, Exp Ann)] -- ^ Bindings when matched.
--- With @OverloadedStrings@ enabled, string literals are compiled as
--- top-level 'Text' constants by GHC, avoiding a per-call 'T.pack'
--- allocation.  The previous @T.pack \"boş\"@ / @T.pack \"eki\"@ calls
--- allocated fresh 'Text' values on every pattern-match attempt.
 matchList [] (Var _ ([], name) _)
   | name == ("boş" :: T.Text) = Just []
 matchList (p:ps) (App _ (Var _ ([], name) _) [elem, rest])
@@ -817,19 +797,7 @@ applySelector idx arg fallback =
         else return fallback
     _ -> return fallback
 
--- | Check whether two lists have the same length without computing both
--- lengths fully.
---
--- @'sameLength' xs ys@ walks both lists in lock-step and returns 'False'
--- as soon as one list is exhausted before the other.  This is O(min(m,n))
--- instead of O(m + n) for @'length' xs == 'length' ys@.
---
--- The @length tys == length args@ guard appears in every list
--- comprehension inside 'pickFunctionByTypes', 'pickPrimByTypes' and
--- their @Partial@ variants.  For programs with many overloaded
--- definitions, the guard is evaluated for every candidate, so
--- short-circuiting on the first mismatch avoids unnecessary spine
--- traversal.
+-- | Check two list lengths in lock-step, stopping at the first mismatch.
 sameLength :: [a] -> [b] -> Bool
 sameLength [] [] = True
 sameLength (_:xs) (_:ys) = sameLength xs ys
@@ -847,13 +815,8 @@ reorderSectionArgs preApplied args =
 
 -- | Choose a function definition based on inferred argument types.
 --
--- Previously called @mapM inferType args@ internally.  Since overload
--- resolution tries primitives first ('pickPrimByTypes') and then falls
--- back to functions, the same argument list had its types inferred
--- /twice/ on every call that goes through both paths.  Profiling showed
--- 'inferType' at __~9.5 % time / ~17.8 % allocation__ for evaluation-heavy
--- workloads.  By accepting pre-computed @argTys@ from the call site we
--- eliminate the duplicate inference entirely.
+-- Argument types are computed once by the caller and shared by primitive and
+-- function overload resolution.
 pickFunctionByTypes :: [(Identifier, ([Arg Ann], [Clause Ann]))] -- ^ Candidate function definitions.
                     -> [Exp Ann] -- ^ Evaluated arguments.
                     -> [Maybe (Ty Ann)] -- ^ Pre-computed argument types (one per arg).
@@ -1020,13 +983,7 @@ reorderByCasesForEval expected actual xs =
 
 -- | Type comparison allowing unknowns for primitive resolution.
 --
--- Previously accepted @[(Identifier, Int)]@ which forced every call site
--- (4 in total across 'pickFunctionByTypes', 'pickPrimByTypes', and their
--- @Partial@ variants) to convert via @'Map.toList' evalTyCons@.  Each of
--- those conversions allocated a fresh spine of pairs on every function
--- call.  By accepting the 'Map.Map' directly we eliminate those
--- allocations entirely and let 'normalizeTy' use O(log n) 'Map.lookup'
--- instead of O(n) list 'lookup'.
+-- The constructor map is passed through directly for recursive lookups.
 typeMatchesAllowUnknown :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
                         -> Maybe (Ty Ann) -- ^ Possibly unknown type.
                         -> Ty Ann -- ^ Expected type.
@@ -1050,12 +1007,7 @@ typeMatchesAllowUnknown tyCons mTy ty =
 
 -- | Lookup by candidates in a 'Map.Map'-based environment.
 --
--- Iterates candidate pairs directly to avoid allocating an intermediate
--- @[Identifier]@ list.  This is the primary lookup function used by
--- 'evalStepWith' for global value bindings.
---
--- Combined with the HashMap variant, eliminating the @map fst@ allocation
--- saves __~6 % of total allocation__ in evaluation-heavy workloads.
+-- Candidate pairs are traversed directly, without an intermediate name list.
 lookupByCandidates :: forall a.
                       Map.Map Identifier a -- ^ Candidate bindings.
                    -> [(Identifier, Case)] -- ^ Candidate identifiers.
@@ -1070,12 +1022,7 @@ lookupByCandidates env = go
 
 -- | Lookup by candidates in a 'HM.HashMap'-based environment (O(1) average).
 --
--- Iterates candidate pairs directly without allocating an intermediate
--- @[Identifier]@ list via @map fst@.  Uses 'HM.lookup' for O(1) average
--- lookup time.
---
--- Profiling showed the previous @map fst candidates@ allocation in this
--- function alone accounted for __2.3 % of allocation__.
+-- Candidate pairs are traversed directly, without an intermediate name list.
 lookupByCandidatesHM :: forall a.
                         HM.HashMap Identifier a -- ^ Candidate bindings.
                      -> [(Identifier, Case)] -- ^ Candidate identifiers.
@@ -1105,17 +1052,10 @@ lookupBySuffixHM env (mods, word) =
 -- | Produce likely local variable roots by removing visible case suffixes.
 --
 -- Turkish words carry at most one grammatical case suffix at a time, so we
--- stop at the first matching suffix rather than trying all 24 entries in
--- 'bareCaseSuffixes'.  This turns an O(s * n) list comprehension followed
--- by 'nub' into an O(s) scan (where s = number of suffixes).
+-- stop at the first matching entry in 'bareCaseSuffixes'.
 --
 -- In addition to the plain stripped root, a trailing-@n@ fallback is
 -- included for pronoun stems (e.g. @bun@ → @bu@).
---
--- Profiling showed the previous implementation at __18.6 % of runtime__
--- and __23 % of allocation__ for evaluation-heavy workloads because it
--- generated up to 48 candidates (24 suffixes × 2 variants) and then
--- called 'Data.List.nub' on the result.
 stripCaseRoots :: [Text] -- ^ Namespace modules.
               -> Text   -- ^ Surface word to strip.
               -> [Identifier] -- ^ Candidate root identifiers (at most 2).
@@ -1165,9 +1105,6 @@ bareCaseSuffixes =
   ]
 
 -- | Turkish copula suffixes (all exactly 3 characters).
---
--- Lifted to the module level so the list is allocated once instead of
--- on every call to @stripCopulaSuffix@ inside 'matchCtor'.
 copulaSuffixes :: [Text]
 copulaSuffixes = ["dir","dır","dur","dür","tir","tır","tur","tür"]
 
@@ -1235,23 +1172,10 @@ inferType e =
     -- inferring each argument's type only when the expected type still has
     -- free variables not yet pinned down by the substitution so far.
     --
-    -- The previous implementation called 'mapM inferType' on __every__
-    -- constructor argument up front, before unification even started. For a
-    -- binary constructor like list cons (@eki :: a -> Liste a -> Liste a@),
-    -- inferring the second (recursive tail) argument's type walks the
-    -- entire rest of the list, even though the type variable @a@ is always
-    -- already resolved by the *first* argument alone. That turned every
-    -- 'inferType' call on a list into an O(n) traversal of the whole
-    -- structure, and O(n^2) when called at each step of a recursive
-    -- traversal.
-    --
-    -- Since 'inferType' only ever runs on already-typechecked programs
-    -- (evaluation happens strictly after a successful typecheck pass), an
-    -- argument whose expected type has no free variables left to resolve
-    -- cannot change the constructor's inferred result type -- so its actual
-    -- type never needs to be computed at all. This turns list-cons
-    -- inference into O(1): only the head element's type is ever inferred,
-    -- never the tail's.
+    -- Evaluation follows successful typechecking, so arguments whose expected
+    -- types have no unresolved variables cannot change the result type and do
+    -- not need inference. In particular, list tails are not traversed once the
+    -- head has fixed the element type.
     unifyCtorArgsLazy :: Map.Map Identifier Int
                       -> [(Ty Ann, Exp Ann)]
                       -> [(Identifier, Ty Ann)]
@@ -1314,8 +1238,7 @@ applyTypeCase cas exp =
 
 -- | Check whether an inferred type matches an expected type.
 --
--- Accepts 'Map.Map' to stay consistent with 'typeMatchesAllowUnknown'
--- and avoid list conversion overhead (see that function's documentation).
+-- Uses the same constructor map as 'typeMatchesAllowUnknown'.
 typeMatches :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
             -> Maybe (Ty Ann) -- ^ Possibly unknown type.
             -> Ty Ann -- ^ Expected type.
@@ -1327,8 +1250,7 @@ typeMatches tyCons mTy ty =
 
 -- | Compare two types for compatibility.
 --
--- Accepts 'Map.Map' so that the recursive calls to 'normalizeTy' benefit
--- from O(log n) lookups instead of O(n) list scans.
+-- Constructor arities stay in a map for recursive normalization lookups.
 tyEq :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
      -> Ty Ann -- ^ Left type.
      -> Ty Ann -- ^ Right type.
@@ -1355,12 +1277,6 @@ tyEq tyCons t1 t2 =
     _ -> False
 
 -- | Normalize type applications using constructor arities.
---
--- Previously accepted @[(Identifier, Int)]@ and used 'lookup' (O(n) linear
--- scan).  Now accepts 'Map.Map' and uses 'Map.lookup' (O(log n)).  Since
--- 'normalizeTy' is called recursively on every sub-term during type
--- comparison, this change turns a quadratic lookup pattern into an
--- efficient logarithmic one.
 normalizeTy :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
             -> Ty Ann -- ^ Type to normalize.
             -> Ty Ann -- ^ Normalized type.
@@ -1380,9 +1296,6 @@ normalizeTy tyCons ty =
     _ -> ty
 
 -- | Unify expected types with actual types, returning substitutions.
---
--- Accepts 'Map.Map' so that 'normalizeTy' (called on every type pair)
--- uses O(log n) lookups instead of O(n) list scans.
 unifyTypes :: Map.Map Identifier Int -- ^ Type constructor arities (as 'Map.Map').
            -> [Ty Ann] -- ^ Expected types.
            -> [Ty Ann] -- ^ Actual types.

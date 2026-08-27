@@ -265,12 +265,8 @@ data CachedPrelude = CachedPrelude
     -- ^ Source path and 'PrimFunc' statement pairs needed to rebuild
     -- 'evalPrimFuncs' host callbacks (see 'Kip.Eval.evalPrimFuncs').
     --
-    -- Previously these were recovered at __every__ load by re-decoding the
-    -- full @.iz@ cache of each prelude module (~25 MB across ~11 files) just
-    -- to filter out a handful of 'PrimFunc' statements. We now do that
-    -- decode-and-filter work once, when the snapshot is (re)written, and
-    -- persist the small result directly. Loading the prelude snapshot then
-    -- only replays these statements, with no extra file I/O or decoding.
+    -- Persisting this small set lets snapshot loading replay it without
+    -- re-decoding each module cache.
   } deriving (Generic)
 
 preludeMagic :: Word32
@@ -710,16 +706,8 @@ canonicalizePathCached path = do
 
 -- | Load a cached module from disk if it is valid.
 --
--- 'CachedModule' encodes its 'metadata' field first, followed by the much
--- larger AST/parser/typechecker/evaluator payload. Previously we fully
--- decoded the entire payload before checking whether the cache was even
--- valid for the current compiler/sources, wasting the decode on every
--- invalidated cache (e.g. after editing a dependency). We now decode only
--- the 'CacheMetadata' prefix first (binary's derived product encoding is a
--- plain field-by-field concatenation with no reordering, so this reads
--- exactly the same bytes the full decode would read for that field) and
--- only pay for decoding the rest of the payload once metadata validation
--- passes.
+-- 'CachedModule' encodes metadata first, so validate that prefix before
+-- decoding the larger AST/state payload.
 loadCachedModule ::
   FilePath -- ^ Cache file path.
   -> IO (Maybe CachedModule) -- ^ Cached module when valid.
