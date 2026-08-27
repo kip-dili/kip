@@ -83,6 +83,14 @@ anyTypes n = PrimitiveVariant n (const True)
 withTypes :: Int -> ([Ty Ann] -> Bool) -> PrimitiveVariant
 withTypes n check = PrimitiveVariant n (check . map snd)
 
+-- | A unary variant with a type predicate.
+oneType :: (Ty Ann -> Bool) -> PrimitiveVariant
+oneType check = withTypes 1 (\case [ty] -> check ty; _ -> False)
+
+-- | A binary variant with a predicate over both argument types.
+twoTypes :: (Ty Ann -> Ty Ann -> Bool) -> PrimitiveVariant
+twoTypes check = withTypes 2 (\case [left, right] -> check left right; _ -> False)
+
 -- | Check if a type is an integer
 isIntTy :: Ty Ann -> Bool
 isIntTy (TyInt _) = True
@@ -168,18 +176,29 @@ mapKeyValTy ty =
 isMapTy :: Ty Ann -> Bool
 isMapTy = isJust . mapKeyValTy
 
+stringVariants, charVariants, intVariants, floatVariants, stringIntVariants, numericVariants :: [PrimitiveVariant]
+stringVariants = [oneType isStringTy]
+charVariants = [oneType isCharTy]
+intVariants = [oneType isIntTy]
+floatVariants = [oneType isFloatTy]
+stringIntVariants = [twoTypes (\left right -> isStringTy left && isIntTy right)]
+numericVariants =
+  [ twoTypes (\left right -> isFloatTy left || isFloatTy right)
+  , twoTypes (\left right -> isIntTy left && isIntTy right)
+  ]
+
 -- | All known primitive functions
 allPrimitives :: [PrimitiveDef]
 allPrimitives =
   [ PrimitiveDef ([], "yaz")
-      [ withTypes 1 (\case [t] -> isIntTy t || isFloatTy t || isStringTy t || isCharTy t; _ -> False)
+      [ oneType (\ty -> isIntTy ty || isFloatTy ty || isStringTy ty || isCharTy ty)
       , anyTypes 2  -- File write
       ]
       ["etki.kip"]
 
   , PrimitiveDef ([], "oku")
       [ anyTypes 0  -- stdin
-      , withTypes 1 (\case [t] -> isStringTy t; _ -> False)  -- file read
+      , oneType isStringTy  -- file read
       ]
       ["etki.kip"]
 
@@ -188,7 +207,7 @@ allPrimitives =
       ["etki.kip"]
 
   , PrimitiveDef (["çevreden"], "oku")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["etki.kip"]
 
   , PrimitiveDef ([], "uzunluk")
@@ -204,148 +223,138 @@ allPrimitives =
       ["dizge.kip", "küme.kip", "sözlük.kip"]
 
   , PrimitiveDef (["tam", "sayı"], "hal")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False)
-      , withTypes 1 (\case [t] -> isCharTy t; _ -> False)
+      [ oneType isStringTy
+      , oneType isCharTy
       ]
       ["dizge.kip", "karakter.kip"]
 
   , PrimitiveDef (["ondalık", "sayı"], "hal")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False)
-      , withTypes 1 (\case [t] -> isIntTy t; _ -> False)
+      [ oneType isStringTy
+      , oneType isIntTy
       ]
       ["dizge.kip", "tam-sayı.kip"]
 
   , PrimitiveDef (["karakter"], "hal")
-      [ withTypes 1 (\case [t] -> isIntTy t; _ -> False) ]
+      intVariants
       ["karakter.kip"]
 
   , PrimitiveDef ([], "büyük")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef ([], "küçük")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef ([], "harflik")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef ([], "rakamlık")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef (["harf"], "rakamlık")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef (["büyük"], "harflik")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef (["küçük"], "harflik")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef ([], "boşlukluk")
-      [ withTypes 1 (\case [t] -> isCharTy t; _ -> False) ]
+      charVariants
       ["karakter.kip"]
 
   , PrimitiveDef ([], "ters")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "öğe")
-      [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      stringIntVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "alış")
-      [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      stringIntVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "bırakış")
-      [ withTypes 2 (\case [t1, t2] -> isStringTy t1 && isIntTy t2; _ -> False) ]
+      stringIntVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "son")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "boşluk")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "satırlar")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "kelimeler")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef (["büyük"], "hal")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef (["küçük"], "hal")
-      [ withTypes 1 (\case [t] -> isStringTy t; _ -> False) ]
+      stringVariants
       ["dizge.kip"]
 
   , PrimitiveDef ([], "toplam")
-      [ withTypes 2 (\case [t1, t2] -> isFloatTy t1 || isFloatTy t2; _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isIntTy t1 && isIntTy t2; _ -> False)
-      ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "çarpım")
-      [ withTypes 2 (\case [t1, t2] -> isFloatTy t1 || isFloatTy t2; _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isIntTy t1 && isIntTy t2; _ -> False)
-      ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "fark")
-      [ withTypes 2 (\case [t1, t2] -> isFloatTy t1 || isFloatTy t2; _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isIntTy t1 && isIntTy t2; _ -> False)
-      ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "bölüm")
-      [ withTypes 2 (\case [t1, t2] -> isFloatTy t1 || isFloatTy t2; _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isIntTy t1 && isIntTy t2; _ -> False)
-      ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "kalan")
-      [ withTypes 2 (\case [t1, t2] -> isFloatTy t1 || isFloatTy t2; _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isIntTy t1 && isIntTy t2; _ -> False)
-      ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef (["dizge"], "hal")
-      [ withTypes 1 (\case [t] -> isFloatTy t || isIntTy t || isCharTy t; _ -> False) ]
+      [oneType (\ty -> isFloatTy ty || isIntTy ty || isCharTy ty)]
       ["tam-sayı.kip", "ondalık-sayı.kip", "karakter.kip"]
 
   , PrimitiveDef ([], "eşitlik")
-      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isStringTy t1 && isStringTy t2; _ -> False)
-      , withTypes 2 (\case [t1, t2] -> isCharTy t1 && isCharTy t2; _ -> False)
+      [ twoTypes (\left right -> isFloatTy left || isFloatTy right || isIntTy left && isIntTy right)
+      , twoTypes (\left right -> isStringTy left && isStringTy right)
+      , twoTypes (\left right -> isCharTy left && isCharTy right)
       ]
       ["tam-sayı.kip", "ondalık-sayı.kip", "dizge.kip", "karakter.kip"]
 
   , PrimitiveDef ([], "küçüklük")
-      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef (["küçük"], "eşitlik")
-      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "büyüklük")
-      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef (["büyük"], "eşitlik")
-      [ withTypes 2 (\case [t1, t2] -> (isFloatTy t1 || isFloatTy t2) || (isIntTy t1 && isIntTy t2); _ -> False) ]
+      numericVariants
       ["tam-sayı.kip", "ondalık-sayı.kip"]
 
   , PrimitiveDef (["sayı"], "çek")
@@ -353,15 +362,15 @@ allPrimitives =
       ["etki.kip"]
 
   , PrimitiveDef ([], "karekök")
-      [ withTypes 1 (\case [t] -> isFloatTy t; _ -> False) ]
+      floatVariants
       ["ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "taban")
-      [ withTypes 1 (\case [t] -> isFloatTy t; _ -> False) ]
+      floatVariants
       ["ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "tavan")
-      [ withTypes 1 (\case [t] -> isFloatTy t; _ -> False) ]
+      floatVariants
       ["ondalık-sayı.kip"]
 
   , PrimitiveDef ([], "boş-küme")
