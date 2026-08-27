@@ -566,10 +566,6 @@ word = do
     Just (LexWord token) -> takeP (Just "kelime") (T.length token)
     _ -> takeWhile1P (Just "kelime") isWordChar
 
--- | Parse multiple words separated by whitespace.
-multiword :: KipParser Text -- ^ Parsed multiword.
-multiword = T.unwords <$> some (lexeme word)
-
 -- | Predicate for word characters.
 isWordChar :: Char -- ^ Character to check.
            -> Bool -- ^ True when the character is word-like.
@@ -1311,11 +1307,6 @@ findAmbiguousCase candidates =
 identText :: Identifier -- ^ Identifier to render.
           -> Text -- ^ Rendered surface text.
 identText (xs, x) = T.intercalate "-" (xs ++ [x])
-
--- | Extract the root part of an identifier.
-identRoot :: Identifier -- ^ Identifier to inspect.
-          -> Text -- ^ Root part.
-identRoot (_, x) = x
 
 -- | Match a context identifier by inflected surface forms.
 --
