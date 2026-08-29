@@ -1036,7 +1036,13 @@ runFileWithHooks hooks buildOnly moduleDirs (pst, tcSt, evalSt, loaded) path = d
             else do
               pst' <- liftIO (fromCachedParserStateDelta fsm (Just path) cache pst (cachedParser cached))
               let tcSt' = mergeTCState tcSt (fromCachedTCState (cachedTC cached))
-                  evalSt' = evalSt
+                  -- Cached function bodies retain source spans. Share the
+                  -- merged newest-first resolution log with the evaluator;
+                  -- its exact index remains lazy until a broad graph runs.
+                  evalSt'
+                    | tcOutputMode tcSt' == TCOutputRuntime =
+                        Eval.setResolvedCalls (tcResolvedSigs tcSt') evalSt
+                    | otherwise = evalSt
                   stmts = cachedTypedStmts cached
                   paramTyCons = [name | (name, arity) <- parserTyCons pst', arity > 0]
                   tyMods = parserTyMods pst'
@@ -1185,7 +1191,11 @@ runStmtCollect hooks buildOnly moduleDirs currentPath paramTyCons tyMods primRef
           abortRun hooks (RunTCFailure tcErr (Just source) paramTyCons tyMods)
         Right (stmt', tcSt') -> do
           notifyStatement hooks paramTyCons tyMods primRefs stmt'
-          evalSt' <- evalFileStmt hooks buildOnly currentPath evalSt stmt'
+          let evalStWithCalls
+                | not buildOnly && tcOutputMode tcSt' == TCOutputRuntime =
+                    Eval.setResolvedCalls (tcResolvedSigs tcSt') evalSt
+                | otherwise = evalSt
+          evalSt' <- evalFileStmt hooks buildOnly currentPath evalStWithCalls stmt'
           return (pst, tcSt', evalSt', loaded, stmt' : typedAcc, depPathsAcc)
 
 -- | Emit optional per-statement status without coupling the runner to a UI.
@@ -1372,12 +1382,22 @@ loadPreludeStateWithModeAndHooks hooks outputMode noPrelude moduleDirs cache fsm
     else do
       snapshotPath <- liftIO preludeSnapshotPath
       -- Restore the merged prelude graph from a validated snapshot when
-      -- possible; otherwise load and persist it for future startup runs.
-      mSnapshot <- liftIO (loadCachedPrelude snapshotPath cache fsm)
+      -- possible; otherwise load and persist it for future startup runs. LSP
+      -- and codegen consumers skip evaluator-map and primitive reconstruction.
+      mSnapshot <-
+        liftIO $
+          if outputMode == TCOutputRuntime
+            then loadCachedPrelude snapshotPath cache fsm
+            else loadCachedPreludeForTypecheck snapshotPath cache fsm
       case mSnapshot of
         Just (pstSnap, tcSnap, evalSnap, loadedSnap)
           | tcOutputModeSupports (tcOutputMode tcSnap) outputMode ->
-              return (pstSnap, setTCOutputMode outputMode tcSnap, evalSnap, loadedSnap)
+              let tcSnap' = setTCOutputMode outputMode tcSnap
+                  evalSnap'
+                    | outputMode == TCOutputRuntime =
+                        Eval.setResolvedCalls (tcResolvedSigs tcSnap') evalSnap
+                    | otherwise = evalSnap
+              in return (pstSnap, tcSnap', evalSnap', loadedSnap)
         _ -> do
           path <- resolveModulePathWithHooks hooks moduleDirs [] ([], T.pack "giriş")
           let pst' = pst { parserFilePath = Just path }

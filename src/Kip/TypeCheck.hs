@@ -252,7 +252,7 @@ data TCState =
     , tcInfinitives :: !(Set.Set Identifier) -- ^ Infinitive (effectful) functions.
     , tcOutputMode :: !TCOutputMode -- ^ Resolution information retained for the consumer.
     , tcResolvedNames :: ![(Span, Identifier)] -- ^ Resolved variable names by span.
-    , tcResolvedSigs :: ![(Span, (Identifier, [Ty Ann]))] -- ^ Resolved function signatures by span.
+    , tcResolvedSigs :: ![(Span, (Identifier, [Ty Ann]))] -- ^ Exact overload selected at each statically resolved call span, newest first.
     , tcResolvedTypes :: ![(Span, Ty Ann)] -- ^ Resolved variable types by span.
     , tcDefLocations :: !(Map.Map Identifier (FilePath, Span)) -- ^ Definition locations by identifier.
     , tcFuncSigLocs :: !(Map.Map (Identifier, [Ty Ann]) (FilePath, Span)) -- ^ Definition locations by signature.

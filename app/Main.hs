@@ -1048,14 +1048,15 @@ main = do
                 Left tcErr -> do
                   emitMsgTCtx (MsgTCError tcErr (Just (T.pack expr)) paramTyCons (replTyMods rs))
                   loop rs
-                Right (parsed', _) -> do
+                Right (parsed', tcSt') -> do
                   (cache, fsm') <- runApp requireCacheFsm
                   skipSteps <- liftIO (shouldSkipInfinitiveSteps cache fsm' parsed')
                   if skipSteps
                     then loop rs
                     else do
+                      let evalStWithCalls = Eval.setResolvedCalls (tcResolvedSigs tcSt') (replEvalState rs)
                       res <- liftIO $ catch
-                        (Right <$> runEvalM (evalExpTraced parsed') (replEvalState rs))
+                        (Right <$> runEvalM (evalExpTraced parsed') evalStWithCalls)
                         (\UserInterrupt -> return (Left ()))
                       case res of
                         Left () -> do
@@ -1111,7 +1112,8 @@ main = do
                           emitMsgTCtx (MsgTCError tcErr (Just (T.pack input)) paramTyCons ptymods)
                           loop rs
                         Right (stmt', tcSt) -> do
-                          evalReplStmt paramTyCons ptymods (replEvalState rs) stmt' >>= \case
+                          let evalStWithCalls = Eval.setResolvedCalls (tcResolvedSigs tcSt) (replEvalState rs)
+                          evalReplStmt paramTyCons ptymods evalStWithCalls stmt' >>= \case
                             Nothing -> loop rs
                             Just evalSt ->
                               loop (rs { replParserState = pst'
@@ -1131,9 +1133,10 @@ main = do
                     Left tcErr -> do
                       emitMsgTCtx (MsgTCError tcErr (Just (T.pack input)) paramTyCons (replTyMods rs))
                       loop rs
-                    Right (parsed', _) -> do
+                    Right (parsed', tcSt') -> do
+                      let evalStWithCalls = Eval.setResolvedCalls (tcResolvedSigs tcSt') (replEvalState rs)
                       res <- liftIO $ catch
-                        (Right <$> runEvalM (evalExp parsed') (replEvalState rs))
+                        (Right <$> runEvalM (evalExp parsed') evalStWithCalls)
                         (\UserInterrupt -> return (Left ()))
                       case res of
                         Left () -> do
@@ -1543,7 +1546,7 @@ main = do
           -- Reuse the merged prelude graph snapshot for codegen startup. Even
           -- though codegen does not evaluate terms, restoring parser+TC from a
           -- validated snapshot avoids reparsing and re-typechecking stdlib.
-          liftIO (loadCachedPrelude snapshotPath cache fsm) >>= \case
+          liftIO (loadCachedPreludeForTypecheck snapshotPath cache fsm) >>= \case
             Just (pstSnap, tcSnap, _, loadedSnap) ->
               return (pstSnap, setTCOutputMode TCOutputCodegen tcSnap, loadedSnap)
             Nothing -> do

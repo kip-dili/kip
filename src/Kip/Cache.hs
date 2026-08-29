@@ -17,7 +17,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Version (showVersion)
 import System.FilePath
 import System.Directory
-import System.Environment (getExecutablePath)
+import System.Environment (getExecutablePath, lookupEnv)
 import Control.Exception (try, SomeException)
 import Control.Monad (when, foldM, replicateM)
 import Data.List (delete, isPrefixOf, sort)
@@ -42,7 +42,7 @@ import qualified Data.ByteString.Lazy as BL
 import Kip.AST
 import Kip.Parser (ParserState(..), newParserStateWithCtxAndCaches)
 import Kip.TypeCheck (TCOutputMode(..), TCState(..), buildFuncSigsByArity, buildFuncRetByName, emptyTCState)
-import Kip.Eval (EvalState(..), runEvalM, evalStmtInFile)
+import Kip.Eval (EvalState(..), emptyDirectCallCache, emptyEvalState, emptyResolvedCallIndex, runEvalM, evalStmtInFile)
 import Language.Foma (FSM)
 import qualified Kip.MorphCache as MC
 import Kip.MorphCache (MorphDelta(..))
@@ -735,7 +735,10 @@ fromCachedEvalState cache fsm CachedEvalState{..} =
   MkEvalState
     { evalVals = Map.fromList evals
     , evalFuncs = Map.fromListWith (++) [(k, [v]) | (k, v) <- efuncs]
-    , evalPrimFuncs = Map.empty -- Rebuilt at load time
+    , evalPrimFuncs = Map.empty -- Rebuilt at load time.
+    , evalResolvedCalls = [] -- Installed from the restored typechecker state by the runner.
+    , evalResolvedCallIndex = emptyResolvedCallIndex -- Promoted lazily only for a broad live call graph.
+    , evalDirectCalls = emptyDirectCallCache -- Populated lazily for the current checked statement.
     , evalSelectors = Map.fromListWith (++) [(k, [v]) | (k, v) <- eselectors]
     , evalCtors = Map.fromList ectors
     , evalTyCons = Map.fromList etyCons
@@ -753,12 +756,19 @@ cacheFilePath path = replaceExtension path ".iz"
 
 -- | Default on-disk location for the prelude snapshot.
 --
--- We keep this in @~/.kip/cache@ so all executables (@kip@, @kip-lsp@,
--- @kip-playground@) can reuse the same startup artifact.
+-- @KIP_CACHE_DIR@ overrides the directory, allowing benchmark runs and other
+-- isolated compiler instances to keep independently warmed snapshots. Empty
+-- overrides are ignored. Otherwise all executables (@kip@, @kip-lsp@, and
+-- @kip-playground@) share @~/.kip/cache@ as before.
 preludeSnapshotPath :: IO FilePath
 preludeSnapshotPath = do
-  home <- getHomeDirectory
-  let dir = home </> ".kip" </> "cache"
+  mOverride <- lookupEnv "KIP_CACHE_DIR"
+  dir <-
+    case mOverride of
+      Just override | not (null override) -> return override
+      _ -> do
+        home <- getHomeDirectory
+        return (home </> ".kip" </> "cache")
   createDirectoryIfMissing True dir
   return (dir </> "prelude.izp")
 
@@ -994,7 +1004,29 @@ loadCachedPrelude ::
   -> RenderCache -- ^ Render cache for evaluator restore.
   -> FSM -- ^ Morphology FSM handle.
   -> IO (Maybe (ParserState, TCState, EvalState, Set.Set FilePath))
-loadCachedPrelude snapshotPath cache fsm = do
+loadCachedPrelude = loadCachedPreludeWithEval True
+
+-- | Load a prelude snapshot without rebuilding evaluator bindings.
+--
+-- Typechecker-only consumers such as the LSP need parser and type metadata but
+-- never execute the returned evaluator. Skipping 'fromCachedEvalState' and
+-- primitive callback replay avoids constructing maps and closures that would
+-- immediately be discarded.
+loadCachedPreludeForTypecheck ::
+  FilePath -- ^ Snapshot file path.
+  -> RenderCache -- ^ Render cache installed on the inert evaluator placeholder.
+  -> FSM -- ^ Morphology FSM handle.
+  -> IO (Maybe (ParserState, TCState, EvalState, Set.Set FilePath))
+loadCachedPreludeForTypecheck = loadCachedPreludeWithEval False
+
+-- | Load and validate a prelude snapshot with optional evaluator restoration.
+loadCachedPreludeWithEval ::
+  Bool -- ^ Whether to rebuild cached evaluator bindings and primitive callbacks.
+  -> FilePath -- ^ Snapshot file path.
+  -> RenderCache -- ^ Render cache for evaluator restoration.
+  -> FSM -- ^ Morphology FSM handle.
+  -> IO (Maybe (ParserState, TCState, EvalState, Set.Set FilePath))
+loadCachedPreludeWithEval restoreEval snapshotPath cache fsm = do
   mCacheFile <- readCacheBytes snapshotPath
   case mCacheFile of
     Nothing -> return Nothing
@@ -1014,8 +1046,13 @@ loadCachedPrelude snapshotPath cache fsm = do
               pst <- fromCachedParserState fsm Nothing cache
                 cachedParser { pupsCache = [], pdownsCache = [] }
               let tcSt = fromCachedTCState (preludeTC preludeSnap)
-                  evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
-              evalSt <- replayPreludePrimStmts (preludePrimStmts preludeSnap) evalBase
+              evalSt <-
+                if restoreEval
+                  then do
+                    let evalBase = fromCachedEvalState cache fsm (preludeEval preludeSnap)
+                    replayPreludePrimStmts (preludePrimStmts preludeSnap) evalBase
+                  else
+                    return (emptyEvalState { evalRender = renderExpValue cache fsm })
               loadedSet <- Set.fromList <$> mapM canonicalizePathCached (preludeLoaded preludeSnap)
               return (Just (pst, tcSt, evalSt, loadedSet))
 

@@ -29,3 +29,20 @@ stack test --ta '-p "repl"'
 ```
 
 The `-p` flag filters tests by their description, which includes the test file path.
+
+## Reliable Performance Comparisons
+
+Set `KIP_CACHE_DIR` to give each compiler build its own prelude snapshot when
+measuring startup-heavy workloads. Warm each directory once before collecting
+timings; alternating binaries through the default shared snapshot can otherwise
+measure cache invalidation and reconstruction instead of compiler performance.
+
+```bash
+KIP_CACHE_DIR=/tmp/kip-before-cache /path/to/kip-before --exec program.kip
+KIP_CACHE_DIR=/tmp/kip-after-cache /path/to/kip-after --exec program.kip
+
+# Repeat the same commands after both snapshots have been created.
+```
+
+The override changes only the snapshot directory. Module caches next to source
+files retain their existing behavior.

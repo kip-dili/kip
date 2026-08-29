@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 -- | Evaluator for Kip expressions and statements.
@@ -11,6 +12,8 @@ import GHC.Generics (Generic)
 import Data.Binary (Binary)
 import Kip.AST
 import qualified Kip.Primitive as Prim
+import GHC.Exts (isTrue#, reallyUnsafePtrEquality#)
+import Text.Megaparsec.Pos (SourcePos(..))
 
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Except
@@ -34,6 +37,63 @@ import Data.List (find)
 import qualified Data.Map.Strict as Map
 import qualified Data.HashMap.Strict as HM
 
+-- | Statically selected overload key: canonical name plus declared argument types.
+--
+-- The typechecker records this serializable key at the source span of a call.
+-- Evaluator indexes use the same declaration types, so a checked direct call can
+-- bypass runtime candidate discovery and argument-type inference.
+type ResolvedCall = (Identifier, [Ty Ann])
+
+-- | User-defined function signature and its ordered pattern clauses.
+type FunctionDef = ([Arg Ann], [Clause Ann])
+
+-- | Primitive signature paired with its host-language implementation.
+type PrimitiveDef = ([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))
+
+-- | Memoized dispatch decision for one authored call-head span.
+--
+-- Positive entries retain the already selected callable.  'DirectFallback'
+-- caches statically authored sites that still require dynamic resolution,
+-- preventing repeated probes of the cumulative typechecker table.
+data DirectCall
+  = DirectPrimitive PrimitiveDef -- ^ Invoke this already selected primitive implementation.
+  | DirectFunction FunctionDef -- ^ Invoke this already selected user-function definition.
+  | DirectFallback -- ^ Retain dynamic lookup for a site that cannot be dispatched safely.
+
+-- | Adaptive memo for exact-dispatch decisions.
+--
+-- Most evaluations repeatedly visit only a few call sites, for which a short
+-- association list and 'sameSpanFast' are cheaper than a tree lookup. Once a
+-- statement grows beyond 'directCallSmallLimit' distinct sites, the cache
+-- promotes to a 'Map.Map' so programs with broad call graphs do not pay a
+-- linear scan on every application.
+data DirectCallCache
+  = SmallDirectCallCache !Int ![(Span, DirectCall)] -- ^ Entry count and pointer-fast association list.
+  | LargeDirectCallCache !(Map.Map Span DirectCall) -- ^ Ordered index used after the small memo fills.
+
+-- | Lazily promoted index over the typechecker's cumulative call log.
+--
+-- Short-lived programs avoid constructing a second global tree at startup and
+-- scan the log only on the first execution of each call site. Once a statement
+-- actually exercises a broad call graph, 'IndexedResolvedCalls' removes further
+-- linear first-call scans. The separate 'DirectCallCache' handles repeated hot
+-- calls before and after promotion.
+data ResolvedCallIndex
+  = UnindexedResolvedCalls -- ^ Use the cumulative newest-first log directly.
+  | IndexedResolvedCalls !(Map.Map Span ResolvedCall) -- ^ Exact span index built for a broad live call graph.
+
+-- | Maximum number of entries retained in the pointer-fast small memo.
+directCallSmallLimit :: Int
+directCallSmallLimit = 32
+
+-- | Empty exact-dispatch memo used for a newly checked statement.
+emptyDirectCallCache :: DirectCallCache
+emptyDirectCallCache = SmallDirectCallCache 0 []
+
+-- | Empty lazy resolution index used whenever the cumulative log changes.
+emptyResolvedCallIndex :: ResolvedCallIndex
+emptyResolvedCallIndex = UnindexedResolvedCalls
+
 -- | Evaluator state: runtime bindings plus render function.
 --
 -- The overloadable bindings ('evalFuncs', 'evalPrimFuncs', 'evalSelectors')
@@ -47,8 +107,11 @@ data EvalState =
     -- Strict fields prevent deferred record updates from building up in the
     -- evaluator state during long REPL sessions and module loads.
     { evalVals :: !(Map.Map Identifier (Exp Ann)) -- ^ Value bindings.
-    , evalFuncs :: !(Map.Map Identifier [([Arg Ann], [Clause Ann])]) -- ^ Function clauses (can be overloaded).
-    , evalPrimFuncs :: !(Map.Map Identifier [([Arg Ann], [Exp Ann] -> EvalM (Exp Ann))]) -- ^ Primitive implementations (can be overloaded).
+    , evalFuncs :: !(Map.Map Identifier [FunctionDef]) -- ^ Function clauses indexed by source-level name for dynamic calls.
+    , evalPrimFuncs :: !(Map.Map Identifier [PrimitiveDef]) -- ^ Primitive implementations indexed by source-level name for dynamic calls.
+    , evalResolvedCalls :: ![(Span, ResolvedCall)] -- ^ Cumulative newest-first call log supplied by the typechecker.
+    , evalResolvedCallIndex :: !ResolvedCallIndex -- ^ Lazy span index promoted only for broad live call graphs.
+    , evalDirectCalls :: !DirectCallCache -- ^ Adaptive per-statement memo of exact targets and deliberate dynamic fallbacks.
     , evalSelectors :: !(Map.Map Identifier [Int]) -- ^ Record selector indices.
     , evalCtors :: !(Map.Map Identifier ([Ty Ann], Ty Ann)) -- ^ Constructor signatures.
     , evalTyCons :: !(Map.Map Identifier Int) -- ^ Type constructor arities.
@@ -60,7 +123,22 @@ data EvalState =
 
 -- | Empty evaluator state with a simple pretty-printer.
 emptyEvalState :: EvalState -- ^ Default evaluator state.
-emptyEvalState = MkEvalState Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Nothing [] (\_ e -> return (prettyExp e)) Nothing
+emptyEvalState =
+  MkEvalState
+    { evalVals = Map.empty
+    , evalFuncs = Map.empty
+    , evalPrimFuncs = Map.empty
+    , evalResolvedCalls = []
+    , evalResolvedCallIndex = emptyResolvedCallIndex
+    , evalDirectCalls = emptyDirectCallCache
+    , evalSelectors = Map.empty
+    , evalCtors = Map.empty
+    , evalTyCons = Map.empty
+    , evalCurrentFile = Nothing
+    , evalArgs = []
+    , evalRender = \_ e -> return (prettyExp e)
+    , evalRandState = Nothing
+    }
 
 -- | Evaluation errors (currently minimal).
 data EvalError =
@@ -77,6 +155,164 @@ data EvalError =
    deriving (Show, Eq, Generic, Binary)
 -- | Evaluator monad stack.
 type EvalM = StateT EvalState (ExceptT EvalError IO)
+
+-- | Install a restored cumulative exact-call table as the evaluator's base.
+--
+-- The newest-first list is retained without rebuilding a second global map at
+-- every process startup or typechecked statement. Changing the log resets the
+-- lazy span index and per-statement target memo; 'promoteResolvedCallIndex'
+-- rebuilds the former only when the running program demonstrates a broad call
+-- graph.
+setResolvedCalls :: [(Span, ResolvedCall)] -- ^ Restored cumulative resolution table.
+                 -> EvalState -- ^ Evaluator state to initialize.
+                 -> EvalState -- ^ State with a shared call log and empty lazy index.
+setResolvedCalls calls st =
+  st
+    { evalResolvedCalls = calls
+    , evalResolvedCallIndex = emptyResolvedCallIndex
+    , evalDirectCalls = emptyDirectCallCache
+    }
+
+-- | Look up a memoized call target using source-object sharing as a fast path.
+--
+-- The small representation stores spans taken directly from the typed AST, so
+-- repeated execution normally reuses the complete span object. 'sameSpanFast'
+-- exploits that sharing while retaining structural equality as a correctness
+-- fallback. Broad call graphs use the ordered representation instead.
+lookupDirectCall :: Span -- ^ Authored call-head span.
+                 -> DirectCallCache -- ^ Per-statement dispatch memo.
+                 -> Maybe DirectCall -- ^ Previously resolved decision, if present.
+lookupDirectCall target cache =
+  case cache of
+    SmallDirectCallCache _ entries -> lookupSmall entries
+    LargeDirectCallCache entries -> Map.lookup target entries
+  where
+    lookupSmall [] = Nothing
+    lookupSmall ((sp, directCall):rest)
+      | sameSpanFast target sp = Just directCall
+      | otherwise = lookupSmall rest
+{-# INLINE lookupDirectCall #-}
+
+-- | Insert a decision, promoting a full small memo to logarithmic lookup.
+insertDirectCall :: Span -- ^ Authored call-head span.
+                 -> DirectCall -- ^ Exact target or deliberate fallback.
+                 -> DirectCallCache -- ^ Existing per-statement memo.
+                 -> DirectCallCache -- ^ Memo containing the new decision.
+insertDirectCall sp directCall cache =
+  case cache of
+    SmallDirectCallCache size entries
+      | size < directCallSmallLimit ->
+          SmallDirectCallCache (size + 1) ((sp, directCall) : entries)
+      | otherwise ->
+          LargeDirectCallCache (Map.insert sp directCall (Map.fromList entries))
+    LargeDirectCallCache entries ->
+      LargeDirectCallCache (Map.insert sp directCall entries)
+
+-- | Find the typechecker's selected overload for a call-head span.
+--
+-- Before promotion, a call scans the newest-first log once and its selected
+-- target (or deliberate miss) is retained by 'evalDirectCalls'. After a live
+-- statement crosses 'directCallSmallLimit', later first calls use logarithmic
+-- lookup in the promoted index.
+lookupResolvedCall :: Span -- ^ Authored call-head span.
+                   -> ResolvedCallIndex -- ^ Unbuilt marker or promoted exact index.
+                   -> [(Span, ResolvedCall)] -- ^ Cumulative newest-first fallback log.
+                   -> Maybe ResolvedCall -- ^ Selected signature, if this is an exact call site.
+lookupResolvedCall target resolvedCallIndex fallbackCalls =
+  case resolvedCallIndex of
+    IndexedResolvedCalls indexedCalls -> Map.lookup target indexedCalls
+    UnindexedResolvedCalls -> lookupFallback fallbackCalls
+  where
+    lookupFallback [] = Nothing
+    lookupFallback ((sp, resolvedCall):rest)
+      | sameSpanFast target sp = Just resolvedCall
+      | otherwise = lookupFallback rest
+{-# INLINE lookupResolvedCall #-}
+
+-- | Build the exact span index once a statement executes a broad call graph.
+--
+-- 'foldr' visits older log entries first, so a newer duplicate span overwrites
+-- it and preserves the typechecker's newest-first lookup semantics. Promotion
+-- is keyed to the already-built direct-call memo, avoiding this global work for
+-- startup-heavy programs and statements with only a few live call sites.
+promoteResolvedCallIndex :: DirectCallCache -- ^ Direct-call memo after inserting the current site.
+                         -> ResolvedCallIndex -- ^ Current lazy or promoted resolution index.
+                         -> [(Span, ResolvedCall)] -- ^ Cumulative newest-first call log.
+                         -> ResolvedCallIndex -- ^ Promoted index when the live call graph is broad.
+promoteResolvedCallIndex directCalls resolvedCallIndex calls =
+  case (directCalls, resolvedCallIndex) of
+    (LargeDirectCallCache _, UnindexedResolvedCalls) ->
+      IndexedResolvedCalls
+        (foldr
+          (\(sp, resolvedCall) -> Map.insert sp resolvedCall)
+          Map.empty
+          calls)
+    _ -> resolvedCallIndex
+
+-- | Compare spans with safe structural fallbacks after pointer fast paths.
+--
+-- 'reallyUnsafePtrEquality#' is used only to prove equality early for a complete
+-- span or its source strings. A negative answer always falls back to ordinary
+-- equality, so copying or deserializing source metadata cannot change semantics.
+sameSpanFast :: Span -- ^ First span.
+             -> Span -- ^ Second span.
+             -> Bool -- ^ Whether both spans identify the same source range.
+sameSpanFast a b
+  | isTrue# (reallyUnsafePtrEquality# a b) = True
+sameSpanFast NoSpan NoSpan = True
+sameSpanFast (Span startA endA pathA) (Span startB endB pathB) =
+  sameSourcePosFast startA startB &&
+  sameSourcePosFast endA endB &&
+  samePathFast pathA pathB
+  where
+    sameSourcePosFast (SourcePos nameA lineA columnA) (SourcePos nameB lineB columnB) =
+      sameStringFast nameA nameB && lineA == lineB && columnA == columnB
+    samePathFast Nothing Nothing = True
+    samePathFast (Just a) (Just b) = sameStringFast a b
+    samePathFast _ _ = False
+    sameStringFast a b = isTrue# (reallyUnsafePtrEquality# a b) || a == b
+sameSpanFast _ _ = False
+{-# INLINE sameSpanFast #-}
+
+-- | Construct the exact key shared by typechecker resolutions and evaluator indexes.
+--
+-- The typechecker canonicalizes primitive aliases before recording signatures;
+-- the evaluator must do the same when indexing declarations or structurally
+-- equal source types could miss the fast path.
+functionSignatureKey :: Identifier -- ^ Canonical function or primitive name.
+                     -> [Arg Ann] -- ^ Declared arguments whose types identify the overload.
+                     -> ResolvedCall -- ^ Stable structural key for the overload.
+functionSignatureKey name args = normalizeResolvedCall (name, map argType args)
+
+-- | Normalize a selected signature for evaluator exact lookup.
+--
+-- Source spans do not participate in overload identity: the same semantic
+-- signature can be declared in a primitive module and then repeated by user
+-- code.  Grammatical cases remain in the key because they affect argument
+-- alignment, while primitive aliases are canonicalized just as they are by
+-- the typechecker.
+normalizeResolvedCall :: ResolvedCall -- ^ Signature carrying source annotations.
+                      -> ResolvedCall -- ^ Structurally comparable evaluator key.
+normalizeResolvedCall (name, tys) = (name, map normalizeResolvedTy tys)
+
+-- | Clear spans recursively while preserving the cases used for call alignment.
+normalizeResolvedTy :: Ty Ann -- ^ Declared type with source annotations.
+                    -> Ty Ann -- ^ Equivalent type suitable for an exact map key.
+normalizeResolvedTy ty =
+  case normalizePrimTy ty of
+    TyString ann -> TyString (withoutSpan ann)
+    TyInt ann -> TyInt (withoutSpan ann)
+    TyFloat ann -> TyFloat (withoutSpan ann)
+    TyChar ann -> TyChar (withoutSpan ann)
+    TyInd ann name -> TyInd (withoutSpan ann) name
+    TyVar ann name -> TyVar (withoutSpan ann) name
+    TySkolem ann name -> TySkolem (withoutSpan ann) name
+    Arr ann domain image ->
+      Arr (withoutSpan ann) (normalizeResolvedTy domain) (normalizeResolvedTy image)
+    TyApp ann ctor args ->
+      TyApp (withoutSpan ann) (normalizeResolvedTy ctor) (map normalizeResolvedTy args)
+  where
+    withoutSpan ann = mkAnn (annCase ann) NoSpan
 
 -- | Evaluate an expression in the current evaluator state.
 evalExp :: Exp Ann -- ^ Expression to evaluate.
@@ -485,66 +721,135 @@ evalStepWith subEval localEnv e =
                   return (Continue localEnv v)
     App {annExp = annApp, fn, args} -> do
       -- Non-tail: we must compute function and arguments before applying.
-      fn' <-
+      -- Keep the authored call head separate from the evaluated one: a
+      -- higher-order parameter may evaluate to a global function whose span
+      -- describes the value's origin, not this call site's static resolution.
+      (fn', exactCallSpan) <-
         case fn of
-          Var {varName, varCandidates} -> do
+          Var {annExp = annSourceFn, varName, varCandidates} -> do
             MkEvalState{evalVals} <- get
             case lookupByCandidatesHM localEnv varCandidates of
-              Just _ -> subEval localEnv fn
+              Just _ -> do
+                evaluated <- subEval localEnv fn
+                pure (evaluated, Nothing)
               Nothing ->
                 case lookupBySuffixHM localEnv varName of
-                  Just _ -> subEval localEnv fn
+                  Just _ -> do
+                    evaluated <- subEval localEnv fn
+                    pure (evaluated, Nothing)
                   Nothing ->
                     case lookupByCandidates evalVals varCandidates of
-                      Just _ -> subEval localEnv fn
-                      Nothing -> pure fn
-          _ -> subEval localEnv fn
+                      Just _ -> do
+                        evaluated <- subEval localEnv fn
+                        pure (evaluated, Nothing)
+                      Nothing ->
+                        let sp = annSpan annSourceFn
+                        in pure (fn, if sp == NoSpan then Nothing else Just sp)
+          _ -> do
+            fnEvaluated <- subEval localEnv fn
+            let sourceRoot = fst (flattenApplied fn)
+                evaluatedRoot = fst (flattenApplied fnEvaluated)
+                nestedCallSpan =
+                  case (sourceRoot, evaluatedRoot) of
+                    ( Var {annExp = annSourceFn, varName = sourceName}
+                      , Var {annExp = annEvaluatedFn, varName = evaluatedName}
+                      )
+                        | sourceName == evaluatedName
+                        , annSpan annSourceFn /= NoSpan
+                        , annSpan annSourceFn == annSpan annEvaluatedFn ->
+                            Just (annSpan annSourceFn)
+                    _ -> Nothing
+            pure (fnEvaluated, nestedCallSpan)
       args' <- mapM (subEval localEnv) args
       let (fnResolved, preAppliedArgs) = flattenApplied fn'
           allArgs = preAppliedArgs ++ args'
       case fnResolved of
         Var {varCandidates} -> do
-          -- Pull state once for all resolution steps.
-          MkEvalState{evalFuncs, evalPrimFuncs, evalSelectors, evalTyCons} <- get
-          let fnCandidates = map fst varCandidates
-              matches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalFuncs]
-              primMatches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalPrimFuncs]
-              selectorMatches = [idx | n <- fnCandidates, idx <- Map.findWithDefault [] n evalSelectors]
-              hasTyConCandidate = any (\(ident, _) -> Map.member ident evalTyCons) varCandidates
-          -- If there are no function/primitive candidates, we can
-          -- decide selector/random/constructor outcomes without type inference.
-          if null matches && null primMatches
-            then
-              case allArgs of
-                -- Type-case application is a fallback when no callable definition exists.
-                [arg] | hasTyConCandidate ->
-                  return (Done (applyTypeCase (annCase (annExp fnResolved)) arg))
-                -- Fast-path selectors when the only possible resolution is a selector.
-                [arg] ->
-                  case selectorMatches of
-                    idx:_ -> Done <$> applySelector idx arg (App annApp fnResolved allArgs)
-                    [] -> return (Done (App annApp fnResolved allArgs))
-                _ ->
-                  return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call.
-            else do
-              let partialCall = not (null preAppliedArgs)
-                  callArgs = reorderSectionArgs preAppliedArgs allArgs
-                  pickPrim = if partialCall then pickPrimByTypesPartial else pickPrimByTypes
-                  pickFn = if partialCall then pickFunctionByTypesPartial else pickFunctionByTypes
-              -- Infer argument types once and share across all pick functions.
-              -- See pickFunctionByTypes Haddock for details.
-              argTys <- mapM inferType callArgs
-              pickPrim primMatches callArgs argTys >>= \case
-                Just (primImpl, primArgs) -> Done <$> primImpl primArgs
-                Nothing ->
-                  pickFn matches callArgs argTys >>= \case
-                    Just (def, fnArgs) -> applyFunctionStep fnResolved localEnv def fnArgs
+          -- Pull state once for both exact and dynamic resolution paths.
+          MkEvalState
+            { evalFuncs
+            , evalPrimFuncs
+            , evalResolvedCalls = resolvedCalls
+            , evalResolvedCallIndex = resolvedCallIndex
+            , evalDirectCalls = directCalls
+            , evalSelectors
+            , evalTyCons
+            } <- get
+          let partialCall = not (null preAppliedArgs)
+              callArgs = reorderSectionArgs preAppliedArgs allArgs
+          directStep <-
+            case exactCallSpan of
+              Nothing -> return Nothing
+              Just sp -> do
+                directCall <-
+                  case lookupDirectCall sp directCalls of
+                    Just cachedCall -> return cachedCall
+                    Nothing -> do
+                      let resolvedLookup =
+                            lookupResolvedCall sp resolvedCallIndex resolvedCalls
+                          selectedCall =
+                            case resolvedLookup of
+                              Nothing -> DirectFallback
+                              Just resolvedCall ->
+                                resolveDirectCall resolvedCall evalPrimFuncs evalFuncs
+                      modify (\s ->
+                        let nextDirectCalls =
+                              insertDirectCall sp selectedCall (evalDirectCalls s)
+                        in s
+                            { evalResolvedCallIndex =
+                                promoteResolvedCallIndex
+                                  nextDirectCalls
+                                  (evalResolvedCallIndex s)
+                                  (evalResolvedCalls s)
+                            , evalDirectCalls = nextDirectCalls
+                            })
+                      return selectedCall
+                tryDirectCall
+                  fnResolved
+                  localEnv
+                  partialCall
+                  callArgs
+                  directCall
+          case directStep of
+            Just step -> return step
+            Nothing -> do
+              let fnCandidates = map fst varCandidates
+                  matches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalFuncs]
+                  primMatches = [(n, def) | n <- fnCandidates, def <- Map.findWithDefault [] n evalPrimFuncs]
+                  selectorMatches = [idx | n <- fnCandidates, idx <- Map.findWithDefault [] n evalSelectors]
+                  hasTyConCandidate = any (\(ident, _) -> Map.member ident evalTyCons) varCandidates
+              -- If there are no function/primitive candidates, we can
+              -- decide selector/random/constructor outcomes without type inference.
+              if null matches && null primMatches
+                then
+                  case allArgs of
+                    -- Type-case application is a fallback when no callable definition exists.
+                    [arg] | hasTyConCandidate ->
+                      return (Done (applyTypeCase (annCase (annExp fnResolved)) arg))
+                    -- Fast-path selectors when the only possible resolution is a selector.
+                    [arg] ->
+                      case selectorMatches of
+                        idx:_ -> Done <$> applySelector idx arg (App annApp fnResolved allArgs)
+                        [] -> return (Done (App annApp fnResolved allArgs))
+                    _ ->
+                      return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call.
+                else do
+                  let pickPrim = if partialCall then pickPrimByTypesPartial else pickPrimByTypes
+                      pickFn = if partialCall then pickFunctionByTypesPartial else pickFunctionByTypes
+                  -- Infer argument types once and share across all pick functions.
+                  -- See pickFunctionByTypes Haddock for details.
+                  argTys <- mapM inferType callArgs
+                  pickPrim primMatches callArgs argTys >>= \case
+                    Just (primImpl, primArgs) -> Done <$> primImpl primArgs
                     Nothing ->
-                      case (selectorMatches, allArgs) of
-                        (idx:_, [arg]) ->
-                          Done <$> applySelector idx arg (App annApp fnResolved allArgs)
-                        _ ->
-                          return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call
+                      pickFn matches callArgs argTys >>= \case
+                        Just (def, fnArgs) -> applyFunctionStep fnResolved localEnv def fnArgs
+                        Nothing ->
+                          case (selectorMatches, allArgs) of
+                            (idx:_, [arg]) ->
+                              Done <$> applySelector idx arg (App annApp fnResolved allArgs)
+                            _ ->
+                              return (Done (App annApp fnResolved allArgs)) -- Constructor application or unevaluated call
         _ | null allArgs -> return (Done fnResolved)
           | otherwise -> return (Done (App annApp fnResolved allArgs))
     StrLit {annExp, lit} ->
@@ -843,6 +1148,63 @@ reorderSectionArgs preApplied args =
     ([fixed], [x, y])
       | annCase (annExp fixed) /= Ins -> [y, x]
     _ -> args
+
+-- | Resolve one typechecker-selected signature to a callable runtime target.
+--
+-- Resolution probes only the already canonical name, then compares its small
+-- overload list against the selected signature.  The result is memoized by
+-- source span by the caller, so recursive and iterative hot paths pay this
+-- work once rather than rebuilding global exact-signature indexes at startup.
+-- Primitive precedence matches both the legacy evaluator and JavaScript
+-- backend.
+resolveDirectCall :: ResolvedCall -- ^ Exact name and declaration signature selected by the typechecker.
+                  -> Map.Map Identifier [PrimitiveDef] -- ^ Primitive overloads grouped by canonical name.
+                  -> Map.Map Identifier [FunctionDef] -- ^ User functions grouped by canonical name.
+                  -> DirectCall -- ^ Selected callable, or a cached dynamic fallback.
+resolveDirectCall selectedCall primFuncs funcs =
+  case find matchesSelected (Map.findWithDefault [] name primFuncs) of
+    Just primDef -> DirectPrimitive primDef
+    Nothing ->
+      case find matchesSelected (Map.findWithDefault [] name funcs) of
+        Just functionDef -> DirectFunction functionDef
+        Nothing -> DirectFallback
+  where
+    normalizedCall@(name, _) = normalizeResolvedCall selectedCall
+    matchesSelected (args, _) = functionSignatureKey name args == normalizedCall
+
+-- | Attempt a call through a memoized exact-dispatch decision.
+--
+-- A positive entry bypasses candidate-name scans, runtime 'inferType', and the
+-- dynamic overload pickers below.  'DirectFallback' deliberately retains the
+-- old path for higher-order, unresolved, and otherwise unsafe call sites.
+tryDirectCall :: Exp Ann -- ^ Evaluated symbolic function head, retained for errors and fallback values.
+              -> HM.HashMap Identifier (Exp Ann) -- ^ Lexical environment used for a selected user function.
+              -> Bool -- ^ Whether the runtime expression originated as a partial application.
+              -> [Exp Ann] -- ^ Evaluated arguments in current call order.
+              -> DirectCall -- ^ Memoized target or dynamic-fallback decision.
+              -> EvalM (Maybe EvalStep) -- ^ Direct step, or 'Nothing' when dynamic resolution must handle it.
+tryDirectCall fn localEnv partialCall callArgs directCall =
+  case directCall of
+    DirectPrimitive (primArgs, impl) ->
+      case alignArgs primArgs of
+        Nothing -> return Nothing
+        Just args -> Just . Done <$> impl args
+    DirectFunction def@(fnArgs, _) ->
+      case alignArgs fnArgs of
+        Nothing -> return Nothing
+        Just args -> Just <$> applyFunctionStep fn localEnv def args
+    DirectFallback -> return Nothing
+  where
+    alignArgs expectedArgs
+      -- A nested partial application has the same function-head span as the
+      -- eventual saturated call.  Reject its early lookup by arity so normal
+      -- partial-application evaluation can retain the inner 'App' value.
+      | length expectedArgs /= length callArgs = Nothing
+      | not partialCall = Just callArgs
+      | otherwise =
+          let expectedCases = map (annCase . annTy . argType) expectedArgs
+              actualCases = map (annCase . annExp) callArgs
+          in reorderByCasesForEval expectedCases actualCases callArgs
 
 -- | Choose a function definition based on inferred argument types.
 --
@@ -1455,12 +1817,22 @@ evalStmtInFile mPath stmt =
         v <- evalExp e
         modify (\s -> s { evalVals = Map.insert name v (evalVals s) })
       Function name args _ body _ ->
-        modify (\s -> s { evalFuncs = Map.insertWith (++) name [(args, body)] (evalFuncs s) })
+        modify (\s ->
+          let def = (args, body)
+          in s
+              { evalFuncs = Map.insertWith (++) name [def] (evalFuncs s)
+              , evalDirectCalls = emptyDirectCallCache
+              })
       PrimFunc name args _ _ ->
         case primImpl mPath name args of
           Nothing -> return ()
           Just impl ->
-            modify (\s -> s { evalPrimFuncs = Map.insertWith (++) name [(args, impl)] (evalPrimFuncs s) })
+            modify (\s ->
+              let def = (args, impl)
+              in s
+                  { evalPrimFuncs = Map.insertWith (++) name [def] (evalPrimFuncs s)
+                  , evalDirectCalls = emptyDirectCallCache
+                  })
       Load _ _ ->
         return ()
       NewType name params ctors -> do
