@@ -244,7 +244,7 @@ promoteResolvedCallIndex directCalls resolvedCallIndex calls =
     (LargeDirectCallCache _, UnindexedResolvedCalls) ->
       IndexedResolvedCalls
         (foldr
-          (\(sp, resolvedCall) -> Map.insert sp resolvedCall)
+          (uncurry Map.insert)
           Map.empty
           calls)
     _ -> resolvedCallIndex
@@ -1165,9 +1165,10 @@ resolveDirectCall selectedCall primFuncs funcs =
   case find matchesSelected (Map.findWithDefault [] name primFuncs) of
     Just primDef -> DirectPrimitive primDef
     Nothing ->
-      case find matchesSelected (Map.findWithDefault [] name funcs) of
-        Just functionDef -> DirectFunction functionDef
-        Nothing -> DirectFallback
+      maybe
+        DirectFallback
+        DirectFunction
+        (find matchesSelected (Map.findWithDefault [] name funcs))
   where
     normalizedCall@(name, _) = normalizeResolvedCall selectedCall
     matchesSelected (args, _) = functionSignatureKey name args == normalizedCall
