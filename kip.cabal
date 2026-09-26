@@ -175,7 +175,10 @@ executable kip-lsp
       Paths_kip
   hs-source-dirs:
       app
-  ghc-options: -threaded -rtsopts "-with-rtsopts=-N -A64m"
+  -- The server handles one document stream per process. Test and editor
+  -- workloads often run many server processes concurrently, so one capability
+  -- and a modest nursery avoid excess GC workers and memory reservation.
+  ghc-options: -threaded -rtsopts "-with-rtsopts=-N1 -A16m"
   if os(wasi)
     buildable: False
   build-depends:
